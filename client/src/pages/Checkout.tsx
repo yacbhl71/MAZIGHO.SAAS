@@ -1,0 +1,97 @@
+import { useCallback, useEffect, useState } from "react";
+import { Link, useLocation } from "wouter";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import Header from "@/components/Header";
+import Footer from "@/components/Footer";
+import { useStorePrice } from "@/hooks/useStorePrice";
+import { calculateCheckoutShippingEstimate } from "@/lib/checkoutShipping";
+import { useCart } from "@/hooks/useCart";
+import { trpc } from "@/lib/trpc";
+import { getDeliveryProfileForCountry, useDeliveryCountry } from "@/contexts/DeliveryCountryContext";
+import { useLocale } from "@/contexts/LocaleContext";
+import { getLocalizedCountryName } from "@/lib/countryLocale";
+import { AlertTriangle, ArrowLeft, CheckCircle2, LockKeyhole, PackageCheck, Truck, Ticket, X } from "lucide-react";
+import { commerceT } from "@/lib/i18n";
+import { getCartCopy } from "@/lib/cartCopy";
+import { toast } from "sonner";
+import { Input } from "@/components/ui/input";
+import { isProductPurchasableForStorefront } from "@shared/storefrontProductVisibility";
+import { CHECKOUT_LEGAL_VERSION } from "@shared/checkoutLegalAcceptance";
+import { useDesignProfile } from "@/hooks/useDesignProfile";
+import AlgeriaCashOnDeliveryCheckout from "@/components/AlgeriaCashOnDeliveryCheckout";
+
+export default function Checkout() {
+  const [, setLocation] = useLocation();
+  const { cart, clearCart, isLoaded } = useCart();
+  const { locale } = useLocale();
+  const { formatStorePrice: formatPrice, formatChargedPrice, convertFromChf } = useStorePrice();
+  const c = getCartCopy(locale);
+  const { profile } = useDesignProfile();
+  const checkoutEyebrow = locale === "fr" ? profile.checkoutEyebrow : c.verified;
+  const checkoutTitle = locale === "fr" ? profile.checkoutTitle : c.prepare;
+  const checkoutIntro = locale === "fr" ? profile.checkoutIntro : c.prepareText;
+  const checkoutPaymentNotice = locale === "fr" ? profile.checkoutPaymentNotice : c.noPayment;
+  const { countryCode } = useDeliveryCountry();
+  const countryLabel = getLocalizedCountryName(countryCode, locale);
+  const productsQuery = trpc.products.getAll.useQuery(locale);
+  const storeAvailability = trpc.storefront.getAvailability.useQuery(undefined, { retry: false, refetchOnWindowFocus: false });
+  const paymentAvailability = trpc.storefront.getPaymentAvailability.useQuery(undefined, { retry: false, refetchOnWindowFocus: false });
+  const shippingPolicyQuery = trpc.content.getCheckoutShippingPolicy.useQuery({ countryCode });
+  const taxDisclosureQuery = trpc.content.getCheckoutTaxDisclosure.useQuery({ countryCode }, { retry: false, refetchOnWindowFocus: false });
+  const legalReadinessQuery = trpc.content.getCheckoutLegalReadiness.useQuery({ countryCode }, { retry: false, refetchOnWindowFocus: false });
+  const [promoInput, setPromoInput] = useState("");
+  const [appliedPromo, setAppliedPromo] = useState<{ code: string; discountAmount: number } | null>(null);
+  const [legalAccepted, setLegalAccepted] = useState(false);
+  const [cashOnDeliveryShipping, setCashOnDeliveryShipping] = useState(0);
+  const validatePromo = trpc.shop.promotions.validate.useMutation({
+    onSuccess: (data: { code: string; discountAmount: number; totalAmount: number }) => { setAppliedPromo({ code: data.code, discountAmount: data.discountAmount }); toast.success(`Code ${data.code} appliqué`); },
+    onError: (error: { message: string }) => { setAppliedPromo(null); toast.error(error.message); },
+  });
+  const productById = new Map((productsQuery.data || []).map(product => [product.id, product]));
+  const isClientStore = Boolean(storeAvailability.data && !storeAvailability.data.isPlatformStore);
+  const items = cart.map(item => {
+    const product = productById.get(item.productId);
+    const variants = Array.isArray((product as any)?.variants) ? (product as any).variants as Array<{ id: number; label: string; priceAdjustmentCents: number; stock: number }> : [];
+    const hasVariants = variants.length > 0;
+    const selectedVariant = item.variantId === undefined ? null : variants.find(variant => variant.id === item.variantId) ?? null;
+    const stock = hasVariants ? Number(selectedVariant?.stock ?? 0) : Number(product?.stock ?? 0);
+    const unitPrice = product ? Number(product.price) + Number(selectedVariant?.priceAdjustmentCents ?? 0) : item.price;
+    const deliveryProfile = getDeliveryProfileForCountry(product?.deliveryProfiles, countryCode);
+    const countryServed = shippingPolicyQuery.data?.countryServed ?? true;
+    const deliveryAvailable = Boolean(countryServed && product && isProductPurchasableForStorefront(product.deliveryProfiles, countryCode, isClientStore, Boolean((product as any).isManualProduct)));
+    const valid = Boolean(product && deliveryAvailable && (!hasVariants || selectedVariant) && stock >= item.quantity && unitPrice > 0);
+    const reason = !product ? commerceT(locale, "productNotFoundTitle") : hasVariants && !selectedVariant ? "Cette variante n’est plus disponible." : stock < item.quantity ? commerceT(locale, "outOfStock") : !countryServed ? `La boutique ne propose pas encore la livraison vers ${countryLabel}.` : commerceT(locale, "deliveryUnconfirmed", { country: countryLabel });
+    return { item, deliveryProfile, selectedVariant, unitPrice, valid, reason, shipping: deliveryProfile ? deliveryProfile.customerShippingCost * item.quantity : 0 };
+  });
+  const invalidItems = items.filter(entry => !entry.valid);
+  const stripeConnectCheckout = trpc.checkout.createSession.useMutation({
+    onSuccess: data => { window.location.assign(data.url); },
+    onError: error => toast.error(error.message || "Le paiement Stripe Connect ne peut pas être préparé."),
+  });
+  const paymentEnabled = paymentAvailability.data?.enabled === true;
+  const cashOnDeliveryAvailable = countryCode === "DZ" && paymentAvailability.data?.cashOnDeliveryAvailable === true;
+  const checkoutPaymentAvailable = paymentEnabled || cashOnDeliveryAvailable;
+  const checkoutLegalReady = legalReadinessQuery.data?.ready === true;
+  const paymentMode = paymentAvailability.data?.mode === "stripe_connect_live" ? "live" : "test";
+  const paymentModeLabel = paymentMode === "live" ? "Production" : "Test";
+  const paymentModeDescription = paymentMode === "live"
+    ? "Vous serez redirigé vers Stripe pour finaliser un paiement sécurisé auprès de cette boutique."
+    : "Vous serez redirigé vers Stripe en environnement Test. Aucun encaissement réel ne peut être déclenché depuis cette étape.";
+  const subtotalChf = items.reduce((sum, entry) => sum + entry.unitPrice * entry.item.quantity, 0);
+  const shippingEstimate = calculateCheckoutShippingEstimate(subtotalChf, shippingPolicyQuery.data);
+  const subtotal = items.reduce((sum, entry) => sum + convertFromChf(entry.unitPrice) * entry.item.quantity, 0);
+  const defaultShipping = convertFromChf(shippingEstimate.shippingAmountCents);
+  const shipping = cashOnDeliveryAvailable ? cashOnDeliveryShipping : defaultShipping;
+  const discountChf = appliedPromo ? Math.min(subtotalChf, appliedPromo.discountAmount) : 0;
+  const discount = convertFromChf(discountChf);
+  const estimatedTotal = subtotal + shipping - discount;
+  const handleCashOnDeliveryQuote = useCallback((amountDzdCents: number) => setCashOnDeliveryShipping(amountDzdCents), []);
+  useEffect(() => { if (isLoaded && cart.length === 0) setLocation("/panier"); }, [cart.length, isLoaded, setLocation]);
+  if (!isLoaded) return <div className="flex min-h-screen items-center justify-center bg-[#fbf7f2] text-slate-600">{c.loading}</div>;
+  if (cart.length === 0) return null;
+
+  return <div className="flex min-h-screen flex-col bg-[#fbf7f2]"><Header /><main className="container flex-1 px-4 py-10 md:py-14"><div className="mx-auto max-w-5xl"><div className="mb-8 max-w-2xl"><p className="mb-3 text-xs font-bold uppercase tracking-[0.28em] text-orange-600">{checkoutEyebrow}</p><h1 className="text-3xl font-semibold tracking-tight text-slate-950 md:text-4xl">{checkoutTitle}</h1><p className="mt-3 text-sm leading-6 text-slate-600">{checkoutIntro}</p></div>
+    {productsQuery.isLoading || shippingPolicyQuery.isLoading ? <div className="flex items-center gap-3 rounded-xl border bg-white p-5 text-sm text-slate-600"><span className="h-5 w-5 animate-spin rounded-full border-2 border-orange-500 border-t-transparent" /> {c.checking}</div> : invalidItems.length > 0 ? <Card className="border-amber-200 bg-amber-50 shadow-none"><CardHeader><CardTitle className="flex items-center gap-2 text-amber-950"><AlertTriangle className="h-5 w-5" /> {c.fixBefore}</CardTitle></CardHeader><CardContent className="space-y-4 text-sm leading-6 text-amber-950"><p>{c.invalidLine}</p><ul className="space-y-2">{invalidItems.map(({ item, reason }) => <li key={`${item.productId}-${item.variantId ?? "base"}-${JSON.stringify(item.options)}`} className="rounded-lg border border-amber-200 bg-white px-3 py-2"><strong>{item.productName}{item.variantLabel ? ` — ${item.variantLabel}` : ""}</strong> — {reason}</li>)}</ul><Button onClick={() => setLocation("/panier")} className="bg-amber-700 text-white hover:bg-amber-800"><ArrowLeft className="mr-2 h-4 w-4" /> {c.backCart}</Button></CardContent></Card> : <div className="grid gap-8 lg:grid-cols-[1.05fr_0.95fr]"><section className="space-y-5"><Card className="border-emerald-200 bg-white shadow-none"><CardHeader><CardTitle className="flex items-center gap-2 text-xl"><PackageCheck className="h-5 w-5 text-emerald-600" /> {c.verifiedDelivery}: {countryLabel}</CardTitle></CardHeader><CardContent className="space-y-4 text-sm leading-6 text-slate-600"><p>{shippingPolicyQuery.data?.mode === "flat_rate" ? `${c.shipping} : ${shipping > 0 ? formatChargedPrice(shipping, locale) : commerceT(locale, "deliveryIncluded")}` : c.verifiedText}</p>{shippingPolicyQuery.data?.deliveryLeadTime && <p className="rounded-lg border border-sky-100 bg-sky-50 px-3 py-2 text-xs text-sky-950"><Truck className="mr-1 inline h-4 w-4" /><strong>Délai annoncé :</strong> {shippingPolicyQuery.data.deliveryLeadTime}</p>}{shippingPolicyQuery.data?.returnsSummary && <p className="rounded-lg border border-violet-100 bg-violet-50 px-3 py-2 text-xs text-violet-950"><strong>Retours :</strong> {shippingPolicyQuery.data.returnsSummary}</p>}<div className="space-y-3">{items.map(({ item, deliveryProfile }) => <div key={`${item.productId}-${item.variantId ?? "base"}-${JSON.stringify(item.options)}`} className="rounded-xl border border-[#eadfd2] bg-[#fffaf5] p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-semibold text-slate-900">{item.productName}{item.variantLabel ? ` — ${item.variantLabel}` : ""} × {item.quantity}</p><p className="mt-1 text-xs text-slate-600">{shippingPolicyQuery.data?.mode === "flat_rate" ? c.shipping : commerceT(locale, "deliveryIncluded")}{deliveryProfile?.minDeliveryDays ? ` · ${commerceT(locale, "deliveryEstimate", { min: deliveryProfile.minDeliveryDays, range: deliveryProfile.maxDeliveryDays && deliveryProfile.maxDeliveryDays !== deliveryProfile.minDeliveryDays ? `–${deliveryProfile.maxDeliveryDays}` : "" })}` : ""}</p></div><CheckCircle2 className="h-5 w-5 text-emerald-600" /></div></div>)}</div></CardContent></Card><Card className={checkoutPaymentAvailable ? "border-emerald-200 bg-emerald-50/60 shadow-none" : "border-orange-200 bg-orange-50/60 shadow-none"}><CardContent className="p-5 text-sm leading-6 text-slate-700"><strong className="text-slate-950">{paymentEnabled ? `Paiement Stripe Connect ${paymentModeLabel} disponible` : cashOnDeliveryAvailable ? "Paiement à la livraison disponible en Algérie" : locale === "fr" ? "Paiement en ligne non activé" : c.noPayment}</strong><br />{paymentEnabled ? paymentModeDescription : cashOnDeliveryAvailable ? "Réglez au moment de la livraison. La boutique confirme l’encaissement manuellement après la remise." : checkoutPaymentNotice}{paymentEnabled ? <p className="mt-3 rounded-lg border border-emerald-200 bg-white/80 px-3 py-2 text-xs leading-5 text-emerald-950"><strong>Stock réservé temporairement :</strong> à l’ouverture de Stripe, les articles sont réservés environ 30 minutes et sont automatiquement libérés si le paiement n’aboutit pas.</p> : cashOnDeliveryAvailable ? <p className="mt-3 rounded-lg border border-emerald-200 bg-white/80 px-3 py-2 text-xs leading-5 text-emerald-950"><strong>Commande préparée :</strong> le stock est réservé lorsque la commande à la livraison est confirmée ; il est libéré si le propriétaire l’annule avant expédition.</p> : null}</CardContent></Card></section><aside><Card className="border-orange-200 bg-white shadow-none lg:sticky lg:top-24"><CardHeader><CardTitle>{c.summary}: {countryLabel}</CardTitle></CardHeader><CardContent className="space-y-4"><div className="space-y-3 border-b border-[#eadfd2] pb-4">{items.map(({ item, unitPrice }) => <div key={`${item.productId}-${item.variantId ?? "base"}-${JSON.stringify(item.options)}`} className="flex items-center gap-3 text-sm"><div className="h-12 w-12 shrink-0 overflow-hidden rounded-lg bg-[#f2eee9]">{item.imageUrl && <img src={item.imageUrl} alt="" className="h-full w-full object-cover" />}</div><span className="min-w-0 flex-1 truncate text-slate-600">{item.productName}{item.variantLabel ? ` · ${item.variantLabel}` : ""} × {item.quantity}</span><span className="font-medium text-slate-900">{formatPrice(unitPrice * item.quantity, locale)}</span></div>)}</div><div className="space-y-2 text-sm"><div className="flex justify-between"><span className="text-slate-600">{c.subtotal}</span><span>{formatChargedPrice(subtotal, locale)}</span></div><div className="flex justify-between"><span className="text-slate-600">{c.shipping}</span><span className={shipping > 0 ? "text-slate-900" : "text-emerald-700"}>{shipping > 0 ? formatChargedPrice(shipping, locale) : commerceT(locale, "deliveryIncluded")}</span></div>{taxDisclosureQuery.data?.configured && <div className="rounded-lg border border-violet-100 bg-violet-50 px-3 py-2 text-xs leading-5 text-violet-950"><strong>Fiscalité :</strong> {taxDisclosureQuery.data.notice}</div>}{discount > 0 && <div className="flex justify-between text-emerald-700"><span>Réduction ({appliedPromo?.code})</span><span>−{formatChargedPrice(discount, locale)}</span></div>}</div><div className="space-y-2"><p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Code promo</p>{appliedPromo ? <div className="flex items-center justify-between rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm" data-testid="checkout-applied-promo"><span className="flex items-center gap-2 font-medium text-emerald-800"><Ticket className="h-4 w-4" /> {appliedPromo.code}</span><button type="button" onClick={() => { setAppliedPromo(null); setPromoInput(""); }} className="text-emerald-700 hover:text-emerald-900" data-testid="checkout-remove-promo"><X className="h-4 w-4" /></button></div> : <div className="flex gap-2"><Input value={promoInput} onChange={e => setPromoInput(e.target.value.toUpperCase())} placeholder="Ex : BIENVENUE" className="h-10" data-testid="checkout-promo-input" /><Button type="button" variant="outline" className="h-10 border-[#d9cbbc]" disabled={!promoInput.trim() || validatePromo.isPending} onClick={() => validatePromo.mutate({ code: promoInput.trim(), orderAmount: subtotalChf })} data-testid="checkout-apply-promo">{validatePromo.isPending ? "…" : "Appliquer"}</Button></div>}</div><div className="flex justify-between border-t border-[#eadfd2] pt-4 text-lg font-bold"><span>{c.estimatedTotal}</span><span className="text-orange-600">{formatChargedPrice(estimatedTotal, locale)}</span></div><div className="rounded-lg border border-sky-100 bg-sky-50 p-3 text-xs leading-5 text-sky-900"><Truck className="mr-1 inline h-4 w-4" /> {c.reviewShipping}</div>{checkoutPaymentAvailable && !checkoutLegalReady && <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-950" data-testid="checkout-legal-blocker"><strong>Commande momentanément indisponible :</strong> l’exploitant doit compléter {legalReadinessQuery.data?.missing.join(" · ") || "les informations légales et de livraison"} avant l’ouverture des paiements.</div>}{checkoutPaymentAvailable && checkoutLegalReady && <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs leading-5 text-slate-700"><input type="checkbox" checked={legalAccepted} onChange={event => setLegalAccepted(event.target.checked)} className="mt-0.5 h-4 w-4 shrink-0 rounded border-slate-400 accent-emerald-700" data-testid="checkout-legal-acceptance" /><span>J’ai lu et j’accepte les <Link href="/conditions-generales" className="font-semibold underline underline-offset-2">conditions générales</Link>, les <Link href="/livraison-retours" className="font-semibold underline underline-offset-2">modalités de livraison et de retours</Link> ainsi que la <Link href="/confidentialite" className="font-semibold underline underline-offset-2">politique de confidentialité</Link>. Une version de ces informations sera associée à ma commande.</span></label>}{cashOnDeliveryAvailable && <AlgeriaCashOnDeliveryCheckout available={cashOnDeliveryAvailable} legalReady={checkoutLegalReady} legalAccepted={legalAccepted} promoCode={appliedPromo?.code} items={items.map(({ item }) => ({ productId: item.productId, quantity: item.quantity, selectedOptions: item.options, variantId: item.variantId }))} onDeliveryQuoteChange={handleCashOnDeliveryQuote} onCreated={() => { clearCart(); setLocation("/commandes"); }} />}
+              {paymentEnabled && <Button type="button" disabled={!checkoutLegalReady || !legalAccepted || stripeConnectCheckout.isPending} onClick={() => stripeConnectCheckout.mutate({ countryCode, promoCode: appliedPromo?.code, legalAcceptanceVersion: CHECKOUT_LEGAL_VERSION, legalAccepted: true, items: items.map(({ item }) => ({ productId: item.productId, quantity: item.quantity, selectedOptions: item.options, variantId: item.variantId })) })} className={paymentEnabled ? "h-12 w-full bg-emerald-700 text-base font-semibold text-white hover:bg-emerald-800" : "h-12 w-full bg-slate-400 text-base font-semibold text-white disabled:opacity-100"}><LockKeyhole className="mr-2 h-4 w-4" /> {stripeConnectCheckout.isPending ? "Redirection Stripe…" : paymentEnabled ? `Payer avec Stripe ${paymentModeLabel}` : locale === "fr" ? "Paiement en ligne non activé" : c.noPayment}</Button>}<Button type="button" variant="outline" className="w-full border-[#d9cbbc]" onClick={() => setLocation("/panier")}><ArrowLeft className="mr-2 h-4 w-4" /> {c.backCart}</Button><p className="flex items-center justify-center gap-1 text-center text-xs text-slate-500"><LockKeyhole className="h-3.5 w-3.5" /> {paymentEnabled ? paymentMode === "live" ? "Paiement sécurisé traité par Stripe pour cette boutique." : "Environnement Stripe Test : utilisez uniquement des moyens de paiement de test." : cashOnDeliveryAvailable ? "Paiement à la livraison sélectionné pour l’Algérie." : commerceT(locale, "noPaymentNow")}</p></CardContent></Card></aside></div>}</div></main><Footer /></div>;
+}

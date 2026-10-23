@@ -1,0 +1,388 @@
+import { Link } from "wouter";
+import { ArrowRight, ArrowUpRight, Check, ChevronRight, Quote, Sparkles, Star } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { useStorePrice } from "@/hooks/useStorePrice";
+import Header from "@/components/Header";
+import Footer from "@/components/Footer";
+import HeroBanner from "@/components/HeroBanner";
+import { trpc } from "@/lib/trpc";
+import { useDesignProfile } from "@/hooks/useDesignProfile";
+import { useDeliveryCountry } from "@/contexts/DeliveryCountryContext";
+import { useLocale } from "@/contexts/LocaleContext";
+import { getDiscoveryTiles, getPublicCopy, interpolatePublicCopy } from "@/lib/publicCopy";
+import { t } from "@/lib/i18n";
+import { getLocalizedCountryName } from "@/lib/countryLocale";
+import { getLocalizedCategoryPresentation } from "@/lib/categoryPresentation";
+import { isProductVisibleForStorefront } from "@shared/storefrontProductVisibility";
+import { getLimitedStorefrontCopy } from "@/lib/limitedStorefrontCopy";
+
+const optimizedBuiltInImageUrls: Record<string, string> = {
+  "/assets/home-lifestyle-top.jpg": "/assets/home-lifestyle-top.webp",
+  "/assets/home-editorial-divider.jpg": "/assets/home-editorial-divider.webp",
+};
+
+function getOptimizedHomeImageUrl(url: string) {
+  return optimizedBuiltInImageUrls[url] || url;
+}
+
+const responsiveHomeImageSources: Record<string, string> = {
+  "/assets/home-lifestyle-top.webp": "/assets/home-lifestyle-top-640.webp 640w, /assets/home-lifestyle-top.webp 1920w",
+  "/assets/category-mode.webp": "/assets/category-mode-sm.webp 480w, /assets/category-mode.webp 960w",
+  "/assets/category-beaute.webp": "/assets/category-beaute-sm.webp 480w, /assets/category-beaute.webp 960w",
+  "/assets/category-maison.webp": "/assets/category-maison-sm.webp 480w, /assets/category-maison.webp 960w",
+  "/assets/category-sport.webp": "/assets/category-sport-sm.webp 480w, /assets/category-sport.webp 960w",
+  "/assets/category-high-tech.webp": "/assets/category-high-tech-sm.webp 480w, /assets/category-high-tech.webp 960w",
+  "/assets/category-auto.webp": "/assets/category-auto-sm.webp 480w, /assets/category-auto.webp 960w",
+};
+
+const categoryAccents = [
+  "from-orange-100 via-amber-50 to-white",
+  "from-sky-100 via-blue-50 to-white",
+  "from-rose-100 via-pink-50 to-white",
+  "from-emerald-100 via-teal-50 to-white",
+  "from-violet-100 via-purple-50 to-white",
+];
+
+const discoveryTileMeta = [
+  { image: "/assets/category-mode.webp", href: "/categorie/mode" },
+  { image: "/assets/category-beaute.webp", href: "/categorie/beaute-bien-etre" },
+  { image: "/assets/category-maison.webp", href: "/categorie/maison-organisation" },
+  { image: "/assets/category-sport.webp", href: "/categorie/sport-fitness" },
+  { image: "/assets/category-high-tech.webp", href: "/categorie/high-tech-gadgets" },
+  { image: "/assets/category-auto.webp", href: "/categorie/auto-accessoires" },
+];
+
+export default function Home() {
+  const { locale } = useLocale();
+  const { formatStorePrice: formatPrice } = useStorePrice();
+  const { profile, palette, isLoading: designProfileLoading } = useDesignProfile(locale);
+  const generatedCopy = getPublicCopy(locale);
+  const useManagedPublicTranslation = locale === "fr" || profile.contentTranslationReady === true;
+  const copy = {
+    ...generatedCopy,
+    highlight: useManagedPublicTranslation ? { ...generatedCopy.highlight, eyebrow: profile.highlightEyebrow, title: profile.highlightTitle, text: profile.highlightText } : generatedCopy.highlight,
+    story: useManagedPublicTranslation ? {
+      ...generatedCopy.story,
+      eyebrow: profile.storyEyebrow,
+      title: profile.storyTitle,
+      text: profile.storyText,
+      followup: profile.storyFollowup,
+      points: profile.storyPoints,
+      cta: profile.storyCtaLabel,
+      visualEyebrow: profile.storyVisualEyebrow,
+      visualTitle: profile.storyVisualTitle,
+      promiseEyebrow: profile.storyPromiseEyebrow,
+      promise: profile.storyPromise,
+    } : generatedCopy.story,
+    editorial: useManagedPublicTranslation ? { ...generatedCopy.editorial, eyebrow: profile.editorialEyebrow, title: profile.editorialTitle } : generatedCopy.editorial,
+    reassurance: useManagedPublicTranslation ? profile.reassuranceItems : generatedCopy.reassurance,
+    discovery: useManagedPublicTranslation ? { ...generatedCopy.discovery, eyebrow: profile.discoveryEyebrow, title: profile.discoveryTitle, text: profile.discoveryText, allShop: profile.discoveryAllShopLabel, browseShop: profile.discoveryBrowseShopLabel } : generatedCopy.discovery,
+    testimonials: useManagedPublicTranslation ? { ...generatedCopy.testimonials, eyebrow: profile.testimonialsEyebrow, title: profile.testimonialsTitle, text: profile.testimonialsText, cta: profile.testimonialsCtaLabel } : generatedCopy.testimonials,
+    closing: useManagedPublicTranslation ? { ...generatedCopy.closing, eyebrow: profile.closingEyebrow, title: profile.closingTitle, text: profile.closingText, shopCta: profile.closingShopCtaLabel, contactCta: profile.closingContactCtaLabel, chfText: profile.closingVisualText } : generatedCopy.closing,
+  };
+  const discoveryTiles = getDiscoveryTiles(locale);
+  const featuredProductsQuery = trpc.products.getFeatured.useQuery(locale, { placeholderData: (prev) => prev });
+  const catalogProductsQuery = trpc.products.getAll.useQuery(locale, { placeholderData: (prev) => prev });
+  const categoriesQuery = trpc.categories.getAll.useQuery(locale, { placeholderData: (prev) => prev });
+  const storeAvailability = trpc.storefront.getAvailability.useQuery(undefined, { retry: false, refetchOnWindowFocus: false });
+  const marketSettings = trpc.storefront.getMarketSettings.useQuery(undefined, { retry: false, refetchOnWindowFocus: false });
+  const activeBannersQuery = trpc.content.getActiveBanners.useQuery(locale, { retry: false, refetchOnWindowFocus: false });
+  const { countryCode } = useDeliveryCountry();
+  const countryLabel = getLocalizedCountryName(countryCode, locale);
+  const highlightImageUrl = getOptimizedHomeImageUrl(profile.highlightImageUrl);
+  const storyImageUrl = getOptimizedHomeImageUrl(profile.storyImageUrl);
+  const editorialImageUrl = getOptimizedHomeImageUrl(profile.editorialImageUrl);
+  const closingVisualValue = profile.closingVisualValue.trim();
+  const usesGlamourNoir = profile.headerLayout === "glamour";
+  const usesMarketStorefront = profile.headerLayout === "market";
+  const visualAccent = usesGlamourNoir ? palette.accent : palette.primary;
+  const closingVisualFontFamilies = {
+    inherit: undefined,
+    editorial: "var(--mazigho-heading-font)",
+    modern: "Arial, Helvetica, sans-serif",
+    classic: "Georgia, 'Times New Roman', serif",
+  } as const;
+
+  const isClientStore = Boolean(storeAvailability.data && !storeAvailability.data.isPlatformStore);
+  const limitedShowcase = Boolean(storeAvailability.data?.publicStorefront && storeAvailability.data.commerceEnabled === false);
+  const hasSingleActiveMarket = marketSettings.data?.activeCountries.length === 1;
+  const limitedCopy = getLimitedStorefrontCopy(locale);
+  const catalogProducts = (catalogProductsQuery.data || []).filter(product => isProductVisibleForStorefront(product.deliveryProfiles, countryCode, isClientStore, Boolean(product.isManualProduct)));
+  const highlightedProducts = (featuredProductsQuery.data || []).filter(product => isProductVisibleForStorefront(product.deliveryProfiles, countryCode, isClientStore, Boolean(product.isManualProduct)));
+  const featuredProducts = highlightedProducts.length ? highlightedProducts : catalogProducts.slice(0, 4);
+  const platformDiscoveryTiles = discoveryTileMeta.map((tile, index) => {
+    const slug = tile.href.split("/").pop();
+    const sourceCategory = categoriesQuery.data?.find(item => item.slug === slug);
+    const category = sourceCategory ? getLocalizedCategoryPresentation(locale, sourceCategory) : undefined;
+    const fallback = discoveryTiles[index];
+    return { ...tile, title: category?.name || fallback?.title || t(locale, "discover"), description: category?.description || fallback?.description || "", accent: categoryAccents[index % categoryAccents.length] };
+  });
+  const storeDiscoveryTiles = (categoriesQuery.data || []).slice(0, 12).map((sourceCategory, index) => {
+    const category = getLocalizedCategoryPresentation(locale, sourceCategory);
+    return {
+      href: `/categorie/${sourceCategory.slug}`,
+      image: sourceCategory.imageUrl || "",
+      title: category.name || sourceCategory.name,
+      description: category.description || sourceCategory.description || "",
+      accent: categoryAccents[index % categoryAccents.length],
+    };
+  });
+  const localizedDiscoveryTiles = isClientStore ? storeDiscoveryTiles : platformDiscoveryTiles;
+
+  const orderedKeys = profile.homeOrder?.length ? profile.homeOrder : ["discovery", "story", "testimonials", "editorial", "featured"];
+  const orderIndex = (key: string) => { const index = orderedKeys.indexOf(key); return index === -1 ? 90 : index; };
+
+  // Never reveal the platform template while a client storefront is still
+  // resolving its own identity and carousel. A neutral, size-stable shell is
+  // preferable to showing MAZIGHO content for a fraction of a second.
+  const initialStorefrontLoading = designProfileLoading || storeAvailability.isLoading || activeBannersQuery.isLoading;
+  if (initialStorefrontLoading) {
+    return <div className="min-h-screen bg-slate-50" aria-busy="true" aria-label="Chargement de la boutique">
+      <div className="h-[104px] border-b border-slate-100 bg-white" />
+      <div className="h-[520px] animate-pulse bg-slate-200/80 md:h-[560px] lg:h-[640px]" />
+      <div className="container grid gap-5 py-8 md:grid-cols-3 md:py-12"><div className="h-36 rounded-3xl bg-slate-100" /><div className="h-36 rounded-3xl bg-slate-100" /><div className="h-36 rounded-3xl bg-slate-100" /></div>
+    </div>;
+  }
+
+  return (
+    <div className={`min-h-screen ${usesGlamourNoir ? "text-white" : "text-slate-900"}`} style={{ backgroundColor: palette.soft }}>
+      <Header />
+
+      <main>
+        <HeroBanner allowPlatformFallback={!isClientStore} />
+
+        <div className="flex flex-col">
+        <section style={{ order: orderIndex("highlight") }} className="container py-8 md:py-12">
+          <div className="relative min-h-[230px] overflow-hidden rounded-[1.75rem] bg-slate-950 md:min-h-[300px]">
+            <img src={highlightImageUrl} alt={copy.highlight.title} width={1600} height={900} loading="lazy" decoding="async" className="absolute inset-0 h-full w-full object-cover" />
+            <div className="absolute inset-0 bg-gradient-to-r from-slate-950/80 via-slate-950/35 to-transparent" />
+            <div className="relative flex min-h-[230px] items-center px-7 py-8 text-white md:min-h-[300px] md:px-12">
+              <div className="max-w-md">
+                <p className="mb-3 text-xs font-bold uppercase tracking-[0.28em]" style={{ color: visualAccent }}>{copy.highlight.eyebrow}</p>
+                <h2 className="text-2xl font-semibold leading-tight md:text-4xl">{copy.highlight.title}</h2>
+                <p className="mt-3 text-sm leading-6 text-white/80 md:text-base">{copy.highlight.text}</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {profile.showReassurance && (
+        <section style={{ order: orderIndex("reassurance") }} className={usesGlamourNoir ? "border-y border-white/10 bg-[#1a1921]" : "border-y border-[#eadfd2] bg-white/80"}>
+          <div className="container grid gap-0 md:grid-cols-3">
+            {copy.reassurance.slice(0, 3).map((item, index) => {
+              const icon = useManagedPublicTranslation ? profile.reassuranceItems[index]?.icon : ["sparkles", "check", "arrow"][index];
+              const iconStyle = usesGlamourNoir ? "bg-white/10 text-[var(--mazigho-accent)]" : index === 0 ? "bg-[var(--mazigho-soft)] text-[var(--mazigho-accent)]" : index === 1 ? "bg-sky-100 text-sky-700" : "bg-emerald-100 text-emerald-700";
+              return <div key={`${item.title}-${index}`} className={`flex items-center gap-4 py-5 ${index < 2 ? usesGlamourNoir ? "border-b border-white/10 md:border-b-0 md:border-r" : "border-b border-[#eadfd2] md:border-b-0 md:border-r" : ""} ${index === 0 ? "md:pr-8" : index === 1 ? "md:px-8" : "md:pl-8"}`}>
+                <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full ${iconStyle}`}>
+                  {icon === "check" ? <Check className="h-5 w-5" /> : icon === "arrow" ? <ArrowRight className="h-5 w-5" /> : <Sparkles className="h-5 w-5" />}
+                </div>
+                <div><p className={`text-sm font-semibold ${usesGlamourNoir ? "text-white" : "text-slate-900"}`}>{item.title}</p><p className={`mt-1 text-xs ${usesGlamourNoir ? "text-white/60" : "text-slate-500"}`}>{item.text}</p></div>
+              </div>;
+            })}
+          </div>
+        </section>
+        )}
+
+        {profile.showDiscovery && (
+        <section style={{ order: orderIndex("discovery") }} className={usesGlamourNoir ? "bg-[#15141a] py-16 md:py-24" : usesMarketStorefront ? "bg-white py-10 md:py-14" : "bg-white py-16 md:py-24"}>
+          <div className="container">
+            <div className={`flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between ${usesMarketStorefront ? "mb-7" : "mb-10"}`}>
+              <div className="max-w-2xl">
+                <p className="mb-3 text-xs font-bold uppercase tracking-[0.28em]" style={{ color: visualAccent }}>{copy.discovery.eyebrow}</p>
+                <h2 className={`text-3xl font-semibold tracking-tight md:text-4xl ${usesGlamourNoir ? "text-white" : "text-slate-950"}`}>{copy.discovery.title}</h2>
+                <p className={`mt-3 text-sm leading-6 md:text-base ${usesGlamourNoir ? "text-white/65" : "text-slate-600"}`}>{copy.discovery.text}</p>
+              </div>
+              {copy.discovery.allShop && profile.discoveryAllShopUrl ? <a href={useManagedPublicTranslation ? profile.discoveryAllShopUrl : "/boutique"} className={`inline-flex items-center gap-2 text-sm font-semibold hover:text-[var(--mazigho-accent)] ${usesGlamourNoir ? "text-white" : "text-slate-800"}`}>{copy.discovery.allShop} <ArrowUpRight className="h-4 w-4" /></a> : null}
+            </div>
+            {localizedDiscoveryTiles.length > 0 ? <div className={`grid gap-4 sm:grid-cols-2 ${usesMarketStorefront ? "lg:grid-cols-5" : "lg:grid-cols-3"}`} data-storefront-discovery={usesMarketStorefront ? "market" : "standard"}>
+              {localizedDiscoveryTiles.map(tile => (
+                <Link key={tile.href} href={tile.href} className={`group overflow-hidden border transition-all duration-200 hover:-translate-y-1 hover:border-[var(--mazigho-accent)] hover:shadow-xl ${usesMarketStorefront ? "relative min-h-[255px] rounded-xl border-slate-200 bg-slate-950" : `rounded-2xl ${usesGlamourNoir ? "border-white/10 bg-[#22212a]" : "border-[#e5e1d4] bg-[var(--mazigho-soft)]"}`}`}>
+                  {usesMarketStorefront ? <><div className={`absolute inset-0 bg-gradient-to-br ${tile.accent}`}>{tile.image ? <img src={tile.image} srcSet={responsiveHomeImageSources[tile.image]} sizes="(max-width: 639px) 50vw, (max-width: 1023px) 33vw, 20vw" alt={tile.title} width={960} height={1200} loading="lazy" decoding="async" className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105" /> : <div className="grid h-full place-items-center"><Sparkles className="h-10 w-10 text-slate-500/50" aria-hidden="true" /></div>}</div><div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-slate-950/90 via-slate-950/35 to-transparent p-5 pt-14 text-white"><p className="text-base font-bold leading-tight">{tile.title}</p><p className="mt-1 line-clamp-2 text-xs leading-5 text-white/75">{tile.description}</p><span className="mt-3 inline-flex items-center gap-1 text-xs font-semibold" style={{ color: palette.accent }}>Voir le rayon <ChevronRight className="h-3.5 w-3.5" /></span></div></> : <><div className={`aspect-[16/10] overflow-hidden bg-gradient-to-br ${tile.accent}`}>{tile.image ? <img src={tile.image} srcSet={responsiveHomeImageSources[tile.image]} sizes="(max-width: 639px) 100vw, (max-width: 1023px) 50vw, 33vw" alt={tile.title} width={960} height={540} loading="lazy" decoding="async" className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105" /> : <div className="grid h-full place-items-center"><Sparkles className="h-10 w-10 text-slate-500/50" aria-hidden="true" /></div>}</div><div className="flex items-start justify-between gap-3 p-5"><div><h3 className={`text-lg font-semibold group-hover:text-[var(--mazigho-accent)] ${usesGlamourNoir ? "text-white" : "text-slate-900"}`}>{tile.title}</h3><p className={`mt-2 text-sm leading-6 ${usesGlamourNoir ? "text-white/60" : "text-slate-600"}`}>{tile.description}</p></div><ChevronRight className="mt-1 h-5 w-5 shrink-0" style={{ color: palette.accent }} /></div></>}
+                </Link>
+              ))}
+            </div> : <div className={`rounded-2xl border border-dashed px-6 py-10 text-center text-sm leading-6 ${usesGlamourNoir ? "border-white/20 bg-white/5 text-white/65" : "border-slate-300 bg-slate-50 text-slate-600"}`}>Ajoutez vos catégories dans le catalogue pour les présenter ici.</div>}
+            {copy.discovery.browseShop && profile.discoveryBrowseShopUrl ? <div className="mt-8 text-center"><Button asChild variant="outline" className={usesGlamourNoir ? "border-white/25 bg-white/5 text-white hover:border-[var(--mazigho-accent)] hover:bg-white/10 hover:text-white" : "border-[#d9cbbc] bg-white text-slate-800 hover:border-[var(--mazigho-accent)] hover:text-[var(--mazigho-primary)]"}><a href={useManagedPublicTranslation ? profile.discoveryBrowseShopUrl : "/boutique"}>{copy.discovery.browseShop} <ArrowRight className="ml-2 h-4 w-4" /></a></Button></div> : null}
+          </div>
+        </section>
+        )}
+
+        {profile.showStory && (
+        <section className="relative overflow-hidden py-16 md:py-24" style={{ backgroundColor: palette.soft, order: orderIndex("story") }}>
+          <div aria-hidden="true" className="absolute -left-24 top-12 h-64 w-64 rounded-full blur-3xl" style={{ backgroundColor: "color-mix(in srgb, var(--mazigho-primary) 24%, transparent)" }} />
+          <div aria-hidden="true" className="absolute -right-24 bottom-0 h-72 w-72 rounded-full blur-3xl" style={{ backgroundColor: "color-mix(in srgb, var(--mazigho-accent) 18%, transparent)" }} />
+          <div className="container relative grid items-center gap-12 lg:grid-cols-[1.04fr_0.96fr] lg:gap-20">
+            <div className="order-2 lg:order-1">
+              <div className={`inline-flex items-center gap-2 rounded-full border px-4 py-2 text-xs font-bold uppercase tracking-[0.2em] ${usesGlamourNoir ? "border-white/10 bg-white/5" : "bg-white/75"}`} style={{ borderColor: usesGlamourNoir ? undefined : "color-mix(in srgb, var(--mazigho-primary) 24%, white)", color: visualAccent }}><Sparkles className="h-3.5 w-3.5" /> {copy.story.eyebrow}</div>
+              <h2 className={`mt-5 max-w-xl text-4xl font-semibold leading-[1.04] tracking-tight md:text-6xl ${usesGlamourNoir ? "text-white" : "text-slate-950"}`}>{copy.story.title}</h2>
+              <p className={`mt-6 max-w-xl text-base leading-7 md:text-lg ${usesGlamourNoir ? "text-white/70" : "text-slate-600"}`}>{copy.story.text}</p>
+              <p className={`mt-4 max-w-xl text-base leading-7 ${usesGlamourNoir ? "text-white/70" : "text-slate-600"}`}>{copy.story.followup}</p>
+              <div className="mt-8 grid gap-3 sm:grid-cols-3">
+                {[copy.story.points[0], copy.story.points[1], copy.story.points[2]].map((point, index) => <div key={`${point}-${index}`} className={`rounded-2xl border p-4 shadow-sm ${usesGlamourNoir ? "border-white/10 bg-white/5" : "border-white/90 bg-white/80"}`}><p className="text-2xl font-semibold" style={{ color: palette.accent }}>{`0${index + 1}`}</p><p className={`mt-2 text-sm font-semibold ${usesGlamourNoir ? "text-white" : "text-slate-800"}`}>{point}</p></div>)}
+              </div>
+              {copy.story.cta && profile.storyCtaUrl ? <Button asChild className="text-white shadow-lg shadow-fuchsia-700/20 hover:brightness-95"><Link href={useManagedPublicTranslation ? profile.storyCtaUrl : "/boutique"} className="mt-8 inline-block" style={{ backgroundColor: palette.accent }}>{copy.story.cta} <ArrowRight className="ml-2 h-4 w-4" /></Link></Button> : null}
+            </div>
+            <div className="relative order-1 mx-auto w-full max-w-[570px] lg:order-2">
+              <div className={`relative min-h-[420px] overflow-hidden rounded-[2.25rem] border-[10px] bg-slate-900 shadow-2xl shadow-slate-900/15 md:min-h-[520px] ${usesGlamourNoir ? "border-[#24232b]" : "border-white"}`}><img src={storyImageUrl} srcSet={responsiveHomeImageSources[storyImageUrl]} sizes="(min-width: 1024px) 570px, 100vw" alt={copy.story.visualTitle || copy.story.title} width={1600} height={900} loading="lazy" decoding="async" className="absolute inset-0 h-full w-full object-cover" />{(copy.story.visualEyebrow || copy.story.visualTitle) ? <><div className="absolute inset-0 bg-gradient-to-t from-slate-950/80 via-slate-950/10 to-transparent" /><div className="absolute left-6 top-6 inline-flex items-center gap-2 rounded-full border border-white/25 bg-slate-950/45 px-4 py-2 text-xs font-bold uppercase tracking-[0.2em] text-white backdrop-blur-sm"><Sparkles className="h-3.5 w-3.5" style={{ color: palette.accent }} /> {copy.story.visualEyebrow}</div><div className="absolute bottom-7 left-7 right-7"><p className="text-xs font-bold uppercase tracking-[0.24em]" style={{ color: palette.accent }}>{copy.story.visualEyebrow}</p><p className="mt-2 max-w-sm text-xl font-semibold leading-tight text-white md:text-2xl">{copy.story.visualTitle}</p></div></> : null}</div>
+              <div className={`absolute -bottom-11 -left-3 rounded-2xl border px-5 py-4 shadow-xl md:-left-9 ${usesGlamourNoir ? "border-white/10 bg-[#22212a]" : "bg-white"}`} style={{ borderColor: usesGlamourNoir ? undefined : "color-mix(in srgb, var(--mazigho-primary) 18%, white)" }}><p className="text-xs font-bold uppercase tracking-[0.18em]" style={{ color: palette.accent }}>{copy.story.promiseEyebrow}</p><p className={`mt-1 text-sm font-semibold ${usesGlamourNoir ? "text-white" : "text-slate-800"}`}>{copy.story.promise}</p></div>
+              <div className="absolute -right-3 top-12 hidden rounded-2xl p-3 text-white shadow-lg md:flex" style={{ backgroundColor: palette.accent }}><ArrowUpRight className="h-5 w-5" /></div>
+            </div>
+          </div>
+        </section>
+        )}
+
+        {profile.showTestimonials && (
+        <section style={{ order: orderIndex("testimonials") }} className="bg-slate-950 py-16 text-white md:py-24">
+          <div className="container">
+            <div className="mx-auto mb-10 max-w-2xl text-center"><p className="mb-3 text-xs font-bold uppercase tracking-[0.28em]" style={{ color: "#F2C36B" }}>{copy.testimonials.eyebrow}</p><h2 className="text-3xl font-semibold tracking-tight md:text-4xl">{copy.testimonials.title}</h2></div>
+            <div className="mx-auto max-w-2xl rounded-2xl border border-white/10 bg-white/5 px-6 py-8 text-center"><Quote className="mx-auto h-7 w-7" style={{ color: "#F2C36B" }} aria-hidden="true" /><p className="mt-4 text-sm leading-6 text-slate-300 md:text-base">{copy.testimonials.text}</p></div>
+            {copy.testimonials.cta && profile.testimonialsCtaUrl ? <div className="mt-8 text-center"><Button asChild variant="outline" className="border-white/25 bg-transparent text-white hover:bg-white/10 hover:text-white"><a href={useManagedPublicTranslation ? profile.testimonialsCtaUrl : "/boutique"}>{copy.testimonials.cta} <ArrowRight className="ml-2 h-4 w-4" /></a></Button></div> : null}
+          </div>
+        </section>
+        )}
+
+        {profile.showEditorial && (
+        <section style={{ order: orderIndex("editorial") }} className="container py-4 md:py-8">
+          <div className="relative min-h-[180px] overflow-hidden rounded-[1.5rem] bg-[#c9b8a8]">
+            <img src={editorialImageUrl} alt={copy.editorial.title} width={1600} height={900} loading="lazy" decoding="async" className="absolute inset-0 h-full w-full object-cover" />
+            <div className="absolute inset-0 bg-gradient-to-r from-[#3a281f]/75 via-[#3a281f]/25 to-transparent" />
+            <div className="relative flex min-h-[180px] items-center px-7 py-8 text-white md:px-12">
+              <div className="max-w-sm">
+                <p className="text-xs font-bold uppercase tracking-[0.28em]" style={{ color: visualAccent }}>{copy.editorial.eyebrow}</p>
+                <p className="mt-3 text-xl font-semibold md:text-3xl">{copy.editorial.title}</p>
+              </div>
+            </div>
+          </div>
+        </section>
+        )}
+
+        {profile.showFeatured && (
+        <section style={{ order: orderIndex("featured"), backgroundColor: palette.soft }} className="py-16 md:py-24">
+          <div className="container">
+            <div className="mb-10 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                <p className="mb-3 text-xs font-bold uppercase tracking-[0.28em]" style={{ color: visualAccent }}>{limitedShowcase ? limitedCopy.homeEyebrow : copy.featured.eyebrow}</p>
+                <h2 className={`text-3xl font-semibold tracking-tight md:text-4xl ${usesGlamourNoir ? "text-white" : "text-slate-950"}`}>{limitedShowcase ? limitedCopy.homeTitle : copy.featured.title}</h2>
+                {(limitedShowcase || !hasSingleActiveMarket) && <p className={`mt-3 max-w-xl text-sm leading-6 md:text-base ${usesGlamourNoir ? "text-white/65" : "text-slate-600"}`}>{limitedShowcase ? limitedCopy.homeText : interpolatePublicCopy(copy.featured.text, { country: countryLabel })}</p>}
+              </div>
+              <Link href="/boutique" className={`inline-flex items-center gap-2 text-sm font-semibold hover:text-[var(--mazigho-accent)] ${usesGlamourNoir ? "text-white" : "text-slate-800"}`}>
+                {limitedShowcase ? limitedCopy.catalogueLink : copy.featured.catalogue} <ArrowRight className="h-4 w-4" />
+              </Link>
+            </div>
+
+            {!limitedShowcase && featuredProducts.length > 0 ? (
+              <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+                {featuredProducts.map((product) => {
+                  const imageUrl = product.images?.[0]?.imageUrl;
+                  const hasDiscount = Boolean(product.originalPrice && product.originalPrice > product.price);
+                  return (
+                    <Link key={product.id} href={`/produit/${product.slug}`}>
+                      <Card className={`group h-full overflow-hidden border shadow-none transition-all duration-200 hover:-translate-y-1 hover:shadow-xl ${usesGlamourNoir ? "border-white/10 bg-[#22212a]" : "border-[#e5d8cb] bg-white"}`}>
+                        <CardContent className="p-0">
+                          <div className="relative aspect-[4/3] overflow-hidden bg-[#f5f0ea]">
+                            {imageUrl ? (
+                              <img src={imageUrl} alt={product.name} width={720} height={720} loading="lazy" decoding="async" className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105" />
+                            ) : (
+                              <div className="flex h-full items-center justify-center text-5xl text-slate-300" aria-label={t(locale, "imageUnavailable")}>✦</div>
+                            )}
+                            {hasDiscount && <span className="absolute left-3 top-3 rounded-full px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-white" style={{ backgroundColor: palette.accent }}>{copy.featured.new}</span>}
+                          </div>
+                          <div className="space-y-3 p-5">
+                            <div className={`flex items-center gap-1 text-xs ${usesGlamourNoir ? "text-white/55" : "text-slate-500"}`}>
+                              <Star className="h-3.5 w-3.5" style={{ fill: palette.accent, color: palette.accent }} />
+                              <span>{(product as any).averageRating || copy.featured.new}</span>
+                            </div>
+                            <h3 className={`line-clamp-2 min-h-[3.5rem] text-base font-semibold leading-6 transition-colors group-hover:text-[var(--mazigho-accent)] ${usesGlamourNoir ? "text-white" : "text-slate-900"}`}>{product.name}</h3>
+                            <div className="flex items-baseline gap-2">
+                              <span className="text-lg font-bold" style={{ color: visualAccent }}>{formatPrice(product.price, locale)}</span>
+                              {hasDiscount && <span className="text-sm text-slate-400 line-through">{formatPrice(product.originalPrice!, locale)}</span>}
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    </Link>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className={`border border-dashed px-6 py-12 text-center text-sm leading-6 ${usesGlamourNoir ? "border-white/20 bg-white/5 text-white/65" : "border-[#d9cbbc] bg-white/70 text-slate-600"}`}>{limitedShowcase ? limitedCopy.productsText : interpolatePublicCopy(copy.featured.unavailable, { country: countryLabel })}</div>
+            )}
+          </div>
+        </section>
+        )}
+
+        {(profile.textBanners || []).filter(banner => banner.enabled).map(banner => {
+          const blockTheme = banner.theme || "primary";
+          const blockLayout = banner.layout || "banner";
+          const isDark = blockTheme === "dark";
+          const isLight = blockTheme === "light";
+          const isSoft = blockTheme === "soft";
+          const blockStyle = isDark ? { backgroundColor: "#0f172a" } : isLight ? { backgroundColor: "#ffffff" } : isSoft ? { backgroundColor: palette.soft } : { backgroundColor: palette.primary };
+          const textClass = isDark || blockTheme === "primary" ? "text-white" : "text-slate-950";
+          const mutedClass = isDark || blockTheme === "primary" ? "text-white/80" : "text-slate-600";
+          const hasImage = Boolean(banner.imageUrl);
+          const content = <div className={`relative ${hasImage && blockLayout === "banner" ? "z-10 max-w-2xl" : ""} ${textClass}`}>
+            {banner.eyebrow ? <p className={`text-xs font-bold uppercase tracking-[0.28em] ${mutedClass}`}>{banner.eyebrow}</p> : null}
+            <h2 className="mt-3 text-2xl font-semibold leading-tight md:text-4xl">{banner.title}</h2>
+            {banner.text ? <p className={`mt-3 max-w-xl text-sm leading-6 md:text-base ${mutedClass}`}>{banner.text}</p> : null}
+            {banner.buttonLabel && banner.buttonUrl ? <Button asChild className={`mt-6 ${isDark || blockTheme === "primary" ? "bg-white text-slate-900 hover:bg-white/90" : "text-white hover:brightness-95"}`} style={isDark || blockTheme === "primary" ? undefined : { backgroundColor: palette.primary }}><Link href={banner.buttonUrl}>{banner.buttonLabel}<ArrowRight className="ml-2 h-4 w-4" /></Link></Button> : null}
+          </div>;
+          if (blockLayout === "roundGallery") {
+            const galleryItems = (banner.galleryItems || []).slice(0, 6);
+            return <section key={`text-${banner.id}`} style={{ order: orderIndex(`text:${banner.id}`), backgroundColor: palette.soft }} className="py-14 md:py-20">
+              <div className="container">
+                <div className="mx-auto max-w-5xl text-center">
+                  {banner.eyebrow ? <p className="text-xs font-bold uppercase tracking-[0.28em]" style={{ color: palette.primary }}>{banner.eyebrow}</p> : null}
+                  <h2 className="mt-3 text-3xl font-semibold tracking-tight text-slate-950 md:text-4xl">{banner.title}</h2>
+                  {banner.text ? <p className="mx-auto mt-4 max-w-4xl text-sm leading-7 text-slate-600 md:text-base">{banner.text}</p> : null}
+                  {banner.buttonLabel && banner.buttonUrl ? <Link href={banner.buttonUrl} className="mt-4 inline-flex items-center gap-1 text-sm font-semibold underline decoration-1 underline-offset-4 transition-opacity hover:opacity-70" style={{ color: palette.primary }}>{banner.buttonLabel}<ChevronRight className="h-4 w-4" /></Link> : null}
+                </div>
+                <div className="mx-auto mt-9 grid max-w-6xl grid-cols-2 gap-x-5 gap-y-8 sm:grid-cols-3 lg:grid-cols-6">
+                  {galleryItems.map(item => {
+                    const itemContent = <><img src={item.imageUrl} alt={item.imageAlt} width={400} height={400} loading="lazy" decoding="async" className="aspect-square w-full rounded-full object-cover shadow-sm transition-transform duration-300 group-hover:scale-105" /><p className="mt-3 text-center text-sm font-semibold leading-5" style={{ color: palette.primary }}>{item.label}</p></>;
+                    return item.href ? <Link key={item.id} href={item.href} className="group mx-auto block w-full max-w-[156px] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--mazigho-accent)] focus-visible:ring-offset-4">{itemContent}</Link> : <div key={item.id} className="mx-auto w-full max-w-[156px]">{itemContent}</div>;
+                  })}
+                </div>
+              </div>
+            </section>;
+          }
+          return <section key={`text-${banner.id}`} style={{ order: orderIndex(`text:${banner.id}`) }} className="container py-4 md:py-8">
+            {blockLayout === "split" ? <div className="grid overflow-hidden rounded-[1.5rem] border border-slate-200 md:grid-cols-2" style={blockStyle}><div className="flex items-center px-7 py-9 md:px-12 md:py-12">{content}</div><div className="relative min-h-[230px] bg-slate-100 md:min-h-full">{hasImage ? <img src={banner.imageUrl} alt={banner.imageAlt || ""} className="absolute inset-0 h-full w-full object-cover" loading="lazy" decoding="async" /> : <div className="absolute inset-0 bg-gradient-to-br from-[var(--mazigho-soft)] via-white to-slate-100" />}</div></div> : blockLayout === "framedSplit" ? <div className="rounded-[1.5rem] p-3 md:p-4" style={blockStyle}><div className="grid gap-6 md:grid-cols-[1.05fr_0.95fr] md:gap-8"><div className="flex items-center px-4 py-6 md:px-8 md:py-10">{content}</div><div className="relative min-h-[230px] overflow-hidden rounded-[1rem] border border-white/20 bg-slate-100 shadow-sm md:min-h-full">{hasImage ? <img src={banner.imageUrl} alt={banner.imageAlt || ""} className="absolute inset-0 h-full w-full object-cover" loading="lazy" decoding="async" /> : <div className="absolute inset-0 bg-gradient-to-br from-[var(--mazigho-soft)] via-white to-slate-100" />}</div></div></div> : blockLayout === "spotlight" ? <div className="relative overflow-hidden rounded-[1.5rem] border border-slate-200 px-7 py-8 md:px-12 md:py-12" style={blockStyle}>{hasImage ? <img src={banner.imageUrl} alt={banner.imageAlt || ""} className="absolute inset-0 h-full w-full object-cover opacity-15" loading="lazy" decoding="async" /> : null}<div aria-hidden="true" className="absolute -right-10 -top-12 h-52 w-52 rounded-full border-[26px] border-white/20" />{content}</div> : <div className="relative overflow-hidden rounded-[1.5rem] px-7 py-8 md:px-12 md:py-12" style={blockStyle}>{hasImage ? <><img src={banner.imageUrl} alt={banner.imageAlt || ""} className="absolute inset-0 h-full w-full object-cover" loading="lazy" decoding="async" /><div className="absolute inset-0 bg-slate-950/55" /></> : null}{content}</div>}
+          </section>;
+        })}
+        </div>
+
+        {profile.showClosing && (
+        <section className="py-16 md:py-24">
+          <div className="container">
+            <div className="grid gap-8 overflow-hidden rounded-[2rem] bg-slate-950 px-7 py-10 text-white md:grid-cols-[1.15fr_0.85fr] md:px-12 md:py-14">
+              <div className="flex flex-col justify-center">
+                <p className="mb-4 text-xs font-bold uppercase tracking-[0.28em]" style={{ color: "#F2C36B" }}>{copy.closing.eyebrow}</p>
+                <h2 className="max-w-xl text-3xl font-semibold leading-tight md:text-5xl">{copy.closing.title}</h2>
+                <p className="mt-5 max-w-lg text-sm leading-7 text-slate-300 md:text-base">{copy.closing.text}</p>
+                <div className="mt-8 flex flex-wrap gap-3">
+                  {copy.closing.shopCta && profile.closingShopCtaUrl ? <Button asChild className="text-white hover:brightness-95"><a href={useManagedPublicTranslation ? profile.closingShopCtaUrl : "/boutique"} style={{ backgroundColor: palette.accent }}>{copy.closing.shopCta} <ArrowRight className="ml-2 h-4 w-4" /></a></Button> : null}
+                  {copy.closing.contactCta && profile.closingContactCtaUrl ? <Button asChild variant="outline" className="border-slate-600 bg-transparent text-white hover:bg-white/10 hover:text-white"><a href={useManagedPublicTranslation ? profile.closingContactCtaUrl : "/contact"}>{copy.closing.contactCta}</a></Button> : null}
+                </div>
+              </div>
+              <div className="relative min-h-[250px] overflow-hidden rounded-[1.5rem] border border-white/10 bg-gradient-to-br from-orange-500/80 via-amber-300/30 to-sky-500/50">
+                {useManagedPublicTranslation && profile.closingImageUrl ? <><img src={profile.closingImageUrl} alt="" className="absolute inset-0 h-full w-full object-cover" /><div className="absolute inset-0 bg-slate-950/35" /></> : null}
+                <div className="absolute -right-16 -top-16 h-56 w-56 rounded-full border-[28px] border-white/15" />
+                <div className="absolute -bottom-20 -left-10 h-64 w-64 rounded-full border-[36px] border-orange-200/20" />
+                <div className="absolute inset-0 flex items-center justify-center p-8 text-center">
+                  <div>
+                    {closingVisualValue ? <p className="text-6xl font-semibold tracking-tight" style={{ color: profile.closingVisualColor, fontFamily: closingVisualFontFamilies[profile.closingVisualFont] }}>{closingVisualValue}</p> : null}
+                    {copy.closing.chfText ? <p className={closingVisualValue ? "mt-3 text-sm text-white/75" : "text-sm text-white/75"}>{copy.closing.chfText}</p> : null}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+        )}
+      </main>
+
+      <Footer />
+    </div>
+  );
+}

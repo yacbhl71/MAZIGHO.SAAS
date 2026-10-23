@@ -1,0 +1,1255 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const state = vi.hoisted(() => ({
+  membership: { role: "manager", status: "active" } as { role: string; status: string } | null,
+  variants: [{ id: 5, label: "Bleu · M", sku: "BLEU-M", imageUrl: "https://cdn.example.test/bleu-m.webp", priceAdjustmentCents: 250, stock: 3, status: "active", displayOrder: 0 }],
+  team: [{ membershipId: 9, role: "manager", status: "active", name: "Manager test", email: "manager@example.test", accountStatus: "active" }],
+  markets: { primaryLanguage: "fr", activeLanguages: ["fr", "en"], showLanguageSelector: true, primaryCountry: "CH", activeCountries: ["CH", "FR"], showCountrySelector: true },
+  commercialReadiness: { store: { displayName: "Boutique test", status: "active", primaryDomain: "boutique.test" }, summary: { completed: 9, total: 9, baseCommerciallyPrepared: true, paymentStatus: "not_activated" as const }, inventory: { totalProducts: 2, activeProducts: 2, sellableProducts: 2, productsWithoutImages: 0, productsWithoutStock: 0, activeVariants: 2, outOfStockVariants: 0 }, items: [] },
+  profile: { paletteId: "terracotta", customColorsEnabled: false, customPrimary: "#C2410C", customAccent: "#0F766E", customSoft: "#FFF7ED" } as Record<string, unknown>,
+  trackingResult: { success: true, statusChanged: false },
+  orderContact: null as null | { paymentMethod: string; userName: string; userEmail: string; trackingNumber: string | null },
+  bundles: [] as Array<{ id: string; name: string; description: string; productIds: number[]; promoCode: string | null; enabled: boolean }>,
+  dropshippingAccess: { enabled: true, source: "studio_grant" } as { enabled: boolean; source: "pro_plan" | "studio_grant" | "not_included" },
+}));
+
+vi.mock("./db", () => ({
+  getStoreMembershipForUser: vi.fn(async () => state.membership),
+  getOwnerStoreSwitcherOptionsForUser: vi.fn(async () => [
+    { id: 77, displayName: "Boutique test", primaryDomain: "boutique.test", status: "active", role: "owner" },
+    { id: 78, displayName: "Atelier de recette", primaryDomain: "atelier.test", status: "setup", role: "manager" },
+  ]),
+  getStoreTeamMembers: vi.fn(async () => state.team),
+  getStoreMarketSettings: vi.fn(async () => state.markets),
+  saveStoreMarketSettings: vi.fn(async (_storeId, input) => input),
+  getStoreMaintenanceMode: vi.fn(async () => ({ enabled: false, title: "Retour bientôt", message: "La boutique est en pause." })),
+  saveStoreMaintenanceMode: vi.fn(async (_storeId, input) => input),
+  getOwnerCustomDomainRequest: vi.fn(async () => ({ currentDomain: "boutique.test", supported: true, request: null })),
+  saveOwnerCustomDomainRequest: vi.fn(async (_storeId, domain) => ({ domain, requestedAt: "2026-09-25T10:00:00.000Z", guide: null })),
+  acknowledgeOwnerCustomDomainGuide: vi.fn(async () => ({ domain: "atelier-client.ch", requestedAt: "2026-09-25T10:00:00.000Z", guide: { providerLabel: "", records: [{ type: "A", host: "@", value: "76.76.21.21" }], note: "", preparedAt: "2026-09-25T11:00:00.000Z", clientAcknowledgedAt: "2026-09-25T12:00:00.000Z" } })),
+  getOwnerIntegrationRequests: vi.fn(async () => ({ requests: [{ id: "google_analytics", requestedAt: "2026-09-26T00:00:00.000Z" }] })),
+  saveOwnerIntegrationRequests: vi.fn(async (_storeId, ids) => ({ requests: ids.map((id: string) => ({ id, requestedAt: "2026-09-26T00:00:00.000Z" })) })),
+  getAllPromotions: vi.fn(async () => [{ id: 91, code: "ATELIER10", type: "percent", value: 10, minOrderAmount: null, maxUses: 20, active: 1, scope: "all", categoryId: null, perUserLimit: null, startsAt: null, expiresAt: null, redemptionCount: 0 }]),
+  createPromotion: vi.fn(async () => ({ success: true, id: 92 })),
+  updatePromotion: vi.fn(async () => ({ success: true })),
+  deletePromotion: vi.fn(async () => ({ success: true })),
+  getOwnerCampaignInsights: vi.fn(async () => [{ id: 47, name: "Atelier d’automne", message: "Une sélection créative", startsAt: new Date("2026-10-01T08:00:00.000Z"), endsAt: new Date("2026-10-05T18:00:00.000Z"), promoCode: "ATELIER10", showCountdown: 1, placement: "announcement", enabled: 1, redemptions: 2, discountCents: 500, measurement: "promo" }]),
+  createCampaign: vi.fn(async () => ({ success: true, id: 48 })),
+  updateCampaign: vi.fn(async () => ({ success: true })),
+  toggleCampaign: vi.fn(async () => ({ success: true })),
+  getOwnerProductBundles: vi.fn(async () => state.bundles),
+  saveOwnerProductBundles: vi.fn(async (_storeId, bundles) => { state.bundles = bundles; return bundles; }),
+  getOwnerSaasPlanAssignment: vi.fn(async () => ({ planId: "basic", planName: "Basic", features: ["brand_customization", "team_access"], status: "draft", assignedAt: "2026-09-26T00:00:00.000Z" })),
+  getStoreDropshippingAccess: vi.fn(async () => state.dropshippingAccess),
+  getStoreStripeConnectSetup: vi.fn(async (storeId) => ({ schemaReady: true, account: null, plan: { id: "basic", name: "BASIC", commissionRateBps: 250 }, paymentReadiness: { enabled: false, reason: "connect_account_missing" }, storeId })),
+  upsertStoreStripeConnectAccount: vi.fn(async input => input),
+  getOwnerSupportTickets: vi.fn(async () => ({ tickets: [] })),
+  createOwnerSupportTicket: vi.fn(async ({ storeId, ...input }) => ({ tickets: [{ id: "support123", ...input, storeId, status: "open", createdAt: "2026-09-26T00:00:00.000Z", updatedAt: "2026-09-26T00:00:00.000Z", operatorReply: "" }] })),
+  getOwnerCustomerRelations: vi.fn(async () => ({ reviews: [{ id: 9, rating: 5, comment: "Très bien", status: "pending", createdAt: new Date("2026-09-26T08:00:00.000Z"), productName: "Kit créatif", authorName: "Client" }], messages: [{ id: 12, name: "Client", email: "client@example.test", subject: "Question", message: "Pouvez-vous aider ?", status: "unread", createdAt: new Date("2026-09-26T08:00:00.000Z") }] })),
+  updateOwnerReviewModeration: vi.fn(async (input) => ({ id: input.reviewId, status: input.status })),
+  updateOwnerContactMessageStatus: vi.fn(async (input) => ({ id: input.messageId, status: input.status })),
+  getOwnerCsvExport: vi.fn(async (input) => ({ kind: input.kind, fileName: "boutique-test-catalogue-2026-09-26.csv", content: "\uFEFFNom\nKit", rowCount: 1, columns: ["Nom"] })),
+  recordAuditLog: vi.fn(async () => undefined),
+  getStoreTaxPolicies: vi.fn(async () => [{ countryCode: "CH", displayMode: "included", notice: "Prix affichés taxes comprises." }]),
+  saveStoreTaxPolicies: vi.fn(async (_storeId, input) => input),
+  getCheckoutTaxDisclosure: vi.fn(async (storeId, countryCode) => ({ configured: true, storeId, countryCode, displayMode: "included", notice: "Prix affichés taxes comprises." })),
+  getOwnerShippingReturnsSettings: vi.fn(async () => ({ mode: "included", freeShippingThresholdCents: 0, flatShippingRateCents: 0, servedCountries: ["CH"], deliveryLeadTime: "2 à 4 jours", returnsSummary: "Retours sous 14 jours.", returnRequestsEnabled: false })),
+  saveOwnerShippingReturnsSettings: vi.fn(async (_storeId, input) => input),
+  getOwnerCommercialReadiness: vi.fn(async () => state.commercialReadiness),
+  getOwnerPrivateCartSimulation: vi.fn(async (input) => ({ ...input, privateCartSimulation: true, persistedCart: false, paymentAvailable: false, orderCreated: false })),
+  getDesignProfile: vi.fn(async () => state.profile),
+  updateDesignProfile: vi.fn(async (input) => input),
+  getStorefrontThemeAccess: vi.fn(async () => ({ themeIds: ["coffee", "marketExpress", "gallerySignature", "studioFlux", "glamourNoir"], source: "selected" })),
+  isStorefrontThemeAllowedForStore: vi.fn(async (_storeId, themeId) => ["coffee", "marketExpress", "gallerySignature", "studioFlux", "glamourNoir"].includes(themeId)),
+  applyStorefrontThemeCategoryImages: vi.fn(async () => ({ updatedCategoryIds: [31, 32, 33] })),
+  importOwnerCatalogueProducts: vi.fn(async () => ({ imported: 2, updated: 1 })),
+  createProduct: vi.fn(async () => ({ id: 108 })),
+  updateProduct: vi.fn(async () => ({ success: true })),
+  getOwnerSalesSettlementOverview: vi.fn(async () => ({ buckets: [], recentSales: [] })),
+  getOwnerCommercialSnapshot: vi.fn(async () => ({ buckets: [], topProducts: [] })),
+  getOwnerTransactionalEmailTemplates: vi.fn(async () => [{ type: "order_confirmation", template: { subject: "Merci {{boutique}}", heading: "Confirmation", body: "Bonjour {{prenom}}", buttonLabel: "Suivre", enabled: true }, default: { subject: "Merci {{boutique}}", heading: "Confirmation", body: "Bonjour {{prenom}}", buttonLabel: "Suivre", enabled: true } }]),
+  saveOwnerTransactionalEmailTemplate: vi.fn(async () => ({ success: true })),
+  getOwnerOrderItemSummaries: vi.fn(async () => [{ id: 15, quantity: 2, productName: "Kit créatif", selectedOptions: [{ name: "Couleur", value: "Violet" }] }]),
+  getOrderTimeline: vi.fn(async () => [{ type: "created", label: "Commande créée", at: "2026-09-27T00:00:00.000Z" }]),
+  getOwnerOrderDeliveryDetails: vi.fn(async () => ({ available: true, orderId: 481, recipientName: "Cliente test", addressLines: ["Rue Exemple 4"], postalCode: "1000", city: "Lausanne", state: null, countryCode: "CH", phone: null, email: null, trackingNumber: null, addressIncomplete: false })),
+  getOwnerOrderDeliveryHandoverDetails: vi.fn(async () => ({ available: true, orderId: 481, recipientName: "Cliente test", addressLines: ["Rue Exemple 4"], postalCode: "1000", city: "Lausanne", state: null, countryCode: "CH", phone: null, email: null, trackingNumber: "CH481", addressIncomplete: false })),
+  recordOrderDecision: vi.fn(async (input) => ({ ...input, success: true, supplierOrderCreated: false, paymentRefunded: false })),
+  getAlgeriaCashOnDeliveryReadiness: vi.fn(async (storeId) => ({ storeId, enabled: false, enabledAt: null, eligibility: { eligible: true, marketEnabled: true, deliveryEnabled: true, wilayaDeliveryConfigured: true, dzdCurrencyConfigured: true, legalReady: true, missing: [] } })),
+  saveAlgeriaCashOnDeliverySettings: vi.fn(async (storeId, enabled) => ({ storeId, enabled, enabledAt: enabled ? "2026-09-28T00:00:00.000Z" : null, eligibility: { eligible: true, marketEnabled: true, deliveryEnabled: true, wilayaDeliveryConfigured: true, dzdCurrencyConfigured: true, legalReady: true, missing: [] } })),
+  getStoreCurrencyConfig: vi.fn(async () => ({ code: "CHF", rateBps: 10_000 })),
+  saveStoreCurrencyConfig: vi.fn(async (_storeId, input) => input),
+  getAlgeriaWilayaDeliverySettings: vi.fn(async () => ({ source: "custom", updatedAt: null, rates: [] })),
+  installAlgeriaWilayaDeliveryReference: vi.fn(async () => ({ source: "letshop_public_2023_02_07", updatedAt: null, rates: [] })),
+  saveAlgeriaWilayaDeliverySettings: vi.fn(async (_storeId, input) => input),
+  getAlgeriaOnlinePaymentPreparation: vi.fn(async (storeId) => ({ storeId, merchantEligibilityConfirmed: false, acquirerContractConfirmed: false, testAccessReceived: false, certificationCompleted: false, updatedAt: null, legalReady: true, status: { completed: 1, total: 5, readyForProviderActivation: false } })),
+  saveAlgeriaOnlinePaymentPreparation: vi.fn(async (storeId, input) => ({ storeId, ...input, updatedAt: "2026-09-28T00:00:00.000Z", legalReady: true, status: { completed: 2, total: 5, readyForProviderActivation: false } })),
+  confirmAlgeriaCashOnDeliveryCollection: vi.fn(async input => ({ ...input, success: true, alreadyCollected: false })),
+  updateOperationalOrderTracking: vi.fn(async (input) => ({ ...input, ...state.trackingResult })),
+  getOrderContactById: vi.fn(async () => state.orderContact),
+  prepareStoreTeamInvitation: vi.fn(async () => ({
+    userId: 15,
+    name: "Éditeur test",
+    email: "editeur@example.test",
+    role: "catalog_editor",
+    activation: { token: "one-time-token", expiresAt: new Date("2026-12-01T00:00:00.000Z") },
+  })),
+  setStoreTeamMemberStatus: vi.fn(async ({ membershipId, status }) => ({ membershipId, status })),
+  reissueStoreTeamInvitation: vi.fn(async ({ membershipId }) => ({
+    membershipId,
+    userId: 15,
+    name: "Éditeur test",
+    email: "editeur@example.test",
+    activation: { token: "replacement-token", expiresAt: new Date("2026-12-02T00:00:00.000Z") },
+  })),
+  getOwnerProductVariants: vi.fn(async () => state.variants),
+  getOwnerVariantStockOverview: vi.fn(async () => [{ productId: 41, productName: "T-shirt atelier", productStatus: "active", id: 5, label: "Bleu · M", sku: "BLEU-M", priceAdjustmentCents: 250, stock: 3, status: "active", displayOrder: 0 }]),
+  createOwnerProductVariant: vi.fn(async () => ({ id: 6 })),
+  createOwnerProductVariantMatrix: vi.fn(async () => ({ created: 2, skipped: 0 })),
+  updateOwnerProductVariant: vi.fn(async () => ({ success: true })),
+  deleteOwnerProductVariant: vi.fn(async () => ({ success: true })),
+  createCategory: vi.fn(async () => ({ id: 41 })),
+  updateCategory: vi.fn(async () => ({ success: true })),
+  deleteCategory: vi.fn(async () => ({ success: true })),
+  getAllBanners: vi.fn(async () => [{ id: 12, title: "Atelier", subtitle: "Une sélection créative", imageUrl: "/assets/banner.webp", linkUrl: "/boutique", active: 1, displayOrder: 0 }]),
+  createBanner: vi.fn(async () => ({ success: true, id: 13 })),
+  updateBanner: vi.fn(async () => ({ success: true })),
+  deleteBanner: vi.fn(async () => ({ success: true })),
+  markPublicContentTranslationsStale: vi.fn(async () => undefined),
+  getPublicContentTranslationOverview: vi.fn(async () => [{ contentType: "banner", contentId: 12, title: "Atelier", fields: ["title", "subtitle"], translations: [] }]),
+  getPublicContentTranslationSource: vi.fn(async () => ({ title: "Atelier", payload: { title: "Atelier", subtitle: "Une sélection créative" } })),
+  getPublicContentTranslation: vi.fn(async () => undefined),
+  savePublicContentTranslation: vi.fn(async input => ({ ...input, status: "ready", payload: input.payload })),
+  getProductTranslations: vi.fn(async () => [{ productId: 41, locale: "en", name: "Creative notebook", description: "A notebook", longDescription: "A notebook for ideas.", options: null, status: "ready", machineGenerated: 1 }]),
+}));
+
+vi.mock("./transactionalEmail", () => ({
+  getAccountInvitationLink: vi.fn((token: string) => `https://mazigho.test/activer-compte?token=${token}`),
+  sendStudioSupportTicketAlert: vi.fn(async () => ({ delivered: true, id: "support-alert-1" })),
+}));
+vi.mock("./emails", () => ({
+  sendOrderShippedEmail: vi.fn(async () => ({ delivered: true, id: "shipment-email-1" })),
+}));
+
+import * as db from "./db";
+import { sendStudioSupportTicketAlert } from "./transactionalEmail";
+import { sendOrderShippedEmail } from "./emails";
+import { appRouter } from "./routers";
+
+function callerFor(role: string = "user") {
+  return appRouter.createCaller({
+    user: { id: 7, role, name: "Manager test", email: "manager@example.test" },
+    store: { id: 77, slug: "boutique-test", displayName: "Boutique test", primaryDomain: "boutique.test", status: "active", isPlatformStore: 0 },
+  } as any);
+}
+
+describe("owner product variant routes", () => {
+  beforeEach(() => {
+    state.membership = { role: "manager", status: "active" };
+    state.profile = { paletteId: "terracotta", customColorsEnabled: false, customPrimary: "#C2410C", customAccent: "#0F766E", customSoft: "#FFF7ED" };
+    state.trackingResult = { success: true, statusChanged: false };
+    state.orderContact = null;
+    state.dropshippingAccess = { enabled: true, source: "studio_grant" };
+    delete process.env.MAZIGHO_ENABLE_STRIPE_LIVE_ORDER_EMAILS;
+    vi.clearAllMocks();
+  });
+
+  it("reads and writes variants only through the current resolved store", async () => {
+    const caller = callerFor();
+    await expect(caller.owner.getProductVariants({ productId: 41 })).resolves.toEqual(state.variants);
+    expect(db.getOwnerProductVariants).toHaveBeenCalledWith(41, 77);
+
+    await expect(caller.owner.createProductVariant({
+      productId: 41,
+      variant: { label: "Sauge · L", sku: "SAUGE-L", imageUrl: "https://cdn.example.test/sauge-l.webp", priceAdjustmentCents: 0, stock: 4, status: "active" },
+    })).resolves.toEqual({ id: 6 });
+    expect(db.createOwnerProductVariant).toHaveBeenCalledWith(41, expect.objectContaining({ label: "Sauge · L", imageUrl: "https://cdn.example.test/sauge-l.webp", stock: 4 }), 77);
+
+    await expect(caller.owner.createProductVariant({
+      productId: 41,
+      variant: { label: "URL non sûre", imageUrl: "http://unsafe.example/variant.webp", priceAdjustmentCents: 0, stock: 1, status: "active" },
+    })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("lists only the connected user’s active management boutiques for the switcher", async () => {
+    await expect(callerFor().owner.getStoreSwitcherOptions()).resolves.toEqual([
+      { id: 77, displayName: "Boutique test", primaryDomain: "boutique.test", status: "active", role: "owner" },
+      { id: 78, displayName: "Atelier de recette", primaryDomain: "atelier.test", status: "setup", role: "manager" },
+    ]);
+    expect(db.getOwnerStoreSwitcherOptionsForUser).toHaveBeenCalledWith(7);
+  });
+
+  it("reads the variant stock overview only through the current resolved store", async () => {
+    await expect(callerFor().owner.getVariantStockOverview()).resolves.toEqual([
+      { productId: 41, productName: "T-shirt atelier", productStatus: "active", id: 5, label: "Bleu · M", sku: "BLEU-M", priceAdjustmentCents: 250, stock: 3, status: "active", displayOrder: 0 },
+    ]);
+    expect(db.getOwnerVariantStockOverview).toHaveBeenCalledWith(77);
+
+    state.membership = { role: "catalog_editor", status: "active" };
+    await expect(callerFor().owner.getVariantStockOverview()).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("keeps custom-domain requests scoped to the store owner", async () => {
+    state.membership = { role: "owner", status: "active" };
+    const caller = callerFor();
+    await expect(caller.owner.getCustomDomainRequest()).resolves.toEqual({ currentDomain: "boutique.test", supported: true, request: null });
+    expect(db.getOwnerCustomDomainRequest).toHaveBeenCalledWith(77);
+
+    await expect(caller.owner.saveCustomDomainRequest({ domain: "atelier-client.ch" })).resolves.toEqual({ domain: "atelier-client.ch", requestedAt: "2026-09-25T10:00:00.000Z", guide: null });
+    expect(db.saveOwnerCustomDomainRequest).toHaveBeenCalledWith(77, "atelier-client.ch");
+
+    await expect(caller.owner.acknowledgeCustomDomainGuide()).resolves.toMatchObject({ domain: "atelier-client.ch", guide: { clientAcknowledgedAt: "2026-09-25T12:00:00.000Z" } });
+    expect(db.acknowledgeOwnerCustomDomainGuide).toHaveBeenCalledWith(77);
+
+    state.membership = { role: "manager", status: "active" };
+    await expect(callerFor().owner.saveCustomDomainRequest({ domain: "other-client.ch" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(callerFor().owner.acknowledgeCustomDomainGuide()).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("applies a storefront theme only for the resolved store owner", async () => {
+    await expect(callerFor().owner.applyStorefrontTheme({ themeId: "coffee" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    state.membership = { role: "owner", status: "active" };
+    await expect(callerFor().owner.applyStorefrontTheme({ themeId: "coffee" })).resolves.toMatchObject({
+      themeId: "coffee",
+      heroApplied: true,
+      categoryImageCount: 3,
+    });
+    expect(db.updateDesignProfile).toHaveBeenCalledWith(expect.objectContaining({
+      brandName: "Maison Café",
+      customPrimary: "#5A321E",
+      headerLayout: "inline",
+    }), 77);
+    expect(db.updateBanner).toHaveBeenCalledWith(12, expect.objectContaining({
+      title: "Faites de chaque tasse un vrai moment.",
+      active: 1,
+    }), 77);
+    expect(db.applyStorefrontThemeCategoryImages).toHaveBeenCalledWith(77, [
+      "/assets/themes/coffee-hero.webp",
+      "/assets/themes/coffee-hero.webp",
+      "/assets/themes/coffee-hero.webp",
+    ]);
+    expect(db.recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({
+      storeId: 77,
+      action: "owner.storefront.template.coffee.apply",
+    }));
+  });
+
+  it("applies both premium themes with their distinct navigation layouts", async () => {
+    state.membership = { role: "owner", status: "active" };
+    const caller = callerFor();
+
+    await expect(caller.owner.applyStorefrontTheme({ themeId: "gallerySignature" })).resolves.toMatchObject({
+      themeId: "gallerySignature",
+      heroApplied: true,
+      categoryImageCount: 3,
+    });
+    expect(db.updateDesignProfile).toHaveBeenLastCalledWith(expect.objectContaining({
+      brandName: "Galerie Signature",
+      headerLayout: "gallery",
+      customPrimary: "#142033",
+    }), 77);
+
+    await expect(caller.owner.applyStorefrontTheme({ themeId: "studioFlux" })).resolves.toMatchObject({
+      themeId: "studioFlux",
+      heroApplied: true,
+      categoryImageCount: 3,
+    });
+    expect(db.updateDesignProfile).toHaveBeenLastCalledWith(expect.objectContaining({
+      brandName: "Studio Flux",
+      headerLayout: "market",
+      customPrimary: "#183B73",
+      homeOrder: ["featured", "text:flux-drop", "discovery", "text:flux-service", "story", "editorial", "highlight", "reassurance"],
+    }), 77);
+
+    await expect(caller.owner.applyStorefrontTheme({ themeId: "glamourNoir" })).resolves.toMatchObject({
+      themeId: "glamourNoir",
+      heroApplied: true,
+      categoryImageCount: 3,
+    });
+    expect(db.updateDesignProfile).toHaveBeenLastCalledWith(expect.objectContaining({
+      brandName: "Glamour Noir",
+      headerLayout: "glamour",
+      customPrimary: "#17151D",
+      homeOrder: ["text:glamour-intro", "featured", "text:glamour-sale", "discovery", "story", "text:glamour-ritual", "editorial", "reassurance"],
+    }), 77);
+  });
+
+  it("applies Market Express with market navigation and grocery category visuals", async () => {
+    state.membership = { role: "owner", status: "active" };
+
+    await expect(callerFor().owner.applyStorefrontTheme({ themeId: "marketExpress" })).resolves.toMatchObject({
+      themeId: "marketExpress",
+      heroApplied: true,
+      categoryImageCount: 3,
+    });
+    expect(db.updateDesignProfile).toHaveBeenLastCalledWith(expect.objectContaining({
+      brandName: "Market Express",
+      headerLayout: "market",
+      customPrimary: "#0F4C5C",
+      footerDeliveryTitle: "Livraison & retrait",
+      homeOrder: ["featured", "text:market-delivery", "discovery", "text:market-services", "story", "editorial", "highlight", "reassurance"],
+    }), 77);
+    expect(db.applyStorefrontThemeCategoryImages).toHaveBeenLastCalledWith(77, expect.arrayContaining([
+      "https://files.manuscdn.com/user_upload_by_module/session_file/310519663209309444/WaMbgzmrIlHmcPBr.webp",
+      "https://files.manuscdn.com/user_upload_by_module/session_file/310519663209309444/cnAowZRkPshafOHJ.webp",
+      "https://files.manuscdn.com/user_upload_by_module/session_file/310519663209309444/MXImLWcePpQzSEtj.webp",
+    ]));
+  });
+
+  it("keeps integration requests visible to managers but writable only by the current store owner", async () => {
+    await expect(callerFor().owner.getIntegrationRequests()).resolves.toEqual({ requests: [{ id: "google_analytics", requestedAt: "2026-09-26T00:00:00.000Z" }] });
+    expect(db.getOwnerIntegrationRequests).toHaveBeenCalledWith(77);
+
+    await expect(callerFor().owner.saveIntegrationRequests({ integrationIds: ["stripe"] })).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    state.membership = { role: "owner", status: "active" };
+    await expect(callerFor().owner.saveIntegrationRequests({ integrationIds: ["stripe", "transactional_email"] })).resolves.toEqual({
+      requests: [
+        { id: "stripe", requestedAt: "2026-09-26T00:00:00.000Z" },
+        { id: "transactional_email", requestedAt: "2026-09-26T00:00:00.000Z" },
+      ],
+    });
+    expect(db.saveOwnerIntegrationRequests).toHaveBeenCalledWith(77, ["stripe", "transactional_email"]);
+  });
+
+  it("keeps promotion codes scoped to the current store and owner-managed", async () => {
+    await expect(callerFor().owner.getPromotions()).resolves.toMatchObject([{ id: 91, code: "ATELIER10" }]);
+    expect(db.getAllPromotions).toHaveBeenCalledWith(77);
+
+    const promotion = { code: "CREATIVE10", type: "percent" as const, value: 10, active: 1 as const, scope: "all" as const, categoryId: null, perUserLimit: null };
+    await expect(callerFor().owner.createPromotion(promotion)).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    state.membership = { role: "owner", status: "active" };
+    await expect(callerFor().owner.createPromotion(promotion)).resolves.toEqual({ success: true, id: 92 });
+    expect(db.createPromotion).toHaveBeenCalledWith(expect.objectContaining({ code: "CREATIVE10", value: 10 }), 77);
+    expect(db.recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ storeId: 77, action: "owner_promotion_created", entityId: 92 }));
+
+    await expect(callerFor().owner.updatePromotion({ id: 91, ...promotion, active: 0 })).resolves.toEqual({ success: true });
+    expect(db.updatePromotion).toHaveBeenCalledWith(91, expect.objectContaining({ code: "CREATIVE10", active: 0 }), 77);
+    await expect(callerFor().owner.deletePromotion({ id: 91 })).resolves.toEqual({ success: true });
+    expect(db.deletePromotion).toHaveBeenCalledWith(91, 77);
+  });
+
+  it("returns commercial indicators only for the resolved management store", async () => {
+    await expect(callerFor().owner.getCommercialSnapshot()).resolves.toEqual({ buckets: [], topProducts: [] });
+    expect(db.getOwnerCommercialSnapshot).toHaveBeenCalledWith(77);
+  });
+
+  it("limits product-targeted promotions to active products in the resolved owner store", async () => {
+    const promotion = {
+      code: "ATELIER20",
+      type: "percent" as const,
+      value: 20,
+      active: 1 as const,
+      scope: "products" as const,
+      categoryId: null,
+      productIds: [41, 42],
+      perUserLimit: null,
+    };
+    await expect(callerFor().owner.createPromotion(promotion)).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    state.membership = { role: "owner", status: "active" };
+    await expect(callerFor().owner.createPromotion(promotion)).resolves.toEqual({ success: true, id: 92 });
+    expect(db.createPromotion).toHaveBeenCalledWith(expect.objectContaining({
+      scope: "products",
+      productIds: [41, 42],
+      categoryId: null,
+    }), 77);
+    expect(db.recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({
+      storeId: 77,
+      action: "owner_promotion_created",
+      metadata: expect.objectContaining({ scope: "products", targetProductCount: 2 }),
+    }));
+
+    await expect(callerFor().owner.createPromotion({ ...promotion, productIds: [] })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("keeps campaign measurement readable to managers and campaign publishing limited to the resolved owner store", async () => {
+    await expect(callerFor().owner.getCampaignInsights()).resolves.toMatchObject([{ id: 47, promoCode: "ATELIER10", redemptions: 2 }]);
+    expect(db.getOwnerCampaignInsights).toHaveBeenCalledWith(77);
+
+    const campaign = {
+      name: "Atelier d’automne",
+      message: "Une sélection créative",
+      startsAt: new Date("2026-10-02T08:00:00.000Z"),
+      endsAt: new Date("2026-10-05T18:00:00.000Z"),
+      imageDesktopUrl: null,
+      imageMobileUrl: null,
+      linkUrl: "/boutique",
+      promoCode: "ATELIER10",
+      showCountdown: true,
+      placement: "announcement" as const,
+      enabled: false,
+    };
+    await expect(callerFor().owner.createCampaign(campaign)).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    state.membership = { role: "owner", status: "active" };
+    await expect(callerFor().owner.createCampaign(campaign)).resolves.toEqual({ success: true, id: 48 });
+    expect(db.createCampaign).toHaveBeenCalledWith(expect.objectContaining({ name: "Atelier d’automne", enabled: false }), 77);
+    expect(db.recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ storeId: 77, action: "owner_campaign_created", entityId: 48 }));
+
+    await expect(callerFor().owner.updateCampaign({ id: 47, ...campaign, enabled: true })).resolves.toEqual({ success: true });
+    expect(db.updateCampaign).toHaveBeenCalledWith(47, expect.objectContaining({ enabled: true, promoCode: "ATELIER10" }), 77);
+    await expect(callerFor().owner.setCampaignEnabled({ id: 47, enabled: false })).resolves.toEqual({ success: true });
+    expect(db.toggleCampaign).toHaveBeenCalledWith(47, false, 77);
+  });
+
+  it("keeps duo and trio selections readable to managers and writable only by the resolved owner", async () => {
+    await expect(callerFor().owner.getProductBundles()).resolves.toEqual([]);
+    expect(db.getOwnerProductBundles).toHaveBeenCalledWith(77);
+
+    const bundles = [{
+      id: "bundle_6e7ae22d-4fb8-46ea-939b-2172d4ac73e1",
+      name: "Duo atelier",
+      description: "Deux produits pour commencer.",
+      productIds: [41, 42],
+      promoCode: "DUO10",
+      enabled: false,
+    }];
+    await expect(callerFor().owner.saveProductBundles({ bundles })).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    state.membership = { role: "owner", status: "active" };
+    await expect(callerFor().owner.saveProductBundles({ bundles })).resolves.toEqual(bundles);
+    expect(db.saveOwnerProductBundles).toHaveBeenCalledWith(77, bundles);
+    expect(db.recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({
+      storeId: 77,
+      action: "owner.product_bundles.saved",
+      entityType: "product_bundle_configuration",
+      metadata: { enabled: 0, total: 1 },
+    }));
+  });
+
+  it("shows the descriptive SaaS plan only to the current store owner", async () => {
+    state.membership = { role: "owner", status: "active" };
+    await expect(callerFor().owner.getSaasPlanAssignment()).resolves.toMatchObject({ planId: "basic", status: "draft" });
+    expect(db.getOwnerSaasPlanAssignment).toHaveBeenCalledWith(77);
+
+    state.membership = { role: "manager", status: "active" };
+    await expect(callerFor().owner.getSaasPlanAssignment()).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("reads supplier-import access only for the resolved boutique catalogue role", async () => {
+    state.membership = { role: "catalog_editor", status: "active" };
+    await expect(callerFor().owner.getDropshippingAccess()).resolves.toEqual({ enabled: true, source: "studio_grant" });
+    expect(db.getStoreDropshippingAccess).toHaveBeenCalledWith(77);
+    state.membership = { role: "support_agent", status: "active" };
+    await expect(callerFor().owner.getDropshippingAccess()).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("keeps supplier imports in the resolved boutique and refuses an unassigned boutique", async () => {
+    state.membership = { role: "catalog_editor", status: "active" };
+    const input = { url: "https://www.aliexpress.com/item/1005000000001.html", categoryId: 12, marginPercent: 50, name: "Produit fournisseur test", slug: "produit-fournisseur-test", description: "Description prête à être vérifiée avant publication.", priceCents: 2490, sourcePriceCents: 1490, stock: 0, images: ["https://cdn.example.test/produit.webp"] };
+    state.dropshippingAccess = { enabled: false, source: "not_included" };
+    await expect(callerFor().owner.importDropshippingProduct(input)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(db.createProduct).not.toHaveBeenCalled();
+
+    state.dropshippingAccess = { enabled: true, source: "studio_grant" };
+    await expect(callerFor().owner.importDropshippingProduct(input)).resolves.toEqual({ id: 108 });
+    expect(db.createProduct).toHaveBeenCalledWith(expect.objectContaining({ categoryId: 12, name: "Produit fournisseur test", status: "draft" }), 77);
+  });
+
+  it("keeps Stripe Connect readiness scoped to the resolved boutique", async () => {
+    await expect(callerFor().owner.getStripeConnectSetup()).resolves.toMatchObject({
+      storeId: 77,
+      paymentReadiness: { enabled: false, reason: "connect_account_missing" },
+    });
+    expect(db.getStoreStripeConnectSetup).toHaveBeenCalledWith(77);
+
+    state.membership = { role: "catalog_editor", status: "active" };
+    await expect(callerFor().owner.getStripeConnectSetup()).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("creates support tickets only for the resolved boutique without account access", async () => {
+    await expect(callerFor().owner.getSupportTickets()).resolves.toEqual({ tickets: [] });
+    expect(db.getOwnerSupportTickets).toHaveBeenCalledWith(77);
+
+    await expect(callerFor().owner.createSupportTicket({ topic: "technical", subject: "Aide sur le menu", message: "Le menu de ma boutique nécessite une vérification." })).resolves.toMatchObject({
+      profile: { tickets: [expect.objectContaining({ topic: "technical", subject: "Aide sur le menu", storeId: 77, status: "open" })] },
+      notification: "sent",
+    });
+    expect(db.createOwnerSupportTicket).toHaveBeenCalledWith(expect.objectContaining({ storeId: 77, topic: "technical" }));
+    expect(sendStudioSupportTicketAlert).toHaveBeenCalledWith(expect.objectContaining({
+      storeName: "Boutique test",
+      primaryDomain: "boutique.test",
+      topic: "technical",
+      subject: "Aide sur le menu",
+    }));
+  });
+
+  it("keeps a persisted support ticket when the internal alert cannot be delivered", async () => {
+    vi.mocked(sendStudioSupportTicketAlert).mockRejectedValueOnce(new Error("provider unavailable"));
+
+    await expect(callerFor().owner.createSupportTicket({ topic: "domain", subject: "Aide domaine", message: "La configuration du domaine nécessite une vérification manuelle." })).resolves.toMatchObject({
+      profile: { tickets: [expect.objectContaining({ topic: "domain", storeId: 77, status: "open" })] },
+      notification: "failed",
+    });
+    expect(db.createOwnerSupportTicket).toHaveBeenCalledWith(expect.objectContaining({ storeId: 77, topic: "domain" }));
+  });
+
+  it("keeps customer relations and manual exports inside the resolved boutique", async () => {
+    const caller = callerFor();
+    await expect(caller.owner.getCustomerRelations()).resolves.toMatchObject({
+      reviews: [expect.objectContaining({ id: 9, status: "pending" })],
+      messages: [expect.objectContaining({ id: 12, status: "unread" })],
+    });
+    expect(db.getOwnerCustomerRelations).toHaveBeenCalledWith(77);
+
+    await expect(caller.owner.updateReviewModeration({ reviewId: 9, status: "approved" })).resolves.toEqual({ id: 9, status: "approved" });
+    expect(db.updateOwnerReviewModeration).toHaveBeenCalledWith({ storeId: 77, reviewId: 9, status: "approved" });
+
+    await expect(caller.owner.updateContactMessageStatus({ messageId: 12, status: "read" })).resolves.toEqual({ id: 12, status: "read" });
+    expect(db.updateOwnerContactMessageStatus).toHaveBeenCalledWith({ storeId: 77, messageId: 12, status: "read" });
+
+    await expect(caller.owner.prepareCsvExport({ kind: "catalogue" })).resolves.toMatchObject({ kind: "catalogue", rowCount: 1 });
+    expect(db.getOwnerCsvExport).toHaveBeenCalledWith(expect.objectContaining({ storeId: 77, kind: "catalogue", actor: expect.objectContaining({ id: 7 }) }));
+
+    state.membership = { role: "catalog_editor", status: "active" };
+    await expect(callerFor().owner.getCustomerRelations()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(callerFor().owner.prepareCsvExport({ kind: "orders" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("creates a bounded variant matrix only through the current resolved store", async () => {
+    const variants = [
+      { label: "Couleur : Violet · Taille : S", sku: "TSHIRT-VIOLET-S", priceAdjustmentCents: 0, stock: 2, status: "active" as const },
+      { label: "Couleur : Violet · Taille : M", sku: "TSHIRT-VIOLET-M", priceAdjustmentCents: 150, stock: 7, status: "active" as const },
+    ];
+    await expect(callerFor().owner.createProductVariantMatrix({ productId: 41, variants })).resolves.toEqual({ created: 2, skipped: 0 });
+    expect(db.createOwnerProductVariantMatrix).toHaveBeenCalledWith(41, variants, 77);
+
+    state.membership = { role: "catalog_editor", status: "active" };
+    await expect(callerFor().owner.createProductVariantMatrix({ productId: 41, variants })).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("manages categories only through the current resolved store", async () => {
+    const caller = callerFor();
+    const input = { name: "Laine et crochet", slug: "laine-crochet", description: "Pelotes et accessoires.", publicNotice: "Des pelotes, des outils et des idées à imaginer.", emptyStateMessage: "Les premières créations arrivent bientôt.", imageUrl: "/media/laine.webp", displayOrder: 30, catalogSection: "creations" as const };
+
+    await expect(caller.owner.createCategory(input)).resolves.toEqual({ id: 41 });
+    expect(db.createCategory).toHaveBeenCalledWith(input, 77);
+
+    await expect(caller.owner.updateCategory({ id: 41, name: "Laine & crochet", publicNotice: "Un message à personnaliser.", emptyStateMessage: "La collection arrive.", displayOrder: 40, catalogSection: "creations" })).resolves.toEqual({ success: true });
+    expect(db.updateCategory).toHaveBeenCalledWith(41, { name: "Laine & crochet", publicNotice: "Un message à personnaliser.", emptyStateMessage: "La collection arrive.", displayOrder: 40, catalogSection: "creations" }, 77);
+
+    await expect(caller.owner.deleteCategory({ id: 41 })).resolves.toEqual({ success: true });
+    expect(db.deleteCategory).toHaveBeenCalledWith(41, 77);
+  });
+
+  it("assigns catalogue categories, delivery and supplier references within the resolved store", async () => {
+    const caller = callerFor();
+    const product = { categoryId: 41, categoryIds: [41, 42], name: "Carnet créatif", slug: "carnet-creatif", description: "Un carnet prêt à dessiner.", longDescription: "Un carnet créatif à personnaliser.", price: 1890, stock: 4, featured: 0, status: "active" as const, images: [], options: "", supplier: "Atelier test", supplierProductId: "CARNET-01", supplierUrl: "https://supplier.example.test/carnet-01", supplierPrice: 650, supplierWeightG: 180, deliveryProfiles: [{ countryCode: "CH", supplierShippingCost: 400, customerShippingCost: 590, deliveryMethod: "Colissimo", minDeliveryDays: 2, maxDeliveryDays: 4 }] };
+
+    await expect(caller.owner.createProduct(product)).resolves.toEqual({ id: 108 });
+    expect(db.createProduct).toHaveBeenCalledWith(expect.objectContaining({ categoryId: 41, categoryIds: [41, 42], supplier: "Atelier test", deliveryProfiles: [expect.objectContaining({ countryCode: "CH", customerShippingCost: 590 })] }), 77);
+
+    await expect(caller.owner.updateProduct({ id: 108, categoryId: 42, categoryIds: [42, 41] })).resolves.toEqual({ success: true });
+    expect(db.updateProduct).toHaveBeenCalledWith(108, expect.objectContaining({ categoryId: 42, categoryIds: [42, 41] }), 77);
+  });
+
+  it("lists product translations only through the resolved store", async () => {
+    await expect(callerFor().owner.productTranslations.list({ productId: 41 })).resolves.toEqual([expect.objectContaining({ locale: "en", status: "ready" })]);
+    expect(db.getProductTranslations).toHaveBeenCalledWith(41, 77);
+  });
+
+  it("stores a crossed-out price only when it is above the sale price", async () => {
+    const caller = callerFor();
+    const product = { categoryId: 41, name: "Affiche illustrée", slug: "affiche-illustree", description: "Une affiche colorée.", longDescription: "Une affiche illustrée pour la décoration.", price: 2490, originalPrice: 3290, stock: 8, featured: 1, status: "active" as const, images: [], options: "" };
+
+    await expect(caller.owner.createProduct(product)).resolves.toEqual({ id: 108 });
+    expect(db.createProduct).toHaveBeenCalledWith(expect.objectContaining({ price: 2490, originalPrice: 3290 }), 77);
+    await expect(caller.owner.updateProduct({ id: 108, price: 2490, originalPrice: 2490 })).rejects.toMatchObject({ code: "BAD_REQUEST", message: expect.stringContaining("prix barré") });
+  });
+
+  it("keeps custom menu nesting scoped, visible, and one level deep", async () => {
+    const items = [
+      { id: "home", label: "Accueil", href: "/", visible: true, kind: "system" as const },
+      { id: "custom-univers", label: "Univers", href: "/univers", visible: true, kind: "custom" as const },
+      { id: "custom-ania", label: "Ania", href: "/categorie/ania", visible: true, kind: "custom" as const, parentId: "custom-univers" },
+    ];
+    await expect(callerFor().owner.saveNavigation({ items })).resolves.toMatchObject({ navigationItems: items });
+    expect(db.updateDesignProfile).toHaveBeenCalledWith(expect.objectContaining({ navigationItems: items }), 77);
+
+    await expect(callerFor().owner.saveNavigation({ items: items.map(item => item.id === "custom-univers" ? { ...item, visible: false } : item) })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(callerFor().owner.saveNavigation({ items: items.map(item => item.id === "custom-univers" ? { ...item, parentId: "custom-ania" } : item) })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("imports catalogue rows only through the current resolved store", async () => {
+    const rows = [{
+      category: "Laine et crochet",
+      name: "Pelote lavande",
+      shortDescription: "Une pelote douce.",
+      longDescription: "Une pelote de laine pour vos créations.",
+      priceCents: 890,
+      stock: 12,
+      dimensions: ["50 g"],
+      imageUrl: "https://images.example.test/pelote.webp",
+      featured: false,
+    }];
+    await expect(callerFor().owner.importCatalogueProducts({ rows, acknowledged: true })).resolves.toEqual({ imported: 2, updated: 1 });
+    expect(db.importOwnerCatalogueProducts).toHaveBeenCalledWith({ storeId: 77, rows });
+  });
+
+  it("returns clear scoped messages when a plan capacity is reached", async () => {
+    const product = { categoryId: 41, name: "Kit créatif", slug: "kit-creatif", description: "Kit de test", longDescription: "Description de test pour le catalogue.", price: 2490, stock: 3, featured: 0, status: "active" as const, images: [], options: "" };
+    vi.mocked(db.createProduct).mockRejectedValueOnce(new Error("SAAS_ACTIVE_PRODUCT_LIMIT_REACHED"));
+    await expect(callerFor().owner.createProduct(product)).rejects.toMatchObject({ code: "FORBIDDEN", message: expect.stringContaining("produits actifs") });
+
+    state.membership = { role: "owner", status: "active" };
+    vi.mocked(db.prepareStoreTeamInvitation).mockRejectedValueOnce(new Error("SAAS_TEAM_MEMBER_LIMIT_REACHED"));
+    await expect(callerFor().owner.prepareTeamInvitation({ name: "Éditeur test", email: "editeur@example.test", role: "catalog_editor", confirmationEmail: "editeur@example.test" })).rejects.toMatchObject({ code: "FORBIDDEN", message: expect.stringContaining("accès délégués") });
+  });
+
+  it("refuses a catalog-only membership from the variant management procedures", async () => {
+    state.membership = { role: "catalog_editor", status: "active" };
+    await expect(callerFor().owner.getProductVariants({ productId: 41 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(callerFor().owner.deleteProductVariant({ productId: 41, variantId: 5 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("lists only the team attached to the current resolved store", async () => {
+    await expect(callerFor().owner.getTeam()).resolves.toEqual(state.team);
+    expect(db.getStoreTeamMembers).toHaveBeenCalledWith(77);
+
+    state.membership = { role: "catalog_editor", status: "active" };
+    await expect(callerFor().owner.getTeam()).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("reads and saves market visibility through the current resolved store only", async () => {
+    const caller = callerFor();
+    await expect(caller.owner.getMarketSettings()).resolves.toEqual(state.markets);
+    expect(db.getStoreMarketSettings).toHaveBeenCalledWith(77);
+
+    const input = { primaryLanguage: "ar" as const, activeLanguages: ["ar", "fr", "en"], showLanguageSelector: true, primaryCountry: "DZ" as const, activeCountries: ["DZ", "FR"], showCountrySelector: true };
+    await expect(caller.owner.saveMarketSettings(input)).resolves.toEqual(input);
+    expect(db.saveStoreMarketSettings).toHaveBeenCalledWith(77, input);
+  });
+
+  it("keeps the boutique maintenance screen scoped to its owner and resolved store", async () => {
+    const input = { enabled: true, title: "Mise à jour créative", message: "La boutique revient très bientôt." };
+    await expect(callerFor().owner.getMaintenanceMode()).resolves.toMatchObject({ enabled: false });
+    expect(db.getStoreMaintenanceMode).toHaveBeenCalledWith(77);
+    await expect(callerFor().owner.saveMaintenanceMode(input)).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    state.membership = { role: "owner", status: "active" };
+    await expect(callerFor().owner.saveMaintenanceMode(input)).resolves.toEqual(input);
+    expect(db.saveStoreMaintenanceMode).toHaveBeenCalledWith(77, input);
+    expect(db.recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({
+      storeId: 77,
+      action: "owner.store_maintenance.save",
+      metadata: expect.objectContaining({ enabled: true }),
+    }));
+  });
+
+  it("keeps storefront translations inside the resolved store and reserves publication to its owner", async () => {
+    const caller = callerFor();
+    await expect(caller.owner.publicContentTranslations.getOverview()).resolves.toMatchObject([
+      { contentType: "banner", contentId: 12 },
+    ]);
+    expect(db.getPublicContentTranslationOverview).toHaveBeenCalledWith(77);
+
+    await expect(caller.owner.publicContentTranslations.getSource({ contentType: "banner", contentId: 12 })).resolves.toMatchObject({
+      payload: { title: "Atelier" },
+    });
+    expect(db.getPublicContentTranslationSource).toHaveBeenCalledWith("banner", 12, 77);
+
+    await expect(caller.owner.publicContentTranslations.save({
+      contentType: "banner",
+      contentId: 12,
+      locale: "en",
+      payload: { title: "Creative studio", subtitle: "A creative selection" },
+    })).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    state.membership = { role: "owner", status: "active" };
+    await expect(callerFor().owner.publicContentTranslations.save({
+      contentType: "banner",
+      contentId: 12,
+      locale: "en",
+      payload: { title: "Creative studio", subtitle: "A creative selection" },
+    })).resolves.toMatchObject({ status: "ready" });
+    expect(db.savePublicContentTranslation).toHaveBeenCalledWith(expect.objectContaining({
+      contentType: "banner",
+      contentId: 12,
+      locale: "en",
+      machineGenerated: false,
+      storeId: 77,
+    }));
+  });
+
+  it("keeps tax disclosures scoped to the current store and market", async () => {
+    await expect(callerFor().owner.getTaxPolicies()).resolves.toEqual([
+      { countryCode: "CH", displayMode: "included", notice: "Prix affichés taxes comprises." },
+    ]);
+    expect(db.getStoreTaxPolicies).toHaveBeenCalledWith(77);
+
+    const policies = [{ countryCode: "CH" as const, displayMode: "included" as const, notice: "Prix affichés taxes comprises." }];
+    await expect(callerFor().owner.saveTaxPolicies(policies)).resolves.toEqual(policies);
+    expect(db.saveStoreTaxPolicies).toHaveBeenCalledWith(77, policies);
+
+    await expect(callerFor().content.getCheckoutTaxDisclosure({ countryCode: "CH" })).resolves.toMatchObject({ configured: true, storeId: 77, countryCode: "CH" });
+    expect(db.getCheckoutTaxDisclosure).toHaveBeenCalledWith(77, "CH");
+
+    state.membership = { role: "catalog_editor", status: "active" };
+    await expect(callerFor().owner.saveTaxPolicies(policies)).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("saves delivery rules only through the current resolved store", async () => {
+    const input = {
+      mode: "flat_rate" as const,
+      freeShippingThresholdCents: 7_500,
+      flatShippingRateCents: 650,
+      servedCountries: ["ch", "fr"],
+      deliveryLeadTime: "2 à 4 jours ouvrés",
+      returnsSummary: "Retours sous 14 jours après réception.",
+      returnRequestsEnabled: true,
+    };
+
+    await expect(callerFor().owner.saveShippingReturnsSettings(input)).resolves.toMatchObject({
+      mode: "flat_rate",
+      servedCountries: ["CH", "FR"],
+    });
+    expect(db.saveOwnerShippingReturnsSettings).toHaveBeenCalledWith(77, expect.objectContaining({
+      servedCountries: ["CH", "FR"],
+      flatShippingRateCents: 650,
+      returnRequestsEnabled: true,
+    }));
+  });
+
+  it("reads commercial readiness only for the current resolved store", async () => {
+    await expect(callerFor().owner.getCommercialReadiness()).resolves.toEqual(state.commercialReadiness);
+    expect(db.getOwnerCommercialReadiness).toHaveBeenCalledWith(77);
+  });
+
+  it("runs cart rehearsal only for the current resolved store", async () => {
+    await expect(callerFor().owner.getPrivateCartSimulation({ countryCode: "CH", lines: [{ productId: 12, quantity: 2 }] })).resolves.toMatchObject({
+      storeId: 77,
+      privateCartSimulation: true,
+      persistedCart: false,
+      paymentAvailable: false,
+      orderCreated: false,
+    });
+    expect(db.getOwnerPrivateCartSimulation).toHaveBeenCalledWith(expect.objectContaining({
+      storeId: 77,
+      countryCode: "CH",
+      lines: [{ productId: 12, quantity: 2 }],
+    }));
+  });
+
+  it("reads order item summaries only through the current resolved store", async () => {
+    await expect(callerFor().owner.getOrderItemSummaries({ orderId: 481 })).resolves.toEqual([
+      { id: 15, quantity: 2, productName: "Kit créatif", selectedOptions: [{ name: "Couleur", value: "Violet" }] },
+    ]);
+    expect(db.getOwnerOrderItemSummaries).toHaveBeenCalledWith(481, 77);
+
+    state.membership = { role: "catalog_editor", status: "active" };
+    await expect(callerFor().owner.getOrderItemSummaries({ orderId: 481 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("reads settlement and order history only through the current resolved store", async () => {
+    await expect(callerFor().owner.getSalesSettlementOverview()).resolves.toEqual({ buckets: [], recentSales: [] });
+    expect(db.getOwnerSalesSettlementOverview).toHaveBeenCalledWith(77);
+
+    await expect(callerFor().owner.getOrderTimeline({ orderId: 481 })).resolves.toEqual([
+      { type: "created", label: "Commande créée", at: "2026-09-27T00:00:00.000Z" },
+    ]);
+    expect(db.getOrderTimeline).toHaveBeenCalledWith(481, 77);
+
+    state.membership = { role: "catalog_editor", status: "active" };
+    await expect(callerFor().owner.getSalesSettlementOverview()).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("reveals delivery details only to the store owner and records the consultation", async () => {
+    await expect(callerFor().owner.revealOrderDeliveryDetails({ orderId: 481 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    state.membership = { role: "owner", status: "active" };
+    await expect(callerFor().owner.revealOrderDeliveryDetails({ orderId: 481 })).resolves.toMatchObject({
+      available: true,
+      orderId: 481,
+      countryCode: "CH",
+    });
+    expect(db.getOwnerOrderDeliveryDetails).toHaveBeenCalledWith(481, 77);
+    expect(db.recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({
+      storeId: 77,
+      entityType: "order",
+      entityId: 481,
+      action: "owner.order.delivery_details_revealed",
+      metadata: { purpose: "manual_fulfillment" },
+    }));
+  });
+
+  it("reveals a handover sheet only to the store owner and records its consultation", async () => {
+    await expect(callerFor().owner.revealOrderDeliveryHandoverDetails({ orderId: 481 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    state.membership = { role: "owner", status: "active" };
+    await expect(callerFor().owner.revealOrderDeliveryHandoverDetails({ orderId: 481 })).resolves.toMatchObject({
+      available: true,
+      orderId: 481,
+      trackingNumber: "CH481",
+    });
+    expect(db.getOwnerOrderDeliveryHandoverDetails).toHaveBeenCalledWith(481, 77);
+    expect(db.recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({
+      storeId: 77,
+      entityType: "order",
+      entityId: 481,
+      action: "owner.order.delivery_handover_revealed",
+      metadata: { purpose: "manual_delivery_handover" },
+    }));
+  });
+
+  it("records a manual order decision only for the current resolved store", async () => {
+    await expect(callerFor().owner.recordOrderDecision({ orderId: 481, action: "accepted" })).resolves.toMatchObject({
+      success: true,
+      storeId: 77,
+      actorUserId: 7,
+      action: "accepted",
+    });
+    expect(db.recordOrderDecision).toHaveBeenCalledWith({
+      orderId: 481,
+      action: "accepted",
+      actorUserId: 7,
+      storeId: 77,
+    });
+
+    state.membership = { role: "catalog_editor", status: "active" };
+    await expect(callerFor().owner.recordOrderDecision({ orderId: 481, action: "rejected" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("keeps Algeria delivery-payment settings and manual collection inside the resolved store", async () => {
+    await expect(callerFor().owner.getAlgeriaCashOnDeliveryReadiness()).resolves.toMatchObject({ storeId: 77, enabled: false });
+    expect(db.getAlgeriaCashOnDeliveryReadiness).toHaveBeenCalledWith(77);
+
+    await expect(callerFor().owner.getAlgeriaWilayaDeliverySettings()).resolves.toMatchObject({ source: "custom" });
+    expect(db.getAlgeriaWilayaDeliverySettings).toHaveBeenCalledWith(77);
+    await expect(callerFor().owner.installAlgeriaWilayaDeliveryReference()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(callerFor().owner.saveStoreCurrency({ code: "DZD", rateBps: 1_400_000 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    await expect(callerFor().owner.saveAlgeriaCashOnDeliverySettings({ enabled: true })).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    state.membership = { role: "owner", status: "active" };
+    await expect(callerFor().owner.saveStoreCurrency({ code: "DZD", rateBps: 1_400_000 })).resolves.toEqual({ code: "DZD", rateBps: 1_400_000 });
+    expect(db.saveStoreCurrencyConfig).toHaveBeenCalledWith(77, { code: "DZD", rateBps: 1_400_000 });
+    await expect(callerFor().owner.installAlgeriaWilayaDeliveryReference()).resolves.toMatchObject({ source: "letshop_public_2023_02_07" });
+    expect(db.installAlgeriaWilayaDeliveryReference).toHaveBeenCalledWith(77);
+    await expect(callerFor().owner.saveAlgeriaCashOnDeliverySettings({ enabled: true })).resolves.toMatchObject({ storeId: 77, enabled: true });
+    expect(db.saveAlgeriaCashOnDeliverySettings).toHaveBeenCalledWith(77, true);
+
+    await expect(callerFor().owner.confirmAlgeriaCashOnDeliveryCollection({ orderId: 481 })).resolves.toMatchObject({ storeId: 77, orderId: 481, success: true });
+    expect(db.confirmAlgeriaCashOnDeliveryCollection).toHaveBeenCalledWith({ storeId: 77, orderId: 481 });
+
+    await expect(callerFor().owner.getAlgeriaOnlinePaymentPreparation()).resolves.toMatchObject({ storeId: 77, legalReady: true });
+    await expect(callerFor().owner.saveAlgeriaOnlinePaymentPreparation({ merchantEligibilityConfirmed: true, acquirerContractConfirmed: false, testAccessReceived: false, certificationCompleted: false })).resolves.toMatchObject({ storeId: 77, merchantEligibilityConfirmed: true });
+    expect(db.saveAlgeriaOnlinePaymentPreparation).toHaveBeenCalledWith(77, {
+      merchantEligibilityConfirmed: true,
+      acquirerContractConfirmed: false,
+      testAccessReceived: false,
+      certificationCompleted: false,
+    });
+  });
+
+  it("records manual shipment status only for the current resolved store", async () => {
+    await expect(callerFor().owner.updateOrderTracking({ orderId: 481, status: "shipped", trackingNumber: " CH123456 ", trackingCarrier: " Yalidine ", trackingUrl: "https://carrier.example/track/CH123456" })).resolves.toMatchObject({
+      success: true,
+      id: 481,
+      status: "shipped",
+      trackingNumber: "CH123456",
+      trackingCarrier: "Yalidine",
+      trackingUrl: "https://carrier.example/track/CH123456",
+      storeId: 77,
+    });
+    expect(db.updateOperationalOrderTracking).toHaveBeenCalledWith({
+      id: 481,
+      status: "shipped",
+      trackingNumber: "CH123456",
+      trackingCarrier: "Yalidine",
+      trackingUrl: "https://carrier.example/track/CH123456",
+      storeId: 77,
+    });
+    await expect(callerFor().owner.updateOrderTracking({ orderId: 481, status: "shipped", trackingUrl: "javascript:alert(1)" })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    state.membership = { role: "catalog_editor", status: "active" };
+    await expect(callerFor().owner.updateOrderTracking({ orderId: 481, status: "delivered" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("sends one transactional shipment notice only after a Production transition", async () => {
+    process.env.MAZIGHO_ENABLE_STRIPE_LIVE_ORDER_EMAILS = "true";
+    state.trackingResult = { success: true, statusChanged: true };
+    state.orderContact = {
+      paymentMethod: "stripe_connect_live",
+      userName: "Cliente test",
+      userEmail: "cliente@example.test",
+      trackingNumber: "CH123456",
+    };
+
+    await expect(callerFor().owner.updateOrderTracking({ orderId: 481, status: "shipped", trackingNumber: "CH123456" })).resolves.toMatchObject({
+      success: true,
+      customerNotification: "sent",
+    });
+    expect(db.getOrderContactById).toHaveBeenCalledWith(481, 77);
+    expect(sendOrderShippedEmail).toHaveBeenCalledWith({
+      email: "cliente@example.test",
+      name: "Cliente test",
+      orderId: 481,
+      trackingNumber: "CH123456",
+      storeName: "Boutique test",
+      storeId: 77,
+    });
+
+    vi.clearAllMocks();
+    state.orderContact = { ...state.orderContact, paymentMethod: "stripe_connect_test" };
+    await expect(callerFor().owner.updateOrderTracking({ orderId: 481, status: "shipped" })).resolves.toMatchObject({
+      customerNotification: "not_applicable",
+    });
+    expect(sendOrderShippedEmail).not.toHaveBeenCalled();
+  });
+
+  it("keeps transactional templates scoped to the owner’s current shop", async () => {
+    state.membership = { role: "owner", status: "active" };
+    await expect(callerFor().owner.getTransactionalEmailTemplates()).resolves.toHaveLength(1);
+    expect(db.getOwnerTransactionalEmailTemplates).toHaveBeenCalledWith(77);
+
+    await expect(callerFor().owner.saveTransactionalEmailTemplate({
+      type: "order_shipped",
+      template: { subject: "{{boutique}} · expédition #{{commande}}", heading: "Votre colis part", body: "Bonjour {{prenom}}, suivi : {{suivi}}", buttonLabel: "Suivre", enabled: true },
+    })).resolves.toEqual({ success: true });
+    expect(db.saveOwnerTransactionalEmailTemplate).toHaveBeenCalledWith(77, "order_shipped", expect.objectContaining({ enabled: true }));
+    expect(db.recordAuditLog).toHaveBeenCalledWith(expect.objectContaining({ storeId: 77, action: "owner.transactional_email_template.update" }));
+
+    state.membership = { role: "manager", status: "active" };
+    await expect(callerFor().owner.saveTransactionalEmailTemplate({
+      type: "order_confirmation",
+      template: { subject: "Merci", heading: "Confirmation", body: "Bonjour", buttonLabel: "Voir", enabled: true },
+    })).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("applies a storefront palette only to the current resolved store", async () => {
+    await expect(callerFor().owner.saveStorefrontPalette({ paletteId: "violet" })).resolves.toMatchObject({
+      paletteId: "violet",
+      customColorsEnabled: true,
+      customPrimary: "#6D28D9",
+      customAccent: "#A855F7",
+      customSoft: "#F7F3FF",
+    });
+    expect(db.getDesignProfile).toHaveBeenCalledWith(77);
+    expect(db.updateDesignProfile).toHaveBeenCalledWith(expect.objectContaining({ paletteId: "violet", customColorsEnabled: true }), 77);
+  });
+
+  it("saves custom storefront colors only to the current resolved store", async () => {
+    await expect(callerFor().owner.saveStorefrontCustomColors({
+      primary: "#6d28d9",
+      accent: "#c80aff",
+      soft: "#f7f3ff",
+    })).resolves.toMatchObject({
+      customColorsEnabled: true,
+      customPrimary: "#6D28D9",
+      customAccent: "#C80AFF",
+      customSoft: "#F7F3FF",
+    });
+    expect(db.getDesignProfile).toHaveBeenCalledWith(77);
+    expect(db.updateDesignProfile).toHaveBeenCalledWith(expect.objectContaining({
+      customColorsEnabled: true,
+      customPrimary: "#6D28D9",
+      customAccent: "#C80AFF",
+      customSoft: "#F7F3FF",
+    }), 77);
+  });
+
+  it("saves the header layout only through the current resolved store", async () => {
+    await expect(callerFor().owner.saveStorefrontHeaderLayout({ headerLayout: "gallery" })).resolves.toMatchObject({
+      headerLayout: "gallery",
+    });
+    expect(db.getDesignProfile).toHaveBeenCalledWith(77);
+    expect(db.updateDesignProfile).toHaveBeenCalledWith(expect.objectContaining({ headerLayout: "gallery" }), 77);
+  });
+
+  it("saves footer settings only through the current resolved store", async () => {
+    const input = {
+      footerBackgroundColor: "#ffffff",
+      footerTextColor: "#0f172a",
+      footerDescription: "Une boutique créative à votre image.",
+      footerNavigationTitle: "Explorer",
+      footerCategoriesTitle: "Univers",
+      footerHelpTitle: "Nous contacter",
+      footerContactText: "Écrivez à l’atelier",
+      footerContactUrl: "/contact",
+      footerDeliveryTitle: "Livraison",
+      footerDeliveryText: "Les conditions sont affichées avant validation.",
+      footerSecureTitle: "Paiement sécurisé",
+      footerSecureText: "Navigation chiffrée par HTTPS.",
+      footerServiceTitle: "Conseil",
+      footerServiceText: "Une question ? Notre équipe vous répond.",
+      footerCopyrightText: "Tous droits réservés.",
+      footerShowNavigation: true,
+      footerShowCategories: true,
+      footerShowHelp: true,
+      footerShowReassurance: false,
+      footerSocialLinks: [
+        { id: "instagram" as const, url: "https://instagram.example.test/atelier" },
+        { id: "facebook" as const, url: "" },
+        { id: "tiktok" as const, url: "" },
+        { id: "youtube" as const, url: "" },
+        { id: "pinterest" as const, url: "" },
+        { id: "linkedin" as const, url: "" },
+      ],
+    };
+    await expect(callerFor().owner.saveFooter(input)).resolves.toMatchObject({ footerBackgroundColor: input.footerBackgroundColor, footerTextColor: input.footerTextColor, footerDescription: input.footerDescription });
+    expect(db.getDesignProfile).toHaveBeenCalledWith(77);
+    expect(db.updateDesignProfile).toHaveBeenCalledWith(expect.objectContaining({ footerBackgroundColor: input.footerBackgroundColor, footerTextColor: input.footerTextColor, footerDescription: input.footerDescription, footerSocialLinks: input.footerSocialLinks }), 77);
+  });
+
+  it("saves homepage content only through the current resolved store", async () => {
+    const input = {
+      showReassurance: true,
+      reassuranceItems: [
+        { icon: "sparkles" as const, title: "Créations choisies", text: "Du matériel sélectionné avec soin." },
+        { icon: "check" as const, title: "Atelier préparé", text: "Une boutique claire pour vos projets." },
+        { icon: "arrow" as const, title: "À votre rythme", text: "Explorez les catégories de la boutique." },
+      ],
+      showDiscovery: true,
+      discoveryEyebrow: "Explorer l’atelier",
+      discoveryTitle: "Nos catégories créatives",
+      discoveryText: "Choisissez votre prochain projet parmi les catégories de la boutique.",
+      discoveryAllShopLabel: "Voir la boutique",
+      discoveryAllShopUrl: "/boutique",
+      discoveryBrowseShopLabel: "Découvrir les créations",
+      discoveryBrowseShopUrl: "/boutique",
+      showStory: false,
+      storyEyebrow: "L'atelier raconte",
+      storyFollowup: "Chaque détail peut être adapté à l'univers de la boutique.",
+      storyPoints: ["Imaginer", "Créer", "Partager"],
+      storyCtaLabel: "Voir l'atelier",
+      storyCtaUrl: "/boutique",
+      storyVisualEyebrow: "Une image personnalisée",
+      storyVisualTitle: "Le monde créatif de la boutique.",
+      storyPromiseEyebrow: "Notre promesse",
+      storyPromise: "Un contenu entièrement à votre image.",
+      showTestimonials: true,
+      testimonialsEyebrow: "Votre message",
+      testimonialsTitle: "Un atelier à votre image",
+      testimonialsText: "Les avis vérifiés seront publiés uniquement quand ils existeront.",
+      testimonialsCtaLabel: "Voir les créations",
+      testimonialsCtaUrl: "/boutique",
+      showEditorial: false,
+      showFeatured: true,
+      showClosing: true,
+      closingEyebrow: "Créer à votre rythme",
+      closingTitle: "Préparez votre prochain projet.",
+      closingText: "Une sélection pensée par cette boutique, sans contenu imposé.",
+      closingShopCtaLabel: "Voir le catalogue",
+      closingShopCtaUrl: "/boutique",
+      closingContactCtaLabel: "Nous contacter",
+      closingContactCtaUrl: "/contact",
+      closingVisualValue: "",
+      closingVisualFont: "editorial" as const,
+      closingVisualColor: "#C80AFF",
+      closingVisualText: "Une boutique créative, à votre image.",
+      closingImageUrl: "",
+    };
+    await expect(callerFor().owner.saveHomepageSections(input)).resolves.toMatchObject({ showClosing: true, discoveryTitle: "Nos catégories créatives" });
+    expect(db.getDesignProfile).toHaveBeenCalledWith(77);
+    expect(db.updateDesignProfile).toHaveBeenCalledWith(expect.objectContaining({ showReassurance: true, storyPoints: ["Imaginer", "Créer", "Partager"], closingTitle: "Préparez votre prochain projet.", closingVisualValue: "", closingVisualFont: "editorial", closingVisualColor: "#C80AFF" }), 77);
+    expect(db.markPublicContentTranslationsStale).toHaveBeenCalledWith("design", 1, 77);
+  });
+
+  it("saves free homepage blocks only through the current resolved store", async () => {
+    const blocks = [{
+      id: "block-atelier-commande",
+      eyebrow: "Sur demande",
+      title: "Une création à imaginer ensemble",
+      text: "Expliquez votre projet et découvrez les possibilités de l’atelier.",
+      buttonLabel: "Nous écrire",
+      buttonUrl: "/contact",
+      imageUrl: "https://example.test/atelier.webp",
+      imageAlt: "Matériel créatif dans un atelier lumineux",
+      layout: "split" as const,
+      theme: "soft" as const,
+      enabled: true,
+    }];
+    await expect(callerFor().owner.saveCustomHomepageBlocks({
+      blocks,
+      homeOrder: ["discovery", "text:block-atelier-commande", "story", "testimonials", "editorial", "featured"],
+    })).resolves.toMatchObject({ textBanners: blocks });
+    expect(db.getDesignProfile).toHaveBeenCalledWith(77);
+    expect(db.updateDesignProfile).toHaveBeenCalledWith(expect.objectContaining({ textBanners: blocks }), 77);
+
+    await expect(callerFor().owner.saveCustomHomepageBlocks({
+      blocks: [{ ...blocks[0], imageAlt: "" }],
+      homeOrder: ["text:block-atelier-commande"],
+    })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("saves a card-free round gallery only for the current store", async () => {
+    const blocks = [{
+      id: "block-maison-de-the",
+      eyebrow: "Explorer nos infusions",
+      title: "Les rituels de la maison",
+      text: "Six univers à découvrir selon vos envies du moment.",
+      buttonLabel: "",
+      buttonUrl: "",
+      imageUrl: "",
+      imageAlt: "",
+      layout: "roundGallery" as const,
+      theme: "soft" as const,
+      galleryItems: [
+        { id: "circle-the-vert", label: "Thés verts", imageUrl: "https://example.test/the-vert.jpg", imageAlt: "Thé vert en feuilles", href: "/boutique" },
+        { id: "circle-rooibos", label: "Rooibos", imageUrl: "https://example.test/rooibos.jpg", imageAlt: "Rooibos en feuilles", href: "/boutique" },
+      ],
+      enabled: true,
+    }];
+    await expect(callerFor().owner.saveCustomHomepageBlocks({
+      blocks,
+      homeOrder: ["text:block-maison-de-the", "featured"],
+    })).resolves.toMatchObject({ textBanners: blocks });
+    expect(db.updateDesignProfile).toHaveBeenCalledWith(expect.objectContaining({ textBanners: blocks }), 77);
+
+    await expect(callerFor().owner.saveCustomHomepageBlocks({
+      blocks: [{ ...blocks[0], galleryItems: [blocks[0].galleryItems[0]] }],
+      homeOrder: ["text:block-maison-de-the"],
+    })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("saves catalogue page copy only through the current resolved store", async () => {
+    const input = {
+      promosTitle: "Offres de l’atelier",
+      promosLead: "Des créations choisies pour {country}.",
+      promosBannerTitle: "Une sélection en ce moment",
+      promosBannerText: "Les prix affichés sont déjà ajustés.",
+      promosEmptyText: "Aucune offre n’est actuellement disponible pour {country}.",
+      promosAllProductsLabel: "Voir les créations",
+      newArrivalsTitle: "Nouvelles créations",
+      newArrivalsLead: "Les dernières arrivées pour {country}.",
+      newArrivalsEmptyText: "Aucune nouveauté n’est disponible pour {country}.",
+      bestSellersTitle: "Les favoris de l’atelier",
+      bestSellersLead: "Les créations les plus appréciées pour {country}.",
+      bestSellersTopLabel: "Coup de cœur n°{rank}",
+      bestSellersEmptyText: "Aucun favori n’est encore disponible pour {country}.",
+    };
+    await expect(callerFor().owner.saveCataloguePageCopy(input)).resolves.toMatchObject({
+      promosTitle: input.promosTitle,
+      cataloguePageCopyCustomized: true,
+    });
+    expect(db.getDesignProfile).toHaveBeenCalledWith(77);
+    expect(db.updateDesignProfile).toHaveBeenCalledWith(expect.objectContaining({
+      promosTitle: input.promosTitle,
+      bestSellersTopLabel: input.bestSellersTopLabel,
+      cataloguePageCopyCustomized: true,
+    }), 77);
+  });
+
+  it("saves the announcement bar only through the current resolved store", async () => {
+    const input = {
+      showAnnouncement: true,
+      announcementItems: ["Créations choisies avec soin", "Retrait à l’atelier sur rendez-vous", "Une question ? Contactez-nous"],
+    };
+    await expect(callerFor().owner.saveAnnouncementBar(input)).resolves.toMatchObject(input);
+    expect(db.getDesignProfile).toHaveBeenCalledWith(77);
+    expect(db.updateDesignProfile).toHaveBeenCalledWith(expect.objectContaining(input), 77);
+  });
+
+  it("saves shop page content only through the current resolved store", async () => {
+    const input = {
+      shopEyebrow: "L’atelier Sylvie",
+      shopTitle: "Tout pour créer à votre rythme",
+      shopIntro: "Une sélection disponible pour {country}.",
+      shopProductsEyebrow: "À découvrir",
+      shopProductsTitle: "Les créations de l’atelier",
+      showShopEditorial: true,
+      shopEditorialEyebrow: "À votre rythme",
+      shopEditorialTitle: "Un projet créatif commence par une belle idée.",
+      shopEditorialImageUrl: "/media/atelier.webp",
+      showShopReassurance: false,
+    };
+    await expect(callerFor().owner.saveShopPageContent(input)).resolves.toMatchObject({
+      shopTitle: input.shopTitle,
+      shopPageCopyCustomized: true,
+    });
+    expect(db.getDesignProfile).toHaveBeenCalledWith(77);
+    expect(db.updateDesignProfile).toHaveBeenCalledWith(expect.objectContaining({
+      shopTitle: input.shopTitle,
+      shopEditorialImageUrl: input.shopEditorialImageUrl,
+      shopPageCopyCustomized: true,
+    }), 77);
+  });
+
+  it("saves product reassurance only through the current resolved store", async () => {
+    const input = {
+      showProductReassurance: true,
+      productReassuranceItems: [
+        { icon: "shield" as const, title: "Paiement à confirmer", text: "Les modalités sont affichées avant validation." },
+        { icon: "truck" as const, title: "Livraison atelier", text: "Les délais sont précisés sur la boutique." },
+      ],
+    };
+    await expect(callerFor().owner.saveProductReassurance(input)).resolves.toMatchObject(input);
+    expect(db.getDesignProfile).toHaveBeenCalledWith(77);
+    expect(db.updateDesignProfile).toHaveBeenCalledWith(expect.objectContaining(input), 77);
+  });
+
+  it("saves cart and checkout copy only through the current resolved store", async () => {
+    const input = {
+      cartEyebrow: "Votre sélection créative",
+      cartTitle: "Votre panier atelier",
+      cartIntro: "Relisez vos créations avant la demande pour {country}.",
+      checkoutEyebrow: "Avant de finaliser",
+      checkoutTitle: "Vérifiez votre commande",
+      checkoutIntro: "Les conditions de l’atelier restent visibles avant toute demande.",
+      checkoutPaymentNotice: "Les moyens de paiement de l’atelier seront précisés avant validation.",
+    };
+    await expect(callerFor().owner.saveCheckoutPageCopy(input)).resolves.toMatchObject(input);
+    expect(db.getDesignProfile).toHaveBeenCalledWith(77);
+    expect(db.updateDesignProfile).toHaveBeenCalledWith(expect.objectContaining(input), 77);
+  });
+
+  it("edits carousel slides only inside the current resolved store", async () => {
+    const caller = callerFor();
+    await expect(caller.owner.getCarouselBanners()).resolves.toHaveLength(1);
+    expect(db.getAllBanners).toHaveBeenCalledWith(77);
+
+    const input = { title: "Créations Dyama", subtitle: "Diamond Painting et broderie", imageUrl: "/assets/dyama.webp", linkUrl: "/categorie/diamond-painting", active: true, displayOrder: 2 };
+    await expect(caller.owner.createCarouselBanner(input)).resolves.toEqual({ success: true, id: 13 });
+    expect(db.createBanner).toHaveBeenCalledWith(expect.objectContaining({ title: "Créations Dyama", active: 1 }), 77);
+
+    await expect(caller.owner.updateCarouselBanner({ id: 12, ...input, active: false })).resolves.toEqual({ success: true });
+    expect(db.updateBanner).toHaveBeenCalledWith(12, expect.objectContaining({ active: 0 }), 77);
+    expect(db.markPublicContentTranslationsStale).toHaveBeenCalledWith("banner", 12, 77);
+  });
+
+  it("uses only the resolved store for public market visibility", async () => {
+    await expect(callerFor().storefront.getMarketSettings()).resolves.toEqual(state.markets);
+    expect(db.getStoreMarketSettings).toHaveBeenCalledWith(77);
+  });
+
+  it("allows only the owner to prepare a scoped team invitation", async () => {
+    state.membership = { role: "owner", status: "active" };
+    const input = { name: "Éditeur test", email: "editeur@example.test", role: "catalog_editor" as const, confirmationEmail: "editeur@example.test" };
+    await expect(callerFor().owner.prepareTeamInvitation(input)).resolves.toMatchObject({
+      userId: 15,
+      activationLink: expect.stringContaining("token=one-time-token"),
+      emailSent: false,
+    });
+    expect(db.prepareStoreTeamInvitation).toHaveBeenCalledWith(expect.objectContaining({ storeId: 77, role: "catalog_editor" }));
+
+    state.membership = { role: "manager", status: "active" };
+    await expect(callerFor().owner.prepareTeamInvitation(input)).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("allows only the owner to block or restore a delegated membership in the resolved store", async () => {
+    state.membership = { role: "owner", status: "active" };
+    await expect(callerFor().owner.setTeamMemberStatus({ membershipId: 9, status: "blocked" })).resolves.toEqual({ membershipId: 9, status: "blocked" });
+    expect(db.setStoreTeamMemberStatus).toHaveBeenCalledWith({ membershipId: 9, status: "blocked", storeId: 77 });
+
+    state.membership = { role: "manager", status: "active" };
+    await expect(callerFor().owner.setTeamMemberStatus({ membershipId: 9, status: "active" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("lets only the owner reissue a pending invitation inside the resolved store", async () => {
+    state.membership = { role: "owner", status: "active" };
+    await expect(callerFor().owner.reissueTeamInvitation({ membershipId: 9 })).resolves.toMatchObject({
+      membershipId: 9,
+      email: "editeur@example.test",
+      activationLink: expect.stringContaining("token=replacement-token"),
+      emailSent: false,
+    });
+    // The client has no store id field to tamper with; the router takes it
+    // exclusively from the resolved host scope.
+    expect(db.reissueStoreTeamInvitation).toHaveBeenCalledWith({ membershipId: 9, storeId: 77 });
+
+    state.membership = { role: "manager", status: "active" };
+    await expect(callerFor().owner.reissueTeamInvitation({ membershipId: 9 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+});

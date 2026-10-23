@@ -1,0 +1,5277 @@
+import { TRPCError } from "@trpc/server";
+import { z } from "zod";
+import Stripe from "stripe";
+import { adminProcedure, catalogEditorProcedure, orderOperatorProcedure, platformProcedure, protectedProcedure, router } from "./_core/trpc";
+import * as db from "./db";
+import { SUPPORT_IMPERSONATION_COOKIE_NAME } from "../shared/const";
+import { getSupportImpersonationCookieOptions } from "./_core/cookies";
+import { sdk } from "./_core/sdk";
+import { normalizeSupportImpersonationIdentity, SUPPORT_IMPERSONATION_TTL_MS, supportImpersonationExpiresAt } from "./services/supportImpersonationSession";
+import { getStoreRecoveryHost } from "./services/storeScope";
+import { getAccountInvitationLink, getTransactionalEmailHealth, isTransactionalEmailConfigured, sendAccountInvitationEmail, sendTransactionalEmailTest } from "./transactionalEmail";
+import { createBrevoMarketingCampaignDraft, getBrevoMarketingStatus, listBrevoMarketingLists } from "./brevoMarketing";
+import { storagePut } from "./storage";
+import { buildCjVariantStoreData, checkCjSwissDelivery, getCjConnectionStatus, getCjGlobalWarehouses, prepareCjProductImport, quoteCjDelivery, searchCjCatalog, searchCjCatalogByImage, verifyCjConnection } from "./cjDropshipping";
+import { CJ_CUSTOM_SOURCING_COUNTRIES, CJ_CUSTOM_SOURCING_LIMITS, CJ_CUSTOM_SOURCING_RULES, CJ_CUSTOM_SOURCING_SHIPPING_METHODS, curateCjFashionDrafts, importCjCustomDraftBatch, importCjDraftBatchForCategory, listCjBatchCategories, listCjFashionBatchCategories } from "./cjBatchImport";
+import { getAliExpressConnectionStatus, verifyAliExpressPreparation } from "./aliExpress";
+import { getBigBuyConnectionStatus, verifyBigBuyPreparation } from "./bigBuy";
+import {
+  importedProductInputSchema,
+  normalizeImportedProduct,
+  previewSupplierProduct,
+  previewSupplierProductFromHtml,
+  previewProductInput,
+} from "./dropshipping";
+import { getMakeIntegrationStatus, sendMakeIntegrationTest } from "./makeIntegration";
+import { getCjFulfillmentSafetyStatus, prepareCjSandboxOrder } from "./services/cjFulfillment";
+import { completePaidStripeOrder, isVerifiedPaidStripeTestSession } from "./stripeWebhook";
+import { cancelOdooSaleOrder, createOdooPartner, getOdooCatalogSyncStatus, getOdooStatus, listOdooPartners, listOdooSaleOrders, syncCatalogToOdoo, updateOdooPartner, verifyOdooConnection } from "./services/odoo";
+import { getVisitsCount, getVisitsDaily, isVercelAnalyticsConfigured } from "./services/vercelAnalytics";
+import { isValidMetaPixelId, isValidTikTokPixelId } from "./services/trackingPixels";
+import { SUPPORTED_STORE_CURRENCIES } from "../shared/storeCurrency";
+import { navigationItem, ownerHomepageSections, ownerProductVariantFields } from "./ownerRouter";
+import { storefrontThemeIds, storefrontThemeLabels, type StorefrontThemeId } from "../shared/storefrontThemeCatalog";
+import { storeFactoryModelIds } from "../shared/storeFactoryModel";
+import { isStoreLaunchMarketId } from "../shared/storeLaunchMarket";
+import { ensureVercelManagedStoreDomain } from "./services/vercelManagedStoreDomain";
+import { invokeLLM } from "./_core/llm";
+import { generateImage, listImageModels } from "./_core/imageGeneration";
+import { buildStudioImageGenerationPrompt, studioImageFormats, studioImageStyles } from "./services/studioImageGenerationPolicy";
+import { keyInHandLandingContentSchema, proLandingContentSchema } from "../shared/keyInHandLanding";
+
+/** Supplier imports are a Pro benefit unless Studio explicitly grants one client store. */
+async function assertDropshippingAccess(storeId: number | undefined) {
+  if (!storeId) throw new TRPCError({ code: "FORBIDDEN", message: "L’espace dropshipping nécessite une boutique client active." });
+  const access = await db.getStoreDropshippingAccess(storeId);
+  if (!access.enabled) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Le dropshipping est réservé à l’offre PRO ou à une autorisation explicite de MAZIGHO Studio pour cette boutique.",
+    });
+  }
+}
+
+// Best-effort detection of the delivery country from a free-form shipping address.
+const DELIVERY_COUNTRY_LABELS: Record<string, string[]> = {
+  CH: ["suisse", "schweiz", "svizzera", "switzerland"],
+  FR: ["france"],
+  DE: ["allemagne", "deutschland", "germany"],
+  IT: ["italie", "italia", "italy"],
+  AT: ["autriche", "österreich", "oesterreich", "austria"],
+  BE: ["belgique", "belgië", "belgie", "belgium"],
+  NL: ["pays-bas", "nederland", "netherlands"],
+  ES: ["espagne", "españa", "espana", "spain"],
+};
+
+/**
+ * A reversible Studio starter template. It is intentionally an explicit
+ * operator action and is written only to the selected store's profile.
+ */
+const violetCraftThemeTemplate = {
+  paletteId: "violet" as const,
+  typographyId: "editorial" as const,
+  brandName: "Dyama",
+  brandMessage: "L’atelier créatif des projets qui vous ressemblent.",
+  highlightEyebrow: "Créations à votre rythme",
+  highlightTitle: "Donnez de l’éclat à vos idées.",
+  highlightText: "Diamond Painting, broderie, laine et petits accessoires : choisissez le projet qui vous fera plaisir, point par point.",
+  highlightImageUrl: "/assets/dyama/dyama-highlight-craft-table.webp",
+  storyTitle: "Chez Dyama, chaque détail devient une création.",
+  storyText: "Dyama réunit l’inspiration et le matériel pour s’accorder une vraie parenthèse créative. Que vous aimiez les tableaux de Diamond Painting, les fils colorés ou les ouvrages délicats, avancez simplement à votre rythme.",
+  storyImageUrl: "/assets/dyama/dyama-story-embroidery.webp",
+  editorialEyebrow: "L’atelier Dyama",
+  editorialTitle: "Le plaisir de créer, point par point.",
+  editorialImageUrl: "/assets/dyama/dyama-editorial-lavender.webp",
+  showReassurance: true,
+  reassuranceItems: [
+    { icon: "sparkles" as const, title: "Matériel inspirant", text: "Diamond Painting, broderie et mercerie pour vos envies créatives." },
+    { icon: "check" as const, title: "Pour tous les niveaux", text: "Des idées accessibles pour découvrir, apprendre et se faire plaisir." },
+    { icon: "arrow" as const, title: "Votre pause créative", text: "Prenez le temps de choisir un projet qui vous ressemble." },
+  ],
+  showDiscovery: true,
+  discoveryEyebrow: "Explorer l’atelier",
+  discoveryTitle: "Nos univers créatifs",
+  discoveryText: "Parcourez les catégories Dyama et laissez-vous guider vers votre prochain moment de création.",
+  discoveryAllShopLabel: "Voir la boutique",
+  discoveryAllShopUrl: "/boutique",
+  discoveryBrowseShopLabel: "Découvrir les créations",
+  discoveryBrowseShopUrl: "/boutique",
+  showStory: true,
+  showTestimonials: false,
+  testimonialsEyebrow: "La communauté Dyama",
+  testimonialsTitle: "Vos créations ont leur place ici.",
+  testimonialsText: "Les retours vérifiés de la communauté seront partagés ici lorsqu’ils existeront.",
+  testimonialsCtaLabel: "Explorer la boutique",
+  testimonialsCtaUrl: "/boutique",
+  showEditorial: true,
+  showFeatured: true,
+  showClosing: true,
+  closingEyebrow: "Imaginez, créez, recommencez",
+  closingTitle: "Votre prochain projet créatif commence ici.",
+  closingText: "Choisissez un motif, préparez votre coin atelier et savourez le plaisir d’avancer à votre rythme.",
+  closingShopCtaLabel: "Voir les créations",
+  closingShopCtaUrl: "/boutique",
+  closingContactCtaLabel: "Nous contacter",
+  closingContactCtaUrl: "/contact",
+  closingVisualValue: "",
+  closingVisualText: "Un atelier doux, coloré et entièrement à votre image.",
+  closingImageUrl: "/assets/dyama/dyama-closing-atelier.webp",
+  customColorsEnabled: true,
+  customPrimary: "#6D28D9",
+  customAccent: "#A855F7",
+  customSoft: "#F7F3FF",
+  navigationItems: [
+    { id: "home", label: "Accueil", href: "/", visible: true, kind: "system" as const },
+    { id: "shop", label: "Boutique", href: "/boutique", visible: true, kind: "system" as const },
+    { id: "categories", label: "", href: "/boutique", visible: false, kind: "system" as const },
+    { id: "creations", label: "", href: "/creations", visible: false, kind: "system" as const },
+    { id: "new", label: "", href: "/nouveautes", visible: false, kind: "system" as const },
+    { id: "best-sellers", label: "", href: "/best-sellers", visible: false, kind: "system" as const },
+    { id: "promos", label: "", href: "/promos", visible: false, kind: "system" as const },
+    { id: "contact", label: "Contact", href: "/contact", visible: true, kind: "system" as const },
+    { id: "custom-diamond-painting", label: "Diamond Painting", href: "/categorie/diamond-painting", visible: true, kind: "custom" as const },
+    { id: "custom-broderie", label: "Broderie & point de croix", href: "/boutique", visible: true, kind: "custom" as const },
+    { id: "custom-laine-crochet", label: "Laine & crochet", href: "/boutique", visible: true, kind: "custom" as const },
+  ],
+};
+
+const telephonyThemeTemplate = {
+  ...violetCraftThemeTemplate,
+  paletteId: "midnight" as const,
+  typographyId: "modern" as const,
+  brandName: "Connect & Gadgets",
+  brandMessage: "Les essentiels tech qui vous suivent au quotidien.",
+  highlightEyebrow: "Tech essentielle",
+  highlightTitle: "Restez connecté, simplement.",
+  highlightText: "Smartphones, accessoires pratiques et idées connectées : composez l’équipement qui vous accompagne chaque jour.",
+  highlightImageUrl: "/assets/category-high-tech-hero.webp",
+  storyTitle: "La technologie utile, choisie pour vous.",
+  storyText: "Connect & Gadgets réunit les accessoires qui simplifient l’usage de vos appareils : protection, charge, audio et idées connectées.",
+  storyImageUrl: "/assets/category-high-tech.webp",
+  editorialEyebrow: "Connect & Gadgets",
+  editorialTitle: "Vos appareils, mieux équipés.",
+  editorialImageUrl: "/assets/category-high-tech-hero.webp",
+  reassuranceItems: [
+    { icon: "sparkles" as const, title: "Sélection pratique", text: "Des accessoires choisis pour les usages de tous les jours." },
+    { icon: "check" as const, title: "Choix clair", text: "Une présentation simple pour comparer et choisir sereinement." },
+    { icon: "arrow" as const, title: "Toujours connecté", text: "Charge, protection et audio à portée de main." },
+  ],
+  discoveryEyebrow: "Explorer la tech",
+  discoveryTitle: "Nos univers connectés",
+  discoveryText: "Découvrez les catégories de la boutique et trouvez l’accessoire adapté à vos appareils.",
+  discoveryAllShopLabel: "Voir la boutique",
+  discoveryBrowseShopLabel: "Découvrir les accessoires",
+  testimonialsEyebrow: "La communauté Connect & Gadgets",
+  testimonialsTitle: "Vos usages inspirent la sélection.",
+  testimonialsText: "Les retours vérifiés seront publiés ici lorsqu’ils existeront.",
+  testimonialsCtaLabel: "Explorer la boutique",
+  closingEyebrow: "Connectez-vous à l’essentiel",
+  closingTitle: "L’accessoire utile est juste ici.",
+  closingText: "Équipez vos appareils avec des produits simples, pratiques et faciles à choisir.",
+  closingShopCtaLabel: "Voir les accessoires",
+  closingVisualText: "Une sélection tech claire, à votre image.",
+  closingImageUrl: "/assets/category-high-tech-hero.webp",
+  customColorsEnabled: true,
+  customPrimary: "#1D4ED8",
+  customAccent: "#06B6D4",
+  customSoft: "#EFF6FF",
+  navigationItems: [
+    { id: "home", label: "Accueil", href: "/", visible: true, kind: "system" as const },
+    { id: "shop", label: "Boutique", href: "/boutique", visible: true, kind: "system" as const },
+    { id: "categories", label: "", href: "/boutique", visible: false, kind: "system" as const },
+    { id: "creations", label: "", href: "/creations", visible: false, kind: "system" as const },
+    { id: "new", label: "", href: "/nouveautes", visible: false, kind: "system" as const },
+    { id: "best-sellers", label: "", href: "/best-sellers", visible: false, kind: "system" as const },
+    { id: "promos", label: "", href: "/promos", visible: false, kind: "system" as const },
+    { id: "contact", label: "Contact", href: "/contact", visible: true, kind: "system" as const },
+    { id: "custom-smartphones", label: "Smartphones", href: "/boutique", visible: true, kind: "custom" as const },
+    { id: "custom-protection", label: "Protection & charge", href: "/boutique", visible: true, kind: "custom" as const },
+    { id: "custom-audio", label: "Audio & gadgets", href: "/boutique", visible: true, kind: "custom" as const },
+  ],
+};
+
+const petThemeTemplate = {
+  ...violetCraftThemeTemplate,
+  paletteId: "sage" as const,
+  typographyId: "editorial" as const,
+  brandName: "Pattes & Compagnie",
+  brandMessage: "Tout le nécessaire pour prendre soin de leurs petites et grandes vies.",
+  highlightEyebrow: "Pour leurs meilleurs moments",
+  highlightTitle: "Le bien-être de vos compagnons, au quotidien.",
+  highlightText: "Des accessoires, jouets et essentiels choisis pour accompagner chiens, chats et leurs familles.",
+  highlightImageUrl: "/assets/themes/pet-category.webp",
+  storyTitle: "Parce qu’ils font partie de la famille.",
+  storyText: "Pattes & Compagnie rassemble des idées pratiques et douces pour les animaux du quotidien : jouer, se promener, se reposer et prendre soin d’eux.",
+  storyImageUrl: "/assets/themes/pet-hero.webp",
+  editorialEyebrow: "Pattes & Compagnie",
+  editorialTitle: "Des attentions choisies pour eux.",
+  editorialImageUrl: "/assets/themes/pet-category.webp",
+  reassuranceItems: [
+    { icon: "sparkles" as const, title: "Pensé pour eux", text: "Des idées pour les jeux, les promenades et le confort." },
+    { icon: "check" as const, title: "Choisir facilement", text: "Une sélection claire pour chaque compagnon." },
+    { icon: "arrow" as const, title: "Pour le quotidien", text: "Des petits essentiels qui font vraiment plaisir." },
+  ],
+  discoveryEyebrow: "Explorer l’univers animalier",
+  discoveryTitle: "Pour chiens, chats et compagnons",
+  discoveryText: "Parcourez les catégories de la boutique et préparez de beaux moments avec votre animal.",
+  discoveryAllShopLabel: "Voir la boutique",
+  discoveryBrowseShopLabel: "Découvrir les essentiels",
+  testimonialsEyebrow: "La communauté Pattes & Compagnie",
+  testimonialsTitle: "Vos compagnons ont leurs préférences.",
+  testimonialsText: "Les retours vérifiés seront publiés ici lorsqu’ils existeront.",
+  testimonialsCtaLabel: "Explorer la boutique",
+  closingEyebrow: "Pour leurs journées heureuses",
+  closingTitle: "Faites-leur plaisir, simplement.",
+  closingText: "Retrouvez les essentiels qui rendent les journées de vos compagnons plus douces et plus amusantes.",
+  closingShopCtaLabel: "Voir les essentiels",
+  closingVisualText: "Une boutique complice, pensée pour eux.",
+  closingImageUrl: "/assets/themes/pet-category.webp",
+  customColorsEnabled: true,
+  customPrimary: "#3F6212",
+  customAccent: "#D97706",
+  customSoft: "#F7F8E8",
+  navigationItems: [
+    { id: "home", label: "Accueil", href: "/", visible: true, kind: "system" as const },
+    { id: "shop", label: "Boutique", href: "/boutique", visible: true, kind: "system" as const },
+    { id: "categories", label: "", href: "/boutique", visible: false, kind: "system" as const },
+    { id: "creations", label: "", href: "/creations", visible: false, kind: "system" as const },
+    { id: "new", label: "", href: "/nouveautes", visible: false, kind: "system" as const },
+    { id: "best-sellers", label: "", href: "/best-sellers", visible: false, kind: "system" as const },
+    { id: "promos", label: "", href: "/promos", visible: false, kind: "system" as const },
+    { id: "contact", label: "Contact", href: "/contact", visible: true, kind: "system" as const },
+    { id: "custom-chien", label: "Chiens", href: "/boutique", visible: true, kind: "custom" as const },
+    { id: "custom-chat", label: "Chats", href: "/boutique", visible: true, kind: "custom" as const },
+    { id: "custom-promenade", label: "Jeux & promenades", href: "/boutique", visible: true, kind: "custom" as const },
+  ],
+};
+
+const fashionThemeTemplate = {
+  ...violetCraftThemeTemplate,
+  paletteId: "midnight" as const,
+  typographyId: "editorial" as const,
+  brandName: "Atelier Urbain",
+  brandMessage: "Des pièces pensées pour composer votre silhouette.",
+  highlightEyebrow: "La sélection de saison",
+  highlightTitle: "Composez votre silhouette, à votre façon.",
+  highlightText: "Des essentiels bien coupés et des pièces fortes pour passer du quotidien aux occasions avec naturel.",
+  highlightImageUrl: "/assets/themes/fashion/category-clothing.webp",
+  storyTitle: "Le style se construit dans les détails.",
+  storyText: "Atelier Urbain réunit vêtements, chaussures et accessoires dans une sélection claire, moderne et facile à faire évoluer selon votre univers de marque.",
+  storyImageUrl: "/assets/themes/fashion/category-accessories.webp",
+  editorialEyebrow: "Journal de saison",
+  editorialTitle: "Des matières, des silhouettes, des idées à porter.",
+  editorialImageUrl: "/assets/themes/fashion/category-shoes.webp",
+  reassuranceItems: [
+    { icon: "sparkles" as const, title: "Sélection éditoriale", text: "Des pièces pensées pour créer des silhouettes qui vous ressemblent." },
+    { icon: "check" as const, title: "Choisir simplement", text: "Une boutique claire pour explorer les matières, les coupes et les détails." },
+    { icon: "arrow" as const, title: "À votre rythme", text: "Des collections à parcourir selon vos envies et votre saison." },
+  ],
+  discoveryEyebrow: "Explorer la collection",
+  discoveryTitle: "Les essentiels de votre vestiaire",
+  discoveryText: "Découvrez les catégories de la boutique et composez votre style pièce après pièce.",
+  discoveryAllShopLabel: "Voir la collection",
+  discoveryBrowseShopLabel: "Découvrir les pièces",
+  testimonialsEyebrow: "La communauté Atelier Urbain",
+  testimonialsTitle: "Vos looks inspirent la sélection.",
+  testimonialsText: "Les retours vérifiés pourront être publiés ici lorsqu’ils existeront.",
+  testimonialsCtaLabel: "Explorer la collection",
+  closingEyebrow: "La pièce juste, au bon moment",
+  closingTitle: "Votre prochain essentiel est ici.",
+  closingText: "Parcourez une sélection moderne et faites évoluer votre vestiaire avec les pièces qui vous accompagnent vraiment.",
+  closingShopCtaLabel: "Voir la collection",
+  closingVisualText: "Une boutique mode éditoriale, entièrement à votre image.",
+  closingImageUrl: "/assets/themes/fashion/hero.webp",
+  customColorsEnabled: true,
+  customPrimary: "#334155",
+  customAccent: "#0284C7",
+  customSoft: "#F6F8FB",
+  buttonRadius: "flat" as const,
+  headerLayout: "split" as const,
+  navigationItems: [
+    { id: "home", label: "Accueil", href: "/", visible: true, kind: "system" as const },
+    { id: "new", label: "Nouveautés", href: "/nouveautes", visible: true, kind: "system" as const },
+    { id: "shop", label: "Vêtements", href: "/boutique", visible: true, kind: "system" as const },
+    { id: "categories", label: "", href: "/boutique", visible: false, kind: "system" as const },
+    { id: "creations", label: "", href: "/creations", visible: false, kind: "system" as const },
+    { id: "best-sellers", label: "", href: "/best-sellers", visible: false, kind: "system" as const },
+    { id: "promos", label: "", href: "/promos", visible: false, kind: "system" as const },
+    { id: "contact", label: "Journal", href: "/contact", visible: true, kind: "system" as const },
+    { id: "custom-chaussures", label: "Chaussures", href: "/boutique", visible: true, kind: "custom" as const },
+    { id: "custom-accessoires", label: "Sacs & accessoires", href: "/boutique", visible: true, kind: "custom" as const },
+  ],
+};
+
+const automotiveThemeTemplate = {
+  ...violetCraftThemeTemplate,
+  paletteId: "midnight" as const,
+  typographyId: "modern" as const,
+  brandName: "Atelier Route",
+  brandMessage: "La bonne pièce, au bon moment.",
+  highlightEyebrow: "Pièces & accessoires auto",
+  highlightTitle: "Entretenez votre véhicule avec confiance.",
+  highlightText: "Pièces fiables et accessoires utiles, sélectionnés pour faciliter la recherche, la compatibilité et les interventions du quotidien.",
+  highlightImageUrl: "/assets/themes/automotive/category-engine.webp",
+  storyTitle: "Trouver la bonne pièce, sans détour.",
+  storyText: "Atelier Route organise les familles essentielles par besoin : moteur, freinage, suspension, confort et sécurité. Chaque catégorie reste modifiable selon le catalogue de la boutique.",
+  storyImageUrl: "/assets/themes/automotive/category-brakes.webp",
+  editorialEyebrow: "Conseils d’atelier",
+  editorialTitle: "Mieux entretenir, mieux équiper, mieux rouler.",
+  editorialImageUrl: "/assets/themes/automotive/category-accessories.webp",
+  reassuranceItems: [
+    { icon: "sparkles" as const, title: "Recherche orientée besoin", text: "Un parcours clair pour retrouver une famille de pièces ou d’accessoires." },
+    { icon: "check" as const, title: "Choix structuré", text: "Des catégories pensées pour faciliter la comparaison et l’entretien." },
+    { icon: "arrow" as const, title: "Prêt pour la route", text: "Des équipements utiles pour la sécurité, le confort et le quotidien." },
+  ],
+  discoveryEyebrow: "Explorer l’atelier",
+  discoveryTitle: "Les essentiels de votre véhicule",
+  discoveryText: "Accédez directement aux grandes familles de pièces et d’accessoires de la boutique.",
+  discoveryAllShopLabel: "Voir toutes les pièces",
+  discoveryBrowseShopLabel: "Trouver ma pièce",
+  testimonialsEyebrow: "La communauté Atelier Route",
+  testimonialsTitle: "Vos trajets guident la sélection.",
+  testimonialsText: "Les retours vérifiés pourront être publiés ici lorsqu’ils existeront.",
+  testimonialsCtaLabel: "Explorer les pièces",
+  closingEyebrow: "Pour rouler plus sereinement",
+  closingTitle: "La pièce utile est juste ici.",
+  closingText: "Préparez vos interventions et équipez votre véhicule avec une sélection simple à parcourir et à personnaliser.",
+  closingShopCtaLabel: "Trouver ma pièce",
+  closingVisualText: "Un atelier automobile net, pratique et entièrement à votre image.",
+  closingImageUrl: "/assets/themes/automotive/hero.webp",
+  customColorsEnabled: true,
+  customPrimary: "#123047",
+  customAccent: "#D97706",
+  customSoft: "#F3F6F8",
+  buttonRadius: "flat" as const,
+  headerLayout: "searchFirst" as const,
+  navigationItems: [
+    { id: "home", label: "Accueil", href: "/", visible: true, kind: "system" as const },
+    { id: "shop", label: "Pièces par besoin", href: "/boutique", visible: true, kind: "system" as const },
+    { id: "categories", label: "", href: "/boutique", visible: false, kind: "system" as const },
+    { id: "creations", label: "", href: "/creations", visible: false, kind: "system" as const },
+    { id: "new", label: "", href: "/nouveautes", visible: false, kind: "system" as const },
+    { id: "best-sellers", label: "", href: "/best-sellers", visible: false, kind: "system" as const },
+    { id: "promos", label: "", href: "/promos", visible: false, kind: "system" as const },
+    { id: "contact", label: "Conseils", href: "/contact", visible: true, kind: "system" as const },
+    { id: "custom-accessoires-auto", label: "Accessoires", href: "/boutique", visible: true, kind: "custom" as const },
+    { id: "custom-entretien-auto", label: "Entretien & sécurité", href: "/boutique", visible: true, kind: "custom" as const },
+  ],
+};
+
+const beautyThemeTemplate = {
+  ...violetCraftThemeTemplate,
+  paletteId: "rose" as const,
+  typographyId: "editorial" as const,
+  brandName: "Atelier Beauté",
+  brandMessage: "Des gestes experts pour prendre soin de vous.",
+  highlightEyebrow: "L’art de prendre soin de soi",
+  highlightTitle: "Votre beauté, votre rituel.",
+  highlightText: "Des gestes experts, des produits choisis et une parenthèse rien qu’à vous, au salon comme à la maison.",
+  highlightImageUrl: "/assets/themes/beauty/category-face-body.webp",
+  storyTitle: "Une parenthèse pensée pour vous.",
+  storyText: "Atelier Beauté organise coiffure, soins et rituels bien-être dans un univers doux et élégant. Chaque texte, image, catégorie et lien reste ensuite librement personnalisable.",
+  storyImageUrl: "/assets/themes/beauty/category-hair.webp",
+  editorialEyebrow: "Le rituel du moment",
+  editorialTitle: "Prolongez l’expérience beauté chez vous.",
+  editorialImageUrl: "/assets/themes/beauty/category-wellbeing.webp",
+  reassuranceItems: [
+    { icon: "sparkles" as const, title: "Gestes experts", text: "Des inspirations pour les cheveux, le visage, le corps et vos rituels." },
+    { icon: "check" as const, title: "Choisir en douceur", text: "Une navigation claire pour découvrir prestations, soins et idées bien-être." },
+    { icon: "arrow" as const, title: "Votre moment", text: "Une expérience élégante à prolonger au salon comme à la maison." },
+  ],
+  discoveryEyebrow: "Découvrir l’atelier",
+  discoveryTitle: "Vos rituels beauté",
+  discoveryText: "Parcourez les univers de la boutique et trouvez le soin qui accompagne votre moment.",
+  discoveryAllShopLabel: "Voir les prestations",
+  discoveryBrowseShopLabel: "Découvrir les rituels",
+  testimonialsEyebrow: "La communauté Atelier Beauté",
+  testimonialsTitle: "Vos rituels inspirent la maison.",
+  testimonialsText: "Les retours vérifiés pourront être publiés ici lorsqu’ils existeront.",
+  testimonialsCtaLabel: "Explorer l’atelier",
+  closingEyebrow: "Une attention pour vous",
+  closingTitle: "Votre prochain rituel commence ici.",
+  closingText: "Choisissez le soin, la prestation ou l’idée bien-être qui accompagnera votre prochaine parenthèse.",
+  closingShopCtaLabel: "Découvrir les prestations",
+  closingVisualText: "Un univers beauté lumineux, éditorial et entièrement à votre image.",
+  closingImageUrl: "/assets/themes/beauty/hero.webp",
+  customColorsEnabled: true,
+  customPrimary: "#5B234F",
+  customAccent: "#A14B75",
+  customSoft: "#FFF6F8",
+  buttonRadius: "full" as const,
+  headerLayout: "split" as const,
+  navigationItems: [
+    { id: "home", label: "Accueil", href: "/", visible: true, kind: "system" as const },
+    { id: "shop", label: "Prestations", href: "/boutique", visible: true, kind: "system" as const },
+    { id: "categories", label: "", href: "/boutique", visible: false, kind: "system" as const },
+    { id: "creations", label: "", href: "/creations", visible: false, kind: "system" as const },
+    { id: "new", label: "", href: "/nouveautes", visible: false, kind: "system" as const },
+    { id: "best-sellers", label: "", href: "/best-sellers", visible: false, kind: "system" as const },
+    { id: "promos", label: "", href: "/promos", visible: false, kind: "system" as const },
+    { id: "contact", label: "À propos", href: "/contact", visible: true, kind: "system" as const },
+    { id: "custom-cheveux", label: "Cheveux", href: "/boutique", visible: true, kind: "custom" as const },
+    { id: "custom-visage-corps", label: "Visage & corps", href: "/boutique", visible: true, kind: "custom" as const },
+    { id: "custom-rituels-bien-etre", label: "Rituels bien-être", href: "/boutique", visible: true, kind: "custom" as const },
+  ],
+};
+
+const homeThemeTemplate = {
+  ...violetCraftThemeTemplate,
+  paletteId: "sage" as const,
+  typographyId: "editorial" as const,
+  brandName: "Maison Douce",
+  brandMessage: "Des objets qui rendent les jours plus beaux.",
+  highlightEyebrow: "Maison & art de vivre",
+  highlightTitle: "Une maison qui vous ressemble, dans chaque détail.",
+  highlightText: "Matières naturelles, objets choisis et petits essentiels pour composer un intérieur serein et vivant.",
+  highlightImageUrl: "/assets/category-maison.webp",
+  storyTitle: "Le beau se vit au quotidien.",
+  storyText: "Maison Douce rassemble décoration, table, textiles et rangements dans une vitrine lumineuse que vous pourrez réécrire entièrement selon votre maison.",
+  storyImageUrl: "/assets/category-maison-hero.webp",
+  editorialEyebrow: "Inspiration de saison",
+  editorialTitle: "Des gestes simples pour habiter chaque pièce.",
+  editorialImageUrl: "/assets/home-editorial-divider.webp",
+  reassuranceItems: [
+    { icon: "sparkles" as const, title: "Matières à aimer", text: "Des univers chaleureux pour imaginer une maison qui vous ressemble." },
+    { icon: "check" as const, title: "Choisir sereinement", text: "Des familles claires pour parcourir décoration, table et textile." },
+    { icon: "arrow" as const, title: "À composer", text: "Une sélection qui s’enrichit au fil de vos espaces et de vos envies." },
+  ],
+  discoveryEyebrow: "Explorer la maison",
+  discoveryTitle: "Des objets pour chaque pièce",
+  discoveryText: "Parcourez les collections et trouvez les détails qui changent l’atmosphère de votre intérieur.",
+  discoveryAllShopLabel: "Voir toute la maison",
+  discoveryBrowseShopLabel: "Découvrir les collections",
+  testimonialsEyebrow: "La communauté Maison Douce",
+  testimonialsTitle: "Vos intérieurs racontent une histoire.",
+  testimonialsText: "Les retours vérifiés pourront être publiés ici lorsqu’ils existeront.",
+  testimonialsCtaLabel: "Explorer la maison",
+  closingEyebrow: "Créer votre atmosphère",
+  closingTitle: "Les détails font toute la maison.",
+  closingText: "Composez un intérieur doux, personnel et vivant, un objet choisi après l’autre.",
+  closingShopCtaLabel: "Voir les collections",
+  closingVisualText: "Une vitrine maison chaleureuse, éditoriale et entièrement à votre image.",
+  closingImageUrl: "/assets/category-maison-hero.webp",
+  customColorsEnabled: true,
+  customPrimary: "#5E6F52",
+  customAccent: "#A8693A",
+  customSoft: "#F7F4EC",
+  buttonRadius: "full" as const,
+  headerLayout: "split" as const,
+  navigationItems: [
+    { id: "home", label: "Accueil", href: "/", visible: true, kind: "system" as const },
+    { id: "shop", label: "La maison", href: "/boutique", visible: true, kind: "system" as const },
+    { id: "categories", label: "", href: "/boutique", visible: false, kind: "system" as const },
+    { id: "creations", label: "", href: "/creations", visible: false, kind: "system" as const },
+    { id: "new", label: "Nouveautés", href: "/nouveautes", visible: true, kind: "system" as const },
+    { id: "best-sellers", label: "", href: "/best-sellers", visible: false, kind: "system" as const },
+    { id: "promos", label: "", href: "/promos", visible: false, kind: "system" as const },
+    { id: "contact", label: "Journal", href: "/contact", visible: true, kind: "system" as const },
+    { id: "custom-decoration", label: "Décoration", href: "/boutique", visible: true, kind: "custom" as const },
+    { id: "custom-table", label: "Table & cuisine", href: "/boutique", visible: true, kind: "custom" as const },
+    { id: "custom-textile", label: "Textiles", href: "/boutique", visible: true, kind: "custom" as const },
+  ],
+};
+
+const sportThemeTemplate = {
+  ...violetCraftThemeTemplate,
+  paletteId: "midnight" as const,
+  typographyId: "modern" as const,
+  brandName: "Mouvement",
+  brandMessage: "S’entraîner, sortir, progresser.",
+  highlightEyebrow: "Sport & outdoor",
+  highlightTitle: "Bougez à votre rythme. Allez plus loin.",
+  highlightText: "Équipement, récupération et essentiels outdoor choisis pour accompagner chaque objectif, du premier pas à la prochaine aventure.",
+  highlightImageUrl: "/assets/category-sport.webp",
+  storyTitle: "Le mouvement commence par l’envie.",
+  storyText: "Mouvement organise les essentiels d’entraînement et de plein air dans un parcours direct, énergique et facile à faire évoluer avec votre catalogue.",
+  storyImageUrl: "/assets/category-sport-hero.webp",
+  editorialEyebrow: "Objectif du moment",
+  editorialTitle: "Préparez-vous pour votre prochaine sortie.",
+  editorialImageUrl: "/assets/category-sport-sm.webp",
+  reassuranceItems: [
+    { icon: "sparkles" as const, title: "Pour avancer", text: "Des univers qui donnent envie d’entraîner le corps et de sortir dehors." },
+    { icon: "check" as const, title: "Trouver vite", text: "Une recherche et des familles produit pensées pour un choix direct." },
+    { icon: "arrow" as const, title: "Garder le rythme", text: "Des essentiels pour l’entraînement, l’outdoor et la récupération." },
+  ],
+  discoveryEyebrow: "Choisir son terrain",
+  discoveryTitle: "Entraînement, outdoor, récupération",
+  discoveryText: "Explorez les catégories et préparez votre prochaine séance, sortie ou aventure.",
+  discoveryAllShopLabel: "Voir tout l’équipement",
+  discoveryBrowseShopLabel: "Trouver mon équipement",
+  testimonialsEyebrow: "La communauté Mouvement",
+  testimonialsTitle: "Chaque progression compte.",
+  testimonialsText: "Les retours vérifiés pourront être publiés ici lorsqu’ils existeront.",
+  testimonialsCtaLabel: "Explorer l’équipement",
+  closingEyebrow: "Le prochain départ",
+  closingTitle: "Votre énergie mérite le bon équipement.",
+  closingText: "Parcourez les essentiels qui accompagnent votre rythme, vos objectifs et vos sorties.",
+  closingShopCtaLabel: "Voir l’équipement",
+  closingVisualText: "Une vitrine sport intense, nette et entièrement à votre image.",
+  closingImageUrl: "/assets/category-sport-hero.webp",
+  customColorsEnabled: true,
+  customPrimary: "#14532D",
+  customAccent: "#F97316",
+  customSoft: "#F0FDF4",
+  buttonRadius: "flat" as const,
+  headerLayout: "searchFirst" as const,
+  navigationItems: [
+    { id: "home", label: "Accueil", href: "/", visible: true, kind: "system" as const },
+    { id: "shop", label: "Équipement", href: "/boutique", visible: true, kind: "system" as const },
+    { id: "categories", label: "", href: "/boutique", visible: false, kind: "system" as const },
+    { id: "creations", label: "", href: "/creations", visible: false, kind: "system" as const },
+    { id: "new", label: "Nouveautés", href: "/nouveautes", visible: true, kind: "system" as const },
+    { id: "best-sellers", label: "", href: "/best-sellers", visible: false, kind: "system" as const },
+    { id: "promos", label: "", href: "/promos", visible: false, kind: "system" as const },
+    { id: "contact", label: "Guides", href: "/contact", visible: true, kind: "system" as const },
+    { id: "custom-training", label: "Entraînement", href: "/boutique", visible: true, kind: "custom" as const },
+    { id: "custom-outdoor", label: "Outdoor", href: "/boutique", visible: true, kind: "custom" as const },
+    { id: "custom-recovery", label: "Récupération", href: "/boutique", visible: true, kind: "custom" as const },
+  ],
+};
+
+const jewelryThemeTemplate = {
+  ...violetCraftThemeTemplate,
+  paletteId: "rose" as const,
+  typographyId: "editorial" as const,
+  brandName: "Éclat Atelier",
+  brandMessage: "Des détails précieux pour les moments qui comptent.",
+  highlightEyebrow: "Bijoux & cadeaux",
+  highlightTitle: "Une lumière à porter, une attention à offrir.",
+  highlightText: "Pièces délicates, matières lumineuses et idées cadeaux choisies pour accompagner les souvenirs et les célébrations.",
+  highlightImageUrl: "/assets/themes/jewelry-hero.webp",
+  storyTitle: "Les détails deviennent des souvenirs.",
+  storyText: "Éclat Atelier transforme la découverte de bijoux en une expérience douce, précieuse et personnelle. Chaque mot, image et collection reste librement personnalisable.",
+  storyImageUrl: "/assets/themes/jewelry-hero.webp",
+  editorialEyebrow: "Édition cadeau",
+  editorialTitle: "Un éclat choisi pour chaque occasion.",
+  editorialImageUrl: "/assets/themes/jewelry-hero.webp",
+  reassuranceItems: [
+    { icon: "sparkles" as const, title: "À offrir ou à garder", text: "Des collections imaginées pour les gestes qui ont du sens." },
+    { icon: "check" as const, title: "Choisir avec soin", text: "Une présentation claire pour explorer matières, collections et attentions." },
+    { icon: "arrow" as const, title: "Pour marquer l’instant", text: "Des idées lumineuses à découvrir selon chaque occasion." },
+  ],
+  discoveryEyebrow: "Explorer les collections",
+  discoveryTitle: "Des pièces pour chaque attention",
+  discoveryText: "Découvrez les collections, les idées cadeaux et les détails qui font briller un moment.",
+  discoveryAllShopLabel: "Voir toutes les pièces",
+  discoveryBrowseShopLabel: "Trouver une attention",
+  testimonialsEyebrow: "La communauté Éclat Atelier",
+  testimonialsTitle: "Vos histoires font briller la maison.",
+  testimonialsText: "Les retours vérifiés pourront être publiés ici lorsqu’ils existeront.",
+  testimonialsCtaLabel: "Explorer les collections",
+  closingEyebrow: "Le détail juste",
+  closingTitle: "Offrez un éclat qui reste.",
+  closingText: "Parcourez les collections et trouvez la pièce qui accompagnera le prochain souvenir.",
+  closingShopCtaLabel: "Voir les bijoux",
+  closingVisualText: "Une vitrine bijoux précieuse, raffinée et entièrement à votre image.",
+  closingImageUrl: "/assets/themes/jewelry-hero.webp",
+  customColorsEnabled: true,
+  customPrimary: "#6B4F13",
+  customAccent: "#B45309",
+  customSoft: "#FFFBEA",
+  buttonRadius: "full" as const,
+  headerLayout: "split" as const,
+  navigationItems: [
+    { id: "home", label: "Accueil", href: "/", visible: true, kind: "system" as const },
+    { id: "shop", label: "Collections", href: "/boutique", visible: true, kind: "system" as const },
+    { id: "categories", label: "", href: "/boutique", visible: false, kind: "system" as const },
+    { id: "creations", label: "", href: "/creations", visible: false, kind: "system" as const },
+    { id: "new", label: "Nouveautés", href: "/nouveautes", visible: true, kind: "system" as const },
+    { id: "best-sellers", label: "", href: "/best-sellers", visible: false, kind: "system" as const },
+    { id: "promos", label: "", href: "/promos", visible: false, kind: "system" as const },
+    { id: "contact", label: "La maison", href: "/contact", visible: true, kind: "system" as const },
+    { id: "custom-bagues", label: "Bagues", href: "/boutique", visible: true, kind: "custom" as const },
+    { id: "custom-colliers", label: "Colliers & bracelets", href: "/boutique", visible: true, kind: "custom" as const },
+    { id: "custom-cadeaux", label: "Idées cadeaux", href: "/boutique", visible: true, kind: "custom" as const },
+  ],
+};
+
+const coffeeThemeTemplate = {
+  ...violetCraftThemeTemplate,
+  paletteId: "terracotta" as const,
+  typographyId: "classic" as const,
+  brandName: "Maison Café",
+  brandMessage: "Des saveurs choisies pour ralentir et partager.",
+  highlightEyebrow: "Café, thé & épicerie fine",
+  highlightTitle: "Faites de chaque tasse un vrai moment.",
+  highlightText: "Cafés de caractère, thés réconfortants, douceurs et accessoires pour découvrir, offrir et savourer.",
+  highlightImageUrl: "/assets/themes/coffee-hero.webp",
+  storyTitle: "Les belles journées commencent parfois par un café.",
+  storyText: "Maison Café organise les saveurs, les origines et les accessoires dans un univers chaleureux, artisanal et entièrement adaptable à votre sélection.",
+  storyImageUrl: "/assets/themes/coffee-hero.webp",
+  editorialEyebrow: "Le choix de la maison",
+  editorialTitle: "Des origines, des rituels, des découvertes.",
+  editorialImageUrl: "/assets/themes/coffee-hero.webp",
+  reassuranceItems: [
+    { icon: "sparkles" as const, title: "Des saveurs à explorer", text: "Une boutique gourmande pour parcourir cafés, thés et attentions." },
+    { icon: "check" as const, title: "Choisir son rituel", text: "Des familles claires pour retrouver une origine, une douceur ou un accessoire." },
+    { icon: "arrow" as const, title: "À partager", text: "Des idées à découvrir pour le matin, l’après-midi et les cadeaux." },
+  ],
+  discoveryEyebrow: "Explorer les saveurs",
+  discoveryTitle: "Cafés, thés et découvertes gourmandes",
+  discoveryText: "Parcourez les collections et composez votre prochain rituel de dégustation.",
+  discoveryAllShopLabel: "Voir toutes les saveurs",
+  discoveryBrowseShopLabel: "Découvrir le café",
+  testimonialsEyebrow: "La communauté Maison Café",
+  testimonialsTitle: "Les plus belles pauses se partagent.",
+  testimonialsText: "Les retours vérifiés pourront être publiés ici lorsqu’ils existeront.",
+  testimonialsCtaLabel: "Explorer les saveurs",
+  closingEyebrow: "Une tasse, un moment",
+  closingTitle: "Votre prochain rituel est prêt.",
+  closingText: "Choisissez les saveurs qui accompagneront vos matins, vos pauses et vos attentions à offrir.",
+  closingShopCtaLabel: "Voir les collections",
+  closingVisualText: "Une vitrine café artisanale, chaleureuse et entièrement à votre image.",
+  closingImageUrl: "/assets/themes/coffee-hero.webp",
+  customColorsEnabled: true,
+  customPrimary: "#5A321E",
+  customAccent: "#C46B2C",
+  customSoft: "#FFF7ED",
+  buttonRadius: "full" as const,
+  headerLayout: "inline" as const,
+  navigationItems: [
+    { id: "home", label: "Accueil", href: "/", visible: true, kind: "system" as const },
+    { id: "shop", label: "Les saveurs", href: "/boutique", visible: true, kind: "system" as const },
+    { id: "categories", label: "", href: "/boutique", visible: false, kind: "system" as const },
+    { id: "creations", label: "", href: "/creations", visible: false, kind: "system" as const },
+    { id: "new", label: "Nouveautés", href: "/nouveautes", visible: true, kind: "system" as const },
+    { id: "best-sellers", label: "", href: "/best-sellers", visible: false, kind: "system" as const },
+    { id: "promos", label: "", href: "/promos", visible: false, kind: "system" as const },
+    { id: "contact", label: "Le journal", href: "/contact", visible: true, kind: "system" as const },
+    { id: "custom-cafes", label: "Cafés", href: "/boutique", visible: true, kind: "custom" as const },
+    { id: "custom-thes", label: "Thés & infusions", href: "/boutique", visible: true, kind: "custom" as const },
+    { id: "custom-cadeaux-gourmands", label: "Cadeaux gourmands", href: "/boutique", visible: true, kind: "custom" as const },
+  ],
+};
+
+const gallerySignatureThemeTemplate = {
+  ...violetCraftThemeTemplate,
+  paletteId: "midnight" as const,
+  typographyId: "editorial" as const,
+  brandName: "Galerie Signature",
+  brandMessage: "Objets, matières et éditions choisies.",
+  highlightEyebrow: "Édition inaugurale",
+  highlightTitle: "Des objets qui occupent l’espace avec justesse.",
+  highlightText: "Une sélection conçue comme une galerie : peu de bruit, des matières fortes et une place accordée à chaque pièce.",
+  highlightImageUrl: "/assets/themes/galerie-signature/hero.webp",
+  storyEyebrow: "Le regard de la maison",
+  storyTitle: "Une collection se compose comme un intérieur.",
+  storyText: "Galerie Signature met les objets, les gestes et les détails au premier plan. La boutique conserve une écriture éditoriale, mais chaque image, texte et catégorie reste entièrement libre.",
+  storyFollowup: "Choisissez les collections, le rythme et l’atmosphère qui traduisent votre marque.",
+  storyImageUrl: "/assets/themes/galerie-signature/hero.webp",
+  storyPoints: ["Pièces choisies", "Matières remarquées", "Éditions à vivre"],
+  storyCtaLabel: "Explorer la collection",
+  storyCtaUrl: "/boutique",
+  storyVisualEyebrow: "Galerie Signature",
+  storyVisualTitle: "Une présence discrète, un caractère affirmé.",
+  storyPromiseEyebrow: "La promesse",
+  storyPromise: "Un catalogue qui laisse respirer les pièces.",
+  editorialEyebrow: "Journal de la galerie",
+  editorialTitle: "Des formes, des matières et des histoires à collectionner.",
+  editorialImageUrl: "/assets/themes/galerie-signature/hero.webp",
+  reassuranceItems: [
+    { icon: "sparkles" as const, title: "Sélection soignée", text: "Une présentation pensée pour donner de l’espace à chaque pièce." },
+    { icon: "check" as const, title: "Détails clairs", text: "Les informations essentielles restent accessibles sans alourdir la visite." },
+    { icon: "arrow" as const, title: "Collections vivantes", text: "Ajoutez, masquez ou réorganisez les univers à votre rythme." },
+  ],
+  discoveryEyebrow: "Les collections",
+  discoveryTitle: "Explorez par matière, intention ou moment.",
+  discoveryText: "Les catégories deviennent des salles à parcourir. Leur nom, leur image et leur ordre restent modifiables par la boutique.",
+  discoveryAllShopLabel: "Voir toute la galerie",
+  discoveryAllShopUrl: "/boutique",
+  discoveryBrowseShopLabel: "Parcourir les pièces",
+  discoveryBrowseShopUrl: "/boutique",
+  testimonialsEyebrow: "La note des visiteurs",
+  testimonialsTitle: "Une maison se construit avec le temps.",
+  testimonialsText: "Les avis vérifiés pourront être publiés ici lorsqu’ils existeront.",
+  testimonialsCtaLabel: "Découvrir la galerie",
+  testimonialsCtaUrl: "/boutique",
+  closingEyebrow: "Une pièce peut tout changer",
+  closingTitle: "Composez un univers qui ne ressemble qu’à vous.",
+  closingText: "Faites évoluer les collections, les images et la narration afin que la vitrine reste fidèle à votre regard.",
+  closingShopCtaLabel: "Voir la collection",
+  closingShopCtaUrl: "/boutique",
+  closingContactCtaLabel: "Nous écrire",
+  closingContactCtaUrl: "/contact",
+  closingVisualText: "Une vitrine galerie, entièrement modulable.",
+  closingImageUrl: "/assets/themes/galerie-signature/hero.webp",
+  customColorsEnabled: true,
+  customPrimary: "#142033",
+  customAccent: "#B68A45",
+  customSoft: "#F7F4EE",
+  buttonRadius: "flat" as const,
+  headerLayout: "gallery" as const,
+  showTestimonials: false,
+  homeOrder: ["text:gallery-manifesto", "discovery", "story", "text:gallery-edition", "editorial", "featured"],
+  textBanners: [
+    { id: "gallery-manifesto", eyebrow: "Le manifeste", title: "Un espace conçu pour voir autrement.", text: "Donnez à votre marque une entrée plus éditoriale : une phrase forte, une collection phare ou un geste de créateur.", buttonLabel: "Découvrir les pièces", buttonUrl: "/boutique", imageUrl: "/assets/themes/galerie-signature/hero.webp", imageAlt: "Objets design dans une galerie contemporaine", layout: "spotlight" as const, theme: "dark" as const, enabled: true },
+    { id: "gallery-edition", eyebrow: "Édition limitée", title: "Une sélection qui mérite un second regard.", text: "Utilisez ce bloc pour raconter une collection capsule, un savoir-faire ou une nouvelle arrivée.", buttonLabel: "Voir la sélection", buttonUrl: "/nouveautes", imageUrl: "/assets/themes/galerie-signature/hero.webp", imageAlt: "Composition design premium", layout: "split" as const, theme: "light" as const, enabled: true },
+  ],
+  navigationItems: [
+    { id: "home", label: "Accueil", href: "/", visible: true, kind: "system" as const },
+    { id: "shop", label: "La galerie", href: "/boutique", visible: true, kind: "system" as const },
+    { id: "categories", label: "Collections", href: "/boutique", visible: true, kind: "system" as const },
+    { id: "creations", label: "", href: "/creations", visible: false, kind: "system" as const },
+    { id: "new", label: "Nouvelles pièces", href: "/nouveautes", visible: true, kind: "system" as const },
+    { id: "best-sellers", label: "", href: "/best-sellers", visible: false, kind: "system" as const },
+    { id: "promos", label: "", href: "/promos", visible: false, kind: "system" as const },
+    { id: "contact", label: "La maison", href: "/contact", visible: true, kind: "system" as const },
+    { id: "custom-editions", label: "Éditions", href: "/boutique", visible: true, kind: "custom" as const },
+    { id: "custom-objets", label: "Objets", href: "/boutique", visible: true, kind: "custom" as const },
+    { id: "custom-inspirations", label: "Inspirations", href: "/boutique", visible: true, kind: "custom" as const },
+  ],
+};
+
+const studioFluxThemeTemplate = {
+  ...violetCraftThemeTemplate,
+  paletteId: "midnight" as const,
+  typographyId: "modern" as const,
+  brandName: "Studio Flux",
+  brandMessage: "La sélection contemporaine, en mouvement.",
+  highlightEyebrow: "Sélection en mouvement",
+  highlightTitle: "Les essentiels qui donnent le ton.",
+  highlightText: "Une vitrine graphique et directe pour mettre les nouveautés, les produits phares et les collections utiles au premier plan.",
+  highlightImageUrl: "/assets/themes/studio-flux/hero.webp",
+  storyEyebrow: "Le Studio",
+  storyTitle: "Trouver vite. Choisir mieux. Revenir souvent.",
+  storyText: "Studio Flux rapproche la recherche, les nouveautés et les collections dans un parcours vif, lisible et prêt à suivre le rythme de votre catalogue.",
+  storyFollowup: "Ajustez chaque bloc, chaque couleur, chaque texte et chaque onglet quand votre offre évolue.",
+  storyImageUrl: "/assets/themes/studio-flux/hero.webp",
+  storyPoints: ["Drops à suivre", "Choix rapides", "Collections actives"],
+  storyCtaLabel: "Voir la sélection",
+  storyCtaUrl: "/boutique",
+  storyVisualEyebrow: "Studio Flux",
+  storyVisualTitle: "Une boutique qui garde le rythme.",
+  storyPromiseEyebrow: "En clair",
+  storyPromise: "Les essentiels d’abord, le reste à votre main.",
+  editorialEyebrow: "Focus collection",
+  editorialTitle: "Une mise en avant nette pour chaque nouvel arrivage.",
+  editorialImageUrl: "/assets/themes/studio-flux/hero.webp",
+  reassuranceItems: [
+    { icon: "sparkles" as const, title: "Sélection actualisée", text: "Les nouveautés et les produits phares prennent naturellement la première place." },
+    { icon: "check" as const, title: "Recherche prioritaire", text: "Un accès plus direct au catalogue pour retrouver une pièce ou une idée." },
+    { icon: "arrow" as const, title: "Vitrine flexible", text: "Le propriétaire peut changer, masquer ou déplacer chaque élément de la composition." },
+  ],
+  discoveryEyebrow: "Choisir son univers",
+  discoveryTitle: "Des catégories nettes, prêtes à avancer.",
+  discoveryText: "Exposez les familles qui comptent et réorganisez-les à mesure que la boutique s’enrichit.",
+  discoveryAllShopLabel: "Voir tout le catalogue",
+  discoveryAllShopUrl: "/boutique",
+  discoveryBrowseShopLabel: "Explorer les produits",
+  discoveryBrowseShopUrl: "/boutique",
+  testimonialsEyebrow: "Le flux des clients",
+  testimonialsTitle: "Les avis vérifiés trouvent leur place ici.",
+  testimonialsText: "Les retours vérifiés pourront être publiés ici lorsqu’ils existeront.",
+  testimonialsCtaLabel: "Explorer le catalogue",
+  testimonialsCtaUrl: "/boutique",
+  closingEyebrow: "Toujours une longueur d’avance",
+  closingTitle: "Faites passer les produits importants devant.",
+  closingText: "Le Studio reste vivant : remplacez les visuels, changez les messages et mettez en lumière ce qui compte maintenant.",
+  closingShopCtaLabel: "Voir les produits",
+  closingShopCtaUrl: "/boutique",
+  closingContactCtaLabel: "Nous contacter",
+  closingContactCtaUrl: "/contact",
+  closingVisualText: "Un commerce graphique, rapide et modulable.",
+  closingImageUrl: "/assets/themes/studio-flux/hero.webp",
+  customColorsEnabled: true,
+  customPrimary: "#183B73",
+  customAccent: "#F2683A",
+  customSoft: "#F4F7FC",
+  buttonRadius: "rounded" as const,
+  headerLayout: "market" as const,
+  showTestimonials: false,
+  // Hero is rendered by the theme. The product gallery must be the first
+  // homepage section, followed by the editorial blocks; no generic brand
+  // block may appear between the Studio Flux hero and its products.
+  homeOrder: ["featured", "text:flux-drop", "discovery", "text:flux-service", "story", "editorial", "highlight", "reassurance"],
+  textBanners: [
+    { id: "flux-drop", eyebrow: "À la une", title: "Le drop de la semaine commence ici.", text: "Un bloc premium pour faire ressortir une capsule, un lancement ou une sélection saisonnière sans transformer la boutique en campagne automatique.", buttonLabel: "Découvrir", buttonUrl: "/nouveautes", imageUrl: "/assets/themes/studio-flux/hero.webp", imageAlt: "Sélection contemporaine sur des socles graphiques", layout: "banner" as const, theme: "primary" as const, enabled: true },
+    { id: "flux-service", eyebrow: "Le bon choix", title: "Un parcours rapide, sans sacrifier le style.", text: "Présentez ici une promesse de marque, un service ou une collection à forte valeur ajoutée.", buttonLabel: "Voir le catalogue", buttonUrl: "/boutique", imageUrl: "/assets/themes/studio-flux/hero.webp", imageAlt: "Objets contemporains dans une composition graphique", layout: "split" as const, theme: "soft" as const, enabled: true },
+  ],
+  navigationItems: [
+    { id: "home", label: "Accueil", href: "/", visible: true, kind: "system" as const },
+    { id: "shop", label: "Shop", href: "/boutique", visible: true, kind: "system" as const },
+    { id: "categories", label: "Univers", href: "/boutique", visible: true, kind: "system" as const },
+    { id: "creations", label: "", href: "/creations", visible: false, kind: "system" as const },
+    { id: "new", label: "Nouveautés", href: "/nouveautes", visible: true, kind: "system" as const },
+    { id: "best-sellers", label: "Les plus choisis", href: "/best-sellers", visible: true, kind: "system" as const },
+    { id: "promos", label: "Offres", href: "/promos", visible: true, kind: "system" as const },
+    { id: "contact", label: "Le Studio", href: "/contact", visible: true, kind: "system" as const },
+    { id: "custom-lancements", label: "Lancements", href: "/nouveautes", visible: true, kind: "custom" as const },
+    { id: "custom-essentiels", label: "Essentiels", href: "/boutique", visible: true, kind: "custom" as const },
+  ],
+};
+
+const marketExpressThemeTemplate = {
+  ...studioFluxThemeTemplate,
+  brandName: "Market Express",
+  brandMessage: "Vos courses du quotidien, réunies et livrées près de chez vous.",
+  highlightEyebrow: "Courses & livraison locale",
+  highlightTitle: "Vos courses, livrées simplement.",
+  highlightText: "Épicerie, frais, maison et plats prêts à déguster : composez votre panier selon les rayons réellement proposés.",
+  highlightImageUrl: "https://files.manuscdn.com/user_upload_by_module/session_file/310519663209309444/WbCbbwpstYGIDuNO.webp",
+  storyEyebrow: "Le marché de proximité",
+  storyTitle: "Tout le quotidien, dans un parcours clair.",
+  storyText: "Market Express met la recherche, les rayons et les produits essentiels au premier plan, sans imposer de zone de livraison ni de catalogue fictif.",
+  storyFollowup: "Le propriétaire adapte les produits, les stocks, les prix, les visuels, les villes desservies et les informations pratiques à son activité réelle.",
+  storyImageUrl: "https://files.manuscdn.com/user_upload_by_module/session_file/310519663209309444/cnAowZRkPshafOHJ.webp",
+  storyPoints: ["Rayons à organiser", "Livraison à préciser", "Catalogue évolutif"],
+  storyCtaLabel: "Explorer les rayons",
+  storyCtaUrl: "/boutique",
+  storyVisualEyebrow: "Market Express",
+  storyVisualTitle: "Le quotidien, mieux organisé.",
+  storyPromiseEyebrow: "À votre rythme",
+  storyPromise: "Une base locale, prête à évoluer avec la boutique.",
+  editorialEyebrow: "Les essentiels du moment",
+  editorialTitle: "Des rayons pensés pour les besoins de chaque jour.",
+  editorialImageUrl: "https://files.manuscdn.com/user_upload_by_module/session_file/310519663209309444/MXImLWcePpQzSEtj.webp",
+  reassuranceItems: [
+    { icon: "sparkles" as const, title: "Rayons faciles à parcourir", text: "Épicerie, frais, maison et services restent accessibles dès l’accueil." },
+    { icon: "check" as const, title: "Informations à votre main", text: "Prix, stock, disponibilité et zones desservies sont définis par la boutique." },
+    { icon: "arrow" as const, title: "Prêt à accompagner la croissance", text: "Ajoutez des catégories et faites défiler le ruban de rayons sans changer le modèle." },
+  ],
+  discoveryEyebrow: "Choisir un rayon",
+  discoveryTitle: "Les familles de produits qui font le quotidien.",
+  discoveryText: "Présentez les rayons réellement disponibles et remplacez librement leurs images à mesure que l’offre évolue.",
+  discoveryAllShopLabel: "Voir tout le catalogue",
+  discoveryAllShopUrl: "/boutique",
+  discoveryBrowseShopLabel: "Explorer les produits",
+  discoveryBrowseShopUrl: "/boutique",
+  testimonialsEyebrow: "Vos prochains clients",
+  testimonialsTitle: "Les avis vérifiés apparaîtront ici.",
+  testimonialsText: "Aucun avis client n’est inventé : les retours vérifiés pourront être publiés une fois la boutique active.",
+  testimonialsCtaLabel: "Découvrir le catalogue",
+  testimonialsCtaUrl: "/boutique",
+  closingEyebrow: "Le commerce du quotidien",
+  closingTitle: "Une vitrine claire, construite pour vos vrais rayons.",
+  closingText: "Remplacez les contenus de départ, ajoutez vos catégories et faites évoluer chaque section selon les produits et services effectivement proposés.",
+  closingShopCtaLabel: "Voir le catalogue",
+  closingShopCtaUrl: "/boutique",
+  closingContactCtaLabel: "Nous contacter",
+  closingContactCtaUrl: "/contact",
+  closingVisualText: "Épicerie, frais, maison et livraison locale : le modèle reste entièrement personnalisable.",
+  closingImageUrl: "https://files.manuscdn.com/user_upload_by_module/session_file/310519663209309444/nKtfSNJkBlsehnQm.webp",
+  customPrimary: "#0F4C5C",
+  customAccent: "#E9A23B",
+  customSoft: "#F3F8F7",
+  announcementItems: ["Les rayons s’adaptent à votre activité", "Prix et disponibilité vérifiés avant commande", "Livraison selon les zones indiquées par la boutique"],
+  footerDescription: "Une vitrine de proximité à personnaliser avec vos propres produits, services et informations pratiques.",
+  footerNavigationTitle: "Explorer",
+  footerCategoriesTitle: "Rayons",
+  footerHelpTitle: "Besoin d’aide ?",
+  footerContactText: "Contactez la boutique pour toute question pratique",
+  footerDeliveryTitle: "Livraison & retrait",
+  footerDeliveryText: "Les zones, tarifs et délais sont détaillés par la boutique.",
+  footerSecureTitle: "Navigation sécurisée",
+  footerSecureText: "Votre navigation est protégée par HTTPS.",
+  footerServiceTitle: "Informations pratiques",
+  footerServiceText: "Les conditions de commande et de livraison sont définies par la boutique.",
+  homeOrder: ["featured", "text:market-delivery", "discovery", "text:market-services", "story", "editorial", "highlight", "reassurance"],
+  textBanners: [
+    { id: "market-delivery", eyebrow: "Service de proximité", title: "Des courses plus simples, à votre rythme.", text: "Présentez ici vos zones de livraison, créneaux, minimums de commande ou modalités de retrait une fois qu’ils sont réellement définis.", buttonLabel: "Voir les rayons", buttonUrl: "/boutique", imageUrl: "https://files.manuscdn.com/user_upload_by_module/session_file/310519663209309444/WbCbbwpstYGIDuNO.webp", imageAlt: "Sac de courses et produits frais pour une boutique de proximité", layout: "banner" as const, theme: "primary" as const, enabled: true },
+    { id: "market-services", eyebrow: "La sélection du moment", title: "Vos produits frais et essentiels à portée de main.", text: "Mettez en avant un arrivage, un rayon, une préparation du jour ou tout autre élément réel de votre activité.", buttonLabel: "Découvrir le catalogue", buttonUrl: "/boutique", imageUrl: "https://files.manuscdn.com/user_upload_by_module/session_file/310519663209309444/cnAowZRkPshafOHJ.webp", imageAlt: "Produits frais présentés dans une sélection de marché", layout: "split" as const, theme: "soft" as const, enabled: true },
+  ],
+  navigationItems: [
+    { id: "home", label: "Accueil", href: "/", visible: true, kind: "system" as const },
+    { id: "shop", label: "Produits", href: "/boutique", visible: true, kind: "system" as const },
+    { id: "categories", label: "Rayons", href: "/boutique", visible: true, kind: "system" as const },
+    { id: "creations", label: "", href: "/creations", visible: false, kind: "system" as const },
+    { id: "new", label: "Nouveautés", href: "/nouveautes", visible: true, kind: "system" as const },
+    { id: "best-sellers", label: "Les plus choisis", href: "/best-sellers", visible: true, kind: "system" as const },
+    { id: "promos", label: "Offres", href: "/promos", visible: true, kind: "system" as const },
+    { id: "contact", label: "Contact", href: "/contact", visible: true, kind: "system" as const },
+    { id: "custom-frais", label: "Produits frais", href: "/boutique", visible: true, kind: "custom" as const },
+    { id: "custom-livraison", label: "Livraison", href: "/livraison-retours", visible: true, kind: "custom" as const },
+  ],
+};
+
+const glamourNoirThemeTemplate = {
+  ...violetCraftThemeTemplate,
+  paletteId: "midnight" as const,
+  typographyId: "editorial" as const,
+  brandName: "Glamour Noir",
+  brandMessage: "Beauté, parfum & rituels choisis.",
+  highlightEyebrow: "L’éclat en édition limitée",
+  highlightTitle: "Votre rituel mérite une mise en lumière.",
+  highlightText: "Des textures, des couleurs et des gestes choisis pour composer une beauté qui vous ressemble.",
+  highlightImageUrl: "/assets/themes/glamour-noir/glamour-noir-cosmetics.webp",
+  storyEyebrow: "Notre signature",
+  storyTitle: "Une beauté qui se choisit avec intention.",
+  storyText: "Glamour Noir offre une direction visuelle forte aux collections beauté, parfum et accessoires. Chaque texte, image, catégorie, prix et produit reste modifiable par la boutique.",
+  storyFollowup: "Remplacez les visuels de démonstration par les vôtres et faites évoluer le rythme de la vitrine au fil des lancements.",
+  storyImageUrl: "/assets/themes/glamour-noir/glamour-noir-fragrance.webp",
+  storyPoints: ["Produits à révéler", "Rituels à composer", "Éditions à lancer"],
+  storyCtaLabel: "Découvrir la sélection",
+  storyCtaUrl: "/boutique",
+  storyVisualEyebrow: "Glamour Noir",
+  storyVisualTitle: "Du caractère dans chaque détail.",
+  storyPromiseEyebrow: "L’univers",
+  storyPromise: "Sombre, lumineux, entièrement modulable.",
+  editorialEyebrow: "Rituel du moment",
+  editorialTitle: "Des objets beauté qui prolongent le geste.",
+  editorialImageUrl: "/assets/themes/glamour-noir/glamour-noir-rituals.webp",
+  reassuranceItems: [
+    { icon: "sparkles" as const, title: "Sélection mise en scène", text: "Des lancements, collections et produits phares placés au premier plan." },
+    { icon: "check" as const, title: "Informations nettes", text: "Prix, variantes et disponibilités restent lisibles à chaque étape." },
+    { icon: "arrow" as const, title: "Univers évolutif", text: "Les images, textes et rubriques restent entièrement à votre main." },
+  ],
+  discoveryEyebrow: "Explorer les collections",
+  discoveryTitle: "Maquillage, soins, parfum & accessoires",
+  discoveryText: "Organisez les catégories qui portent votre marque, puis remplacez leurs images et leur ordre à tout moment.",
+  discoveryAllShopLabel: "Voir toute la boutique",
+  discoveryAllShopUrl: "/boutique",
+  discoveryBrowseShopLabel: "Découvrir les produits",
+  discoveryBrowseShopUrl: "/boutique",
+  testimonialsEyebrow: "La communauté Glamour Noir",
+  testimonialsTitle: "Les avis vérifiés trouveront leur place ici.",
+  testimonialsText: "Les retours vérifiés peuvent être publiés lorsque la boutique les reçoit.",
+  testimonialsCtaLabel: "Explorer la sélection",
+  testimonialsCtaUrl: "/boutique",
+  closingEyebrow: "Le prochain geste",
+  closingTitle: "Faites entrer votre collection dans la lumière.",
+  closingText: "Ajoutez vos produits, ajustez les offres et composez une vitrine qui garde votre signature à chaque saison.",
+  closingShopCtaLabel: "Voir les nouveautés",
+  closingShopCtaUrl: "/nouveautes",
+  closingContactCtaLabel: "Nous écrire",
+  closingContactCtaUrl: "/contact",
+  closingVisualText: "Une direction glamour, sombre et lumineuse, prête à devenir la vôtre.",
+  closingImageUrl: "/assets/themes/glamour-noir/glamour-noir-hero.webp",
+  footerDescription: "Une sélection beauté et lifestyle à faire évoluer selon vos produits, vos lancements et votre identité.",
+  footerNavigationTitle: "Explorer",
+  footerCategoriesTitle: "Collections",
+  footerHelpTitle: "La maison",
+  customColorsEnabled: true,
+  customPrimary: "#17151D",
+  customAccent: "#007985",
+  customSoft: "#121117",
+  buttonRadius: "flat" as const,
+  headerLayout: "glamour" as const,
+  showTestimonials: false,
+  homeOrder: ["text:glamour-intro", "featured", "text:glamour-sale", "discovery", "story", "text:glamour-ritual", "editorial", "reassurance"],
+  textBanners: [
+    { id: "glamour-intro", eyebrow: "La signature Glamour Noir", title: "Une vitrine qui révèle les produits qui comptent.", text: "Utilisez ce premier bloc pour présenter une collection, un lancement ou le regard de votre marque. Tous les contenus restent modifiables.", buttonLabel: "Découvrir la boutique", buttonUrl: "/boutique", imageUrl: "/assets/themes/glamour-noir/glamour-noir-hero.webp", imageAlt: "Visuel beauté premium sur fond noir", layout: "spotlight" as const, theme: "dark" as const, enabled: true },
+    { id: "glamour-sale", eyebrow: "Édition de saison", title: "Les essentiels qui donnent le ton.", text: "Mettez en scène une offre, une capsule ou une sélection de produits favoris sans automatiser de promotion.", buttonLabel: "Voir les nouveautés", buttonUrl: "/nouveautes", imageUrl: "/assets/themes/glamour-noir/glamour-noir-cosmetics.webp", imageAlt: "Cosmétiques premium sur une composition noire", layout: "banner" as const, theme: "dark" as const, enabled: true },
+    { id: "glamour-ritual", eyebrow: "Le geste juste", title: "Un rituel peut devenir une collection.", text: "Présentez ici une routine, un coffret, un conseil de marque ou une sélection limitée avec son visuel éditorial.", buttonLabel: "Explorer les collections", buttonUrl: "/boutique", imageUrl: "/assets/themes/glamour-noir/glamour-noir-rituals.webp", imageAlt: "Accessoires beauté dans une lumière cyan et rose", layout: "framedSplit" as const, theme: "dark" as const, enabled: true },
+  ],
+  navigationItems: [
+    { id: "home", label: "Accueil", href: "/", visible: true, kind: "system" as const },
+    { id: "shop", label: "Boutique", href: "/boutique", visible: true, kind: "system" as const },
+    { id: "categories", label: "Collections", href: "/boutique", visible: true, kind: "system" as const },
+    { id: "creations", label: "", href: "/creations", visible: false, kind: "system" as const },
+    { id: "new", label: "Nouveautés", href: "/nouveautes", visible: true, kind: "system" as const },
+    { id: "best-sellers", label: "Les plus choisis", href: "/best-sellers", visible: true, kind: "system" as const },
+    { id: "promos", label: "", href: "/promos", visible: false, kind: "system" as const },
+    { id: "contact", label: "À propos", href: "/contact", visible: true, kind: "system" as const },
+    { id: "custom-maquillage", label: "Maquillage", href: "/boutique", visible: true, kind: "custom" as const },
+    { id: "custom-soins", label: "Soins", href: "/boutique", visible: true, kind: "custom" as const },
+    { id: "custom-parfums", label: "Parfums & rituels", href: "/boutique", visible: true, kind: "custom" as const },
+  ],
+};
+
+const storefrontThemePresets = {
+  violetCraft: {
+    profile: violetCraftThemeTemplate,
+    hero: { title: "Diamond Painting & loisirs créatifs", subtitle: "Un univers violet pour imaginer, créer et se détendre à votre rythme.", imageUrl: "/assets/dyama/dyama-hero-diamond-painting.webp", linkUrl: "/categorie/diamond-painting" },
+    categoryImages: ["/assets/dyama/dyama-hero-diamond-painting.webp", "/assets/dyama/dyama-category-landscape.webp", "/assets/dyama/dyama-category-floral.webp", "/assets/dyama/dyama-category-yarn.webp"],
+  },
+  telephony: {
+    profile: telephonyThemeTemplate,
+    hero: { title: "Smartphones & accessoires", subtitle: "La technologie utile pour rester connecté, protégée et chargée au quotidien.", imageUrl: "/assets/themes/telephony-hero.webp", linkUrl: "/boutique" },
+    categoryImages: ["/assets/themes/telephony-category.webp", "/assets/category-high-tech.webp", "/assets/themes/telephony-category.webp"],
+  },
+  pet: {
+    profile: petThemeTemplate,
+    hero: { title: "Pour leurs petits et grands bonheurs", subtitle: "Des accessoires et essentiels choisis pour chiens, chats et leurs familles.", imageUrl: "/assets/themes/pet-hero.webp", linkUrl: "/boutique" },
+    categoryImages: ["/assets/themes/pet-category.webp", "/assets/themes/pet-category.webp", "/assets/themes/pet-category.webp"],
+  },
+  fashion: {
+    profile: fashionThemeTemplate,
+    hero: { title: "Composez votre silhouette, à votre façon.", subtitle: "Des essentiels bien coupés et des pièces fortes pour passer du quotidien aux occasions avec naturel.", imageUrl: "/assets/themes/fashion/hero.webp", linkUrl: "/boutique" },
+    categoryImages: ["/assets/themes/fashion/category-clothing.webp", "/assets/themes/fashion/category-shoes.webp", "/assets/themes/fashion/category-accessories.webp"],
+  },
+  automotive: {
+    profile: automotiveThemeTemplate,
+    hero: { title: "Entretenez votre véhicule avec confiance.", subtitle: "Pièces fiables et accessoires utiles, sélectionnés pour faciliter la recherche, la compatibilité et les interventions du quotidien.", imageUrl: "/assets/themes/automotive/hero.webp", linkUrl: "/boutique" },
+    categoryImages: ["/assets/themes/automotive/category-engine.webp", "/assets/themes/automotive/category-brakes.webp", "/assets/themes/automotive/category-accessories.webp"],
+  },
+  beauty: {
+    profile: beautyThemeTemplate,
+    hero: { title: "Votre beauté, votre rituel.", subtitle: "Des gestes experts, des produits choisis et une parenthèse rien qu’à vous, au salon comme à la maison.", imageUrl: "/assets/themes/beauty/hero.webp", linkUrl: "/boutique" },
+    categoryImages: ["/assets/themes/beauty/category-hair.webp", "/assets/themes/beauty/category-face-body.webp", "/assets/themes/beauty/category-wellbeing.webp"],
+  },
+  home: {
+    profile: homeThemeTemplate,
+    hero: { title: "Des objets pour une maison qui vous ressemble.", subtitle: "Décoration, table, textiles et essentiels choisis pour composer un intérieur doux et personnel.", imageUrl: "/assets/category-maison-hero.webp", linkUrl: "/boutique" },
+    categoryImages: ["/assets/category-maison.webp", "/assets/category-maison-sm.webp", "/assets/category-maison-hero.webp"],
+  },
+  sport: {
+    profile: sportThemeTemplate,
+    hero: { title: "Bougez à votre rythme. Allez plus loin.", subtitle: "Entraînement, outdoor et récupération : les essentiels pour accompagner chaque objectif.", imageUrl: "/assets/category-sport-hero.webp", linkUrl: "/boutique" },
+    categoryImages: ["/assets/category-sport.webp", "/assets/category-sport-sm.webp", "/assets/category-sport-hero.webp"],
+  },
+  jewelry: {
+    profile: jewelryThemeTemplate,
+    hero: { title: "Une lumière à porter, une attention à offrir.", subtitle: "Des pièces délicates et des idées cadeaux choisies pour accompagner les souvenirs et les célébrations.", imageUrl: "/assets/themes/jewelry-hero.webp", linkUrl: "/boutique" },
+    categoryImages: ["/assets/themes/jewelry-hero.webp", "/assets/themes/jewelry-hero.webp", "/assets/themes/jewelry-hero.webp"],
+  },
+  coffee: {
+    profile: coffeeThemeTemplate,
+    hero: { title: "Faites de chaque tasse un vrai moment.", subtitle: "Cafés, thés, douceurs et accessoires pour découvrir, offrir et savourer.", imageUrl: "/assets/themes/coffee-hero.webp", linkUrl: "/boutique" },
+    categoryImages: ["/assets/themes/coffee-hero.webp", "/assets/themes/coffee-hero.webp", "/assets/themes/coffee-hero.webp"],
+  },
+  gallerySignature: {
+    profile: gallerySignatureThemeTemplate,
+    hero: { title: "Des objets qui occupent l’espace avec justesse.", subtitle: "Une sélection éditoriale où chaque pièce, matière et détail a la place de s’exprimer.", imageUrl: "/assets/themes/galerie-signature/hero.webp", linkUrl: "/boutique" },
+    categoryImages: ["/assets/themes/galerie-signature/hero.webp", "/assets/themes/jewelry-hero.webp", "/assets/category-maison-hero.webp"],
+  },
+  studioFlux: {
+    profile: studioFluxThemeTemplate,
+    hero: { title: "Les essentiels qui donnent le ton.", subtitle: "Nouveautés, produits phares et collections utiles dans une vitrine directe, graphique et librement personnalisable.", imageUrl: "/assets/themes/studio-flux/hero.webp", linkUrl: "/boutique" },
+    categoryImages: ["/assets/themes/studio-flux/hero.webp", "/assets/category-high-tech.webp", "/assets/category-mode.webp"],
+  },
+  marketExpress: {
+    profile: marketExpressThemeTemplate,
+    hero: { title: "Vos courses, livrées simplement.", subtitle: "Épicerie, frais, maison et plats prêts à déguster : composez votre panier selon les rayons réellement proposés.", imageUrl: "https://files.manuscdn.com/user_upload_by_module/session_file/310519663209309444/WbCbbwpstYGIDuNO.webp", linkUrl: "/boutique" },
+    categoryImages: [
+      "https://files.manuscdn.com/user_upload_by_module/session_file/310519663209309444/WaMbgzmrIlHmcPBr.webp",
+      "https://files.manuscdn.com/user_upload_by_module/session_file/310519663209309444/cnAowZRkPshafOHJ.webp",
+      "https://files.manuscdn.com/user_upload_by_module/session_file/310519663209309444/MXImLWcePpQzSEtj.webp",
+      "https://files.manuscdn.com/user_upload_by_module/session_file/310519663209309444/nKtfSNJkBlsehnQm.webp",
+      "https://files.manuscdn.com/user_upload_by_module/session_file/310519663209309444/GQIJSiJoKfOhrwZN.webp",
+    ],
+  },
+  glamourNoir: {
+    profile: glamourNoirThemeTemplate,
+    hero: { title: "Révélez votre éclat, à votre rythme.", subtitle: "Beauté, parfum et rituels dans une vitrine éditoriale sombre, lumineuse et prête à personnaliser.", imageUrl: "/assets/themes/glamour-noir/glamour-noir-hero.webp", linkUrl: "/boutique" },
+    categoryImages: ["/assets/themes/glamour-noir/glamour-noir-cosmetics.webp", "/assets/themes/glamour-noir/glamour-noir-fragrance.webp", "/assets/themes/glamour-noir/glamour-noir-rituals.webp"],
+  },
+} as const;
+
+const storefrontThemeIdSchema = z.enum(storefrontThemeIds);
+function detectDeliveryCountry(address: string | null | undefined): string {
+  if (!address) return "—";
+  const lower = address.toLowerCase();
+  for (const [code, labels] of Object.entries(DELIVERY_COUNTRY_LABELS)) {
+    if (labels.some(label => lower.includes(label))) return code;
+  }
+  const codeMatch = address.match(/\b(CH|FR|DE|IT|AT|BE|NL|ES)\b/);
+  return codeMatch ? codeMatch[1] : "—";
+}
+
+export const studioProvisioningDraftInputSchema = z.object({
+  displayName: z.string().trim().min(2).max(160),
+  requestedDomain: z.string().trim().toLowerCase().regex(/^(?=.{3,255}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/, "Saisissez un domaine valide, sans http:// ni chemin."),
+  ownerName: z.string().trim().min(2).max(160),
+  ownerEmail: z.string().trim().email().max(320),
+  businessType: z.enum(["animalier", "bijoux", "vetements", "autre"]),
+  // A custom theme is required only for "autre" by the database normalizer.
+  // The visual preset picker can legitimately leave this empty for Vêtements.
+  customBusinessTheme: z.string().trim().max(160).optional().nullable(),
+  themePreset: storefrontThemeIdSchema.optional().nullable(),
+  factoryModel: z.enum(storeFactoryModelIds).default("blank"),
+  provisioningTemplate: z.enum(["standard", "algeria"]).default("standard"),
+  launchMarket: z.string().refine(isStoreLaunchMarketId, "Choisissez un marché de lancement valide.").default("custom"),
+  paymentRoute: z.enum(["stripe_connect", "algeria_cash_on_delivery", "both"]).default("stripe_connect"),
+  preferredCurrency: z.enum(["CHF", "EUR", "USD", "GBP", "CAD", "MAD", "MXN", "DZD"]).default("CHF"),
+  notes: z.string().trim().max(2000).optional(),
+});
+
+const studioStoreCopySelectionSchema = z.object({
+  storefrontStyle: z.boolean().optional(),
+  navigation: z.boolean().optional(),
+  collections: z.boolean().optional(),
+  pages: z.boolean().optional(),
+  categories: z.boolean().optional(),
+  products: z.boolean().optional(),
+  productMedia: z.boolean().optional(),
+  variants: z.boolean().optional(),
+});
+
+const storeCatalogueImportRowSchema = z.object({
+  category: z.string().trim().min(2).max(100),
+  name: z.string().trim().min(2).max(200),
+  shortDescription: z.string().trim().max(2000),
+  longDescription: z.string().trim().max(6000),
+  priceCents: z.number().int().min(0).max(10_000_000),
+  stock: z.number().int().min(0).max(999_999),
+  dimensions: z.array(z.string().trim().min(1).max(60)).max(30),
+  imageUrl: z.string().trim().max(1000).refine(value => !value || /^https:\/\//i.test(value), "Utilisez une URL https:// ou laissez l’image vide."),
+  featured: z.boolean(),
+});
+
+const campaignInputSchema = z.object({
+  name: z.string().trim().min(2).max(200),
+  message: z.string().trim().max(300).optional().nullable(),
+  startsAt: z.coerce.date(),
+  endsAt: z.coerce.date(),
+  imageDesktopUrl: z.string().trim().max(1000).optional().nullable(),
+  imageMobileUrl: z.string().trim().max(1000).optional().nullable(),
+  linkUrl: z.string().trim().max(1000).optional().nullable(),
+  promoCode: z.string().trim().max(64).optional().nullable(),
+  showCountdown: z.boolean().default(true),
+  placement: z.enum(["announcement", "products", "both"]).default("announcement"),
+  enabled: z.boolean().default(true),
+});
+
+const deliveryProfileInput = z.object({
+  countryCode: z.enum(["CH", "FR", "DE", "IT", "AT", "BE", "NL", "ES"]),
+  supplierVariantId: z.string().trim().max(128).nullable().optional(),
+  supplierShippingCost: z.number().int().min(0),
+  customerShippingCost: z.number().int().min(0),
+  deliveryMethod: z.string().trim().max(255).nullable().optional(),
+  minDeliveryDays: z.number().int().min(0).nullable().optional(),
+  maxDeliveryDays: z.number().int().min(0).nullable().optional(),
+}).superRefine((profile, ctx) => {
+  if (profile.minDeliveryDays != null && profile.maxDeliveryDays != null && profile.maxDeliveryDays < profile.minDeliveryDays) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["maxDeliveryDays"], message: "Le délai maximal doit être supérieur ou égal au délai minimal." });
+  }
+});
+const deliveryProfilesInput = z.array(deliveryProfileInput).max(8).superRefine((profiles, ctx) => {
+  const countries = new Set<string>();
+  profiles.forEach((profile, index) => {
+    if (countries.has(profile.countryCode)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [index, "countryCode"], message: "Un seul profil est autorisé par pays." });
+    countries.add(profile.countryCode);
+  });
+});
+
+function rethrowUserManagementError(error: unknown): never {
+  const code = String(error);
+  if (code.includes("CANNOT_MANAGE_SELF")) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Vous ne pouvez pas modifier votre propre compte ici." });
+  }
+  if (code.includes("ADMIN_ACCOUNT_PROTECTED")) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Un compte administrateur est protégé contre cette action." });
+  }
+  if (code.includes("LAST_ADMIN_PROTECTED")) {
+    throw new TRPCError({ code: "CONFLICT", message: "Impossible : MAZIGHO doit toujours conserver au moins un administrateur actif." });
+  }
+  if (code.includes("ADMIN_CONFIRMATION_REQUIRED")) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "La confirmation écrite de cette action sensible est requise." });
+  }
+  if (code.includes("USER_HAS_ORDERS")) {
+    throw new TRPCError({ code: "CONFLICT", message: "Ce client a des commandes : bloquez son compte au lieu de le supprimer." });
+  }
+  if (code.includes("USER_NOT_FOUND")) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "Utilisateur introuvable." });
+  }
+  if (code.includes("EMAIL_ALREADY_EXISTS")) {
+    throw new TRPCError({ code: "CONFLICT", message: "Un compte existe déjà avec cette adresse e-mail." });
+  }
+  if (code.includes("INVITATION_NOT_PENDING")) {
+    throw new TRPCError({ code: "CONFLICT", message: "Ce compte n’est pas en attente d’invitation." });
+  }
+  if (code.includes("EMAIL_NOT_CONFIGURED")) {
+    throw new TRPCError({ code: "PRECONDITION_FAILED", message: "L’envoi e-mail n’est pas encore configuré. Vérifiez la clé Brevo et l’adresse expéditrice vérifiée." });
+  }
+  if (code.includes("EMAIL_DELIVERY_FAILED")) {
+    throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "L’e-mail n’a pas pu être envoyé. Vérifiez l’expéditeur vérifié dans Brevo puis réessayez." });
+  }
+  throw error;
+}
+
+function decodeDesignImage(dataUrl: string) {
+  const match = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl);
+  if (!match) throw new TRPCError({ code: "BAD_REQUEST", message: "Format d’image non pris en charge. Utilisez JPEG, PNG ou WebP." });
+  const buffer = Buffer.from(match[2], "base64");
+  if (buffer.length === 0 || buffer.length > 5 * 1024 * 1024) {
+    throw new TRPCError({ code: "PAYLOAD_TOO_LARGE", message: "L’image doit peser au maximum 5 Mo." });
+  }
+  const extension = match[1] === "image/jpeg" ? "jpg" : match[1].split("/")[1];
+  return { buffer, contentType: match[1], extension };
+}
+
+const visualUrlSchema = z.string().trim().min(1).max(2000).refine(
+  value => value.startsWith("/") || /^https?:\/\//i.test(value),
+  "Utilisez une URL https:// ou un chemin d’image interne commençant par /."
+);
+
+function decodeAccountingDocument(dataUrl: string) {
+  const match = /^data:(application\/pdf|image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl);
+  if (!match) throw new TRPCError({ code: "BAD_REQUEST", message: "Utilisez un PDF, JPEG, PNG ou WebP." });
+  const buffer = Buffer.from(match[2], "base64");
+  if (buffer.length === 0 || buffer.length > 10 * 1024 * 1024) {
+    throw new TRPCError({ code: "PAYLOAD_TOO_LARGE", message: "Le justificatif doit peser au maximum 10 Mo." });
+  }
+  const extension = match[1] === "application/pdf" ? "pdf" : match[1] === "image/jpeg" ? "jpg" : match[1].split("/")[1];
+  return { buffer, contentType: match[1], extension };
+}
+
+const accountingKindSchema = z.enum(["inventory_purchase", "shipping", "platform", "advertising", "payment_fee", "other_expense", "refund"]);
+const accountingEntrySchema = z.object({
+  kind: accountingKindSchema,
+  description: z.string().trim().min(2).max(255),
+  amount: z.number().int().positive().max(100_000_000),
+  occurredAt: z.coerce.date(),
+  supplier: z.string().trim().max(160).optional().nullable(),
+  receiptUrl: z.string().trim().max(500).optional().nullable(),
+  receiptKey: z.string().trim().max(500).optional().nullable(),
+  receiptFileName: z.string().trim().max(255).optional().nullable(),
+  notes: z.string().trim().max(3000).optional().nullable(),
+});
+
+const AUTO_TRANSLATE_LOCALES = ["de", "it", "en", "es", "nl", "ar"];
+// Fire-and-forget automatic translation on save. Never blocks or fails the
+// admin mutation: if the translation service (LLM) is unavailable, the content
+// is still saved and the error is only logged.
+function autoTranslateProduct(productId: number | undefined | null, storeId?: number) {
+  if (!productId) return;
+  import("./productTranslation")
+    .then(m => m.translateProductFromFrench(productId, AUTO_TRANSLATE_LOCALES as any, storeId))
+    .catch(err => console.error("[auto-translate:product]", productId, err instanceof Error ? err.message : err));
+}
+function autoTranslateContent(contentType: "design" | "banner" | "category", contentId: number | undefined | null, storeId?: number) {
+  if (contentId == null) return;
+  import("./publicContentTranslation")
+    .then(m => m.translatePublicContentFromFrench(contentType, contentId, AUTO_TRANSLATE_LOCALES as any, storeId))
+    .catch(err => console.error("[auto-translate:content]", contentType, contentId, err instanceof Error ? err.message : err));
+}
+
+// Fire-and-forget staff audit trail. Never blocks or fails the admin mutation.
+function logAudit(ctx: any, entry: {
+  action: string;
+  entityType: string;
+  entityId?: number | null;
+  summary: string;
+  metadata?: Record<string, unknown> | null;
+}) {
+  const user = ctx?.user;
+  db.recordAuditLog({
+    storeId: ctx?.store?.id ?? null,
+    actorUserId: user?.id ?? null,
+    actorName: user?.name ?? user?.email ?? "Compte inconnu",
+    actorRole: user?.role ?? null,
+    ...entry,
+  }).catch(err => console.error("[audit]", entry.action, err instanceof Error ? err.message : err));
+}
+
+type StorefrontThemeBanner = {
+  title: string;
+  subtitle: string;
+  imageUrl: string;
+  linkUrl: string;
+  active: number;
+  displayOrder: number;
+};
+
+export async function applyStorefrontTheme(ctx: any, storeId: number, themeId: StorefrontThemeId, source: "studio" | "owner" = "studio") {
+  const preset = storefrontThemePresets[themeId];
+  const current = await db.getDesignProfile(storeId);
+  const presetProfile = preset.profile as Record<string, unknown>;
+  const currentProfile = current as Record<string, unknown>;
+  const sections = ownerHomepageSections.parse({
+    ...current,
+    ...preset.profile,
+    closingVisualFont: presetProfile.closingVisualFont ?? currentProfile.closingVisualFont ?? "inherit",
+    closingVisualColor: presetProfile.closingVisualColor ?? currentProfile.closingVisualColor ?? "#1F2937",
+  });
+  const navigationItems = z.array(navigationItem).min(1).max(16).parse(preset.profile.navigationItems);
+  const nextProfile = { ...current, ...preset.profile, ...sections, navigationItems };
+  const profile = source === "owner"
+    ? await db.updateDesignProfile(nextProfile, storeId)
+    : await db.saveStudioOwnerPublicStorefrontProfile({ storeId, profile: nextProfile });
+  const existingBanners = await db.getAllBanners(storeId);
+  const hero: StorefrontThemeBanner = { ...preset.hero, active: 1, displayOrder: 0 };
+  const saveBanner = async (bannerId: number | undefined, banner: StorefrontThemeBanner) => {
+    if (source === "owner") {
+      if (bannerId) return await db.updateBanner(bannerId, banner, storeId);
+      return await db.createBanner(banner, storeId);
+    }
+    return await db.saveStudioOwnerPublicStorefrontBanner({ storeId, bannerId, ...banner });
+  };
+  const firstBanner = existingBanners[0];
+  if (firstBanner) {
+    await saveBanner(firstBanner.id, hero);
+    await db.markPublicContentTranslationsStale("banner", firstBanner.id, storeId);
+  } else {
+    await saveBanner(undefined, hero);
+  }
+  await Promise.all(existingBanners.slice(1).map(async banner => {
+    if (!banner.active) return;
+    await saveBanner(banner.id, {
+      title: banner.title,
+      subtitle: banner.subtitle || "",
+      imageUrl: banner.imageUrl,
+      linkUrl: banner.linkUrl || "/boutique",
+      active: 0,
+      displayOrder: banner.displayOrder,
+    });
+    await db.markPublicContentTranslationsStale("banner", banner.id, storeId);
+  }));
+  const categoryImages = await db.applyStorefrontThemeCategoryImages(storeId, preset.categoryImages);
+  await Promise.all(categoryImages.updatedCategoryIds.map(categoryId => db.markPublicContentTranslationsStale("category", categoryId, storeId)));
+  await db.markPublicContentTranslationsStale("design", 1, storeId);
+  logAudit(ctx, {
+    action: `${source}.storefront.template.${themeId}.apply`,
+    entityType: "store",
+    entityId: storeId,
+    summary: `Modèle ${storefrontThemeLabels[themeId]} appliqué à la boutique`,
+    metadata: { storeId, themeId, source, publicStorefront: true, replacedHero: true, categoryImageCount: categoryImages.updatedCategoryIds.length },
+  });
+  return { profile, heroApplied: true, categoryImageCount: categoryImages.updatedCategoryIds.length, themeId };
+}
+
+export const adminRouter = router({
+  // Public reads live in appRouter.platformLanding; only Studio may write this
+  // operator-wide marketing content, with an audit record and no tenant scope.
+  platformLanding: router({
+    saveKeyInHand: platformProcedure.input(keyInHandLandingContentSchema).mutation(async ({ ctx, input }) => {
+      const content = await db.saveKeyInHandLandingContent(input);
+      logAudit(ctx, {
+        action: "studio.platform_landing.key_in_hand.save",
+        entityType: "platform_landing",
+        entityId: 1,
+        summary: "Contenu de la landing Création clé en main mis à jour.",
+        metadata: { phoneConfigured: Boolean(content.contactPhone), emailConfigured: Boolean(content.contactEmail), whatsappConfigured: Boolean(content.whatsappNumber) },
+      });
+      return content;
+    }),
+    savePro: platformProcedure.input(proLandingContentSchema).mutation(async ({ ctx, input }) => {
+      const content = await db.saveProLandingContent(input);
+      logAudit(ctx, {
+        action: "studio.platform_landing.pro.save",
+        entityType: "platform_landing",
+        entityId: 2,
+        summary: "Contenu de la landing MAZIGHO Pro mis à jour.",
+        metadata: { serviceMode: content.serviceMode, pricingVisible: content.showPricing, phoneConfigured: Boolean(content.contactPhone), emailConfigured: Boolean(content.contactEmail), whatsappConfigured: Boolean(content.whatsappNumber) },
+      });
+      return content;
+    }),
+  }),
+
+  // Suivi Odoo (ERP) — strictly admin-only.
+  odoo: router({
+    status: platformProcedure.query(() => getOdooStatus()),
+    verify: platformProcedure.mutation(() => verifyOdooConnection()),
+    partners: platformProcedure.query(() => listOdooPartners()),
+    orders: platformProcedure.query(() => listOdooSaleOrders()),
+    createPartner: platformProcedure.input(z.object({
+      name: z.string().trim().min(1).max(180),
+      email: z.string().trim().email().max(180).optional().or(z.literal("")),
+      phone: z.string().trim().max(60).optional(),
+    })).mutation(({ input }) => createOdooPartner({ name: input.name, email: input.email || undefined, phone: input.phone })),
+    updatePartner: platformProcedure.input(z.object({
+      id: z.number().int().positive(),
+      name: z.string().trim().min(1).max(180).optional(),
+      email: z.string().trim().max(180).optional(),
+      phone: z.string().trim().max(60).optional(),
+    })).mutation(({ input }) => updateOdooPartner(input.id, { name: input.name, email: input.email, phone: input.phone })),
+    cancelOrder: platformProcedure.input(z.object({ id: z.number().int().positive() })).mutation(({ input }) => cancelOdooSaleOrder(input.id)),
+  }),
+
+  // System health dashboard (admin-only): TiDB ping, e-mail configuration,
+  // last Odoo sync and site version. The readiness check never sends a
+  // message; the separate, confirmed self-test is internal-only and always
+  // targets the configured professional sender mailbox.
+  system: router({
+    health: platformProcedure.query(async () => {
+      const [dbPing, lastOdooSync] = await Promise.all([
+        db.pingDatabase(),
+        db.getLastOdooSync(),
+      ]);
+      const odoo = getOdooStatus();
+      const env = process.env;
+      const commitSha = env.VERCEL_GIT_COMMIT_SHA || env.GIT_COMMIT_SHA || null;
+      let dbHost: string | null = null;
+      try { dbHost = new URL((env.DATABASE_URL || "").replace(/^mysql:\/\//, "http://")).host || null; } catch { dbHost = null; }
+      return {
+        checkedAt: new Date().toISOString(),
+        database: { ok: dbPing.ok, responseMs: dbPing.responseMs, host: dbHost },
+        email: { configured: isTransactionalEmailConfigured() },
+        odoo: { configured: odoo.configured, message: odoo.message, url: odoo.url, lastSyncAt: lastOdooSync },
+        site: {
+          commitSha,
+          commitShort: commitSha ? commitSha.slice(0, 7) : null,
+          commitMessage: env.VERCEL_GIT_COMMIT_MESSAGE || null,
+          branch: env.VERCEL_GIT_COMMIT_REF || null,
+          environment: env.VERCEL_ENV || env.NODE_ENV || "development",
+          deploymentUrl: env.VERCEL_URL || null,
+          deployedAt: env.VERCEL_DEPLOYMENT_CREATED_AT || null,
+        },
+      };
+    }),
+    verifyTransactionalEmail: platformProcedure.mutation(() => getTransactionalEmailHealth()),
+    sendTransactionalEmailTest: platformProcedure.mutation(() => sendTransactionalEmailTest()),
+    getMaintenance: adminProcedure.query(async () => db.getMaintenanceStatus()),
+    setMaintenance: adminProcedure.input(z.object({
+      enabled: z.boolean(),
+      title: z.string().trim().max(160).optional(),
+      message: z.string().trim().max(2000).optional(),
+    })).mutation(async ({ input }) => db.setMaintenance(input)),
+    conversion: adminProcedure.query(async () => {
+      const configured = isVercelAnalyticsConfigured();
+      const until = new Date();
+      const since = new Date(Date.now() - 30 * 86400000);
+      const sinceStr = since.toISOString().slice(0, 10);
+      const untilStr = until.toISOString().slice(0, 10);
+      const paidOrders = await db.getPaidOrdersBetween(since, until);
+      const ordersCount = paidOrders.length;
+      const revenue = paidOrders.reduce((acc, o) => acc + o.totalAmount, 0);
+      const base = { since: sinceStr, until: untilStr, sales: { orders: ordersCount, revenue } };
+      if (!configured) {
+        return { ...base, connected: false, visitors: null, pageviews: null, conversionRate: null, series: [] };
+      }
+      try {
+        const [count, daily] = await Promise.all([
+          getVisitsCount(sinceStr, untilStr),
+          getVisitsDaily(sinceStr, untilStr),
+        ]);
+        const salesByDay: Record<string, number> = {};
+        for (const o of paidOrders) {
+          const d = new Date(o.createdAt).toISOString().slice(0, 10);
+          salesByDay[d] = (salesByDay[d] || 0) + 1;
+        }
+        const series = daily.map(r => {
+          const d = r.timestamp.slice(0, 10);
+          const s = salesByDay[d] || 0;
+          return {
+            date: d.slice(5),
+            visiteurs: r.visitors,
+            ventes: s,
+            conversion: r.visitors > 0 ? Math.round((s / r.visitors) * 1000) / 10 : 0,
+          };
+        });
+        const conversionRate = count.visitors > 0 ? Math.round((ordersCount / count.visitors) * 1000) / 10 : null;
+        return { ...base, connected: true, visitors: count.visitors, pageviews: count.pageviews, conversionRate, series };
+      } catch (e: any) {
+        return { ...base, connected: false, error: e?.message || "Vercel Analytics indisponible", visitors: null, pageviews: null, conversionRate: null, series: [] };
+      }
+    }),
+  }),
+
+  // MAZIGHO Studio is the platform console. This read-only inventory exposes
+  // aggregate storefront signals, never customer records, secrets or catalogue details.
+  studio: router({
+    getInventory: platformProcedure.input(z.object({
+      query: z.string().trim().max(80).optional(),
+      status: z.enum(["setup", "active", "limited", "suspended", "closed"]).optional(),
+      offerMode: z.enum(["undecided", "rental", "perpetual_sale"]).optional(),
+      needsAttention: z.boolean().optional(),
+      page: z.number().int().positive().max(10_000).optional(),
+      pageSize: z.union([z.literal(20), z.literal(50), z.literal(100)]).optional(),
+    }).optional()).query(async ({ input }) => db.getStudioStoreInventory(input ?? {})),
+    getProductionBoard: platformProcedure.input(z.object({
+      query: z.string().trim().max(80).optional(),
+      stage: z.enum(["new_project", "to_analyze", "to_prepare", "ready", "handed_over"]).optional(),
+      needsAttention: z.boolean().optional(),
+      hasOpenReminder: z.boolean().optional(),
+      page: z.number().int().positive().max(10_000).optional(),
+      pageSize: z.union([z.literal(10), z.literal(20), z.literal(50)]).optional(),
+    }).optional()).query(async ({ input }) => db.getStudioProductionBoard(input ?? {})),
+    assistant: router({
+      getImageGenerationUsage: platformProcedure.query(async ({ ctx }) => {
+        return await db.getStudioImageGenerationUsage(ctx.user.id);
+      }),
+      getImageGenerationModels: platformProcedure.query(async () => {
+        try {
+          return await listImageModels();
+        } catch (error) {
+          console.error("[studio-image-generation] model-list-unavailable", error);
+          throw new TRPCError({ code: "SERVICE_UNAVAILABLE", message: "Le catalogue des modèles d’image est momentanément indisponible." });
+        }
+      }),
+      generateStorefrontImage: platformProcedure.input(z.object({
+        subject: z.string().trim().min(12).max(420),
+        format: z.enum(studioImageFormats),
+        style: z.enum(studioImageStyles),
+      })).mutation(async ({ ctx, input }) => {
+        let prompt: string;
+        try {
+          prompt = buildStudioImageGenerationPrompt(input);
+        } catch {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Décrivez le visuel souhaité en une phrase de 12 à 420 caractères." });
+        }
+        let reserved = false;
+        let imageGenerated = false;
+        try {
+          const usage = await db.reserveStudioImageGeneration(ctx.user.id);
+          reserved = true;
+          const generated = await generateImage({ prompt });
+          if (!generated.url) throw new Error("STUDIO_IMAGE_GENERATION_EMPTY_RESULT");
+          imageGenerated = true;
+          logAudit(ctx, {
+            action: "studio.image_generation.create",
+            entityType: "image_generation",
+            entityId: null,
+            summary: "Visuel de vitrine généré dans Studio, sans rattachement automatique à une boutique.",
+            metadata: { format: input.format, style: input.style, requestCount: usage.used, attachedToStore: false, promptStored: false },
+          });
+          return { url: generated.url, usage };
+        } catch (error) {
+          const code = error instanceof Error ? error.message : "";
+          if (reserved && !imageGenerated) {
+            await db.releaseStudioImageGeneration(ctx.user.id).catch(releaseError => {
+              console.error("[studio-image-generation] quota-release-failed", releaseError);
+            });
+          }
+          if (code === "STUDIO_IMAGE_GENERATION_DAILY_LIMIT_REACHED") {
+            throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: "Le plafond quotidien Studio est atteint. Réessayez demain ou utilisez les visuels déjà générés." });
+          }
+          if (error instanceof TRPCError) throw error;
+          console.error("[studio-image-generation]", code || "unavailable");
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Le service d’image n’a pas répondu. Réessayez dans un instant : aucun visuel, contenu ou réglage de boutique n’a été modifié." });
+        }
+      }),
+      chat: platformProcedure.input(z.object({
+        messages: z.array(z.object({
+          role: z.enum(["user", "assistant"]),
+          content: z.string().trim().min(1).max(6000),
+        })).min(1).max(12),
+      })).mutation(async ({ input }) => {
+        const inventory = await db.getStudioStoreInventory({ page: 1, pageSize: 100 });
+        const stores = inventory.stores.map(store => ({
+          name: store.displayName,
+          status: store.status,
+          domain: store.primaryDomain,
+          platform: Boolean(store.isPlatformStore),
+          attention: Boolean(store.needsAttention),
+          offer: store.commercialOfferMode,
+        }));
+        const aggregate = {
+          total: inventory.summary.total,
+          pageSize: stores.length,
+          byStatus: stores.reduce<Record<string, number>>((counts, store) => ({ ...counts, [store.status]: (counts[store.status] || 0) + 1 }), {}),
+          attentionCount: stores.filter(store => store.attention).length,
+          stores,
+        };
+        const result = await invokeLLM({
+          model: "gemini-3-flash-preview",
+          messages: [
+            {
+              role: "system",
+              content: [
+                "Tu es le copilote interne de MAZIGHO Studio.",
+                "Réponds en français avec des priorités concrètes, courtes et vérifiables.",
+                "Tu peux analyser l’état des boutiques, préparer des checklists et rédiger des messages opérateur.",
+                "Ne donne jamais de conseil juridique ou fiscal définitif. Ne prétends jamais avoir effectué une action.",
+                "Ne demande ni ne révèle de secret, mot de passe, jeton, clé, donnée bancaire ou contenu client.",
+                `Inventaire agrégé courant : ${JSON.stringify(aggregate)}`,
+              ].join("\n"),
+            },
+            ...input.messages.map(message => ({ role: message.role, content: message.content })),
+          ],
+        });
+        const content = result.choices[0]?.message?.content;
+        const answer = typeof content === "string"
+          ? content.trim()
+          : Array.isArray(content)
+            ? content.filter(part => part.type === "text").map(part => part.text).join("\n").trim()
+            : "Je n’ai pas pu préparer une réponse exploitable.";
+        return { answer: answer || "Je n’ai pas pu préparer une réponse exploitable." };
+      }),
+    }),
+    getCustomDomainRegistry: platformProcedure.input(z.object({
+      query: z.string().trim().max(80).optional(),
+      status: z.enum(["requested", "guide_ready", "client_acknowledged", "linked", "recovery_active", "needs_attention"]).optional(),
+      page: z.number().int().positive().max(10_000).optional(),
+      pageSize: z.union([z.literal(20), z.literal(50), z.literal(100)]).optional(),
+    }).optional()).query(async ({ input }) => db.getStudioCustomDomainRegistry(input ?? {})),
+    getIntegrationRequestRegistry: platformProcedure.input(z.object({
+      query: z.string().trim().max(80).optional(),
+      integrationId: z.enum(["stripe", "paypal", "google_analytics", "transactional_email"]).optional(),
+      status: z.enum(["setup", "active", "limited", "suspended", "closed"]).optional(),
+      page: z.number().int().positive().max(10_000).optional(),
+      pageSize: z.union([z.literal(20), z.literal(50), z.literal(100)]).optional(),
+    }).optional()).query(async ({ input }) => db.getStudioIntegrationRequestRegistry(input ?? {})),
+    checkOwnerCustomDomainDns: platformProcedure.input(z.object({ storeId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+      try {
+        const result = await db.checkStudioOwnerCustomDomainDns(input.storeId);
+        logAudit(ctx, {
+          action: "studio.store.domain.dns_check",
+          entityType: "store",
+          entityId: input.storeId,
+          summary: "Observation DNS publique effectuée pour un domaine client.",
+          metadata: { domain: result.domain, reachable: result.reachable, dnsChanged: false, domainAssigned: false, storefrontActivated: false },
+        });
+        return result;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (code === "OWNER_CUSTOM_DOMAIN_PLATFORM_STORE_FORBIDDEN") throw new TRPCError({ code: "FORBIDDEN", message: "Le domaine de MAZIGHO principal reste protégé." });
+        if (code === "OWNER_CUSTOM_DOMAIN_REQUEST_REQUIRED") throw new TRPCError({ code: "CONFLICT", message: "Le propriétaire doit d’abord enregistrer son domaine souhaité." });
+        throw error;
+      }
+    }),
+    linkOwnerCustomDomain: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      confirmationName: z.string().trim().min(2).max(160),
+      domainVerifiedInVercel: z.literal(true),
+      linkAcknowledged: z.literal(true),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const linked = await db.linkStudioOwnerCustomDomain(input);
+        logAudit(ctx, {
+          action: "studio.store.domain.link_confirm",
+          entityType: "store",
+          entityId: linked.store.id,
+          summary: "Domaine personnalisé rattaché à la boutique après vérification manuelle dans Vercel.",
+          metadata: { previousDomain: linked.previousDomain, domain: linked.store.primaryDomain, dnsChanged: false, vercelVerifiedManually: true, storefrontActivated: false, paymentActivated: false },
+        });
+        return linked;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (code === "PLATFORM_STORE_PROTECTED") throw new TRPCError({ code: "FORBIDDEN", message: "MAZIGHO principal ne peut pas recevoir ce domaine client." });
+        if (code === "CUSTOM_DOMAIN_LINK_CONFIRMATION_MISMATCH") throw new TRPCError({ code: "BAD_REQUEST", message: "Recopiez exactement le nom de la boutique avant le rattachement." });
+        if (code === "CUSTOM_DOMAIN_LINK_CONFIRMATION_INCOMPLETE") throw new TRPCError({ code: "BAD_REQUEST", message: "Confirmez la vérification Vercel et le rattachement manuel." });
+        if (code === "CUSTOM_DOMAIN_GUIDE_NOT_ACKNOWLEDGED") throw new TRPCError({ code: "CONFLICT", message: "Le propriétaire doit d’abord confirmer la lecture du guide DNS." });
+        if (code === "CUSTOM_DOMAIN_ALREADY_ASSIGNED") throw new TRPCError({ code: "CONFLICT", message: "Ce domaine est déjà attribué à une autre boutique." });
+        throw error;
+      }
+    }),
+    getTenantResourceSummary: platformProcedure.query(async () => {
+      return await db.getStudioTenantResourceSummary();
+    }),
+    updateStoreOperationalStatus: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      confirmationName: z.string().trim().min(2).max(160),
+      nextStatus: z.enum(["active", "limited", "suspended", "closed"]),
+      acknowledged: z.literal(true),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const updated = await db.updateStudioStoreOperationalStatus(input);
+        logAudit(ctx, {
+          action: "studio.store.lifecycle.update",
+          entityType: "store",
+          entityId: updated.store.id,
+          summary: `État opérationnel mis à jour : ${updated.store.displayName} (${updated.previousStatus} → ${updated.store.status})`,
+          metadata: {
+            previousStatus: updated.previousStatus,
+            nextStatus: updated.store.status,
+            publicStorefrontMayBeServed: updated.publicStorefrontMayBeServed,
+            billingChanged: false,
+            domainChanged: false,
+            membershipsChanged: false,
+          },
+        });
+        return updated;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (code === "STORE_STATUS_CONFIRMATION_MISMATCH") throw new TRPCError({ code: "BAD_REQUEST", message: "Recopiez exactement le nom de la boutique avant de modifier son état." });
+        if (code === "PLATFORM_STORE_PROTECTED") throw new TRPCError({ code: "FORBIDDEN", message: "MAZIGHO principal est protégé : son état ne peut pas être modifié depuis ce contrôle." });
+        if (code === "SETUP_REQUIRES_ACTIVATION_PREFLIGHT") throw new TRPCError({ code: "CONFLICT", message: "Le statut setup est géré uniquement par le parcours d’activation contrôlé de Studio." });
+        if (code === "NO_STATUS_CHANGE") throw new TRPCError({ code: "BAD_REQUEST", message: "La boutique possède déjà cet état." });
+        if (code === "STORE_STATUS_CONCURRENT_UPDATE") throw new TRPCError({ code: "CONFLICT", message: "L’état a été modifié entre-temps. Actualisez le registre avant de réessayer." });
+        throw error;
+      }
+    }),
+    updateStoreCommercialOfferMode: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      confirmationName: z.string().trim().min(2).max(160),
+      mode: z.enum(["undecided", "rental", "perpetual_sale"]),
+      acknowledged: z.literal(true),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const updated = await db.updateStudioStoreCommercialOfferMode(input);
+        logAudit(ctx, {
+          action: "studio.store.commercial_offer.update",
+          entityType: "store",
+          entityId: updated.store.id,
+          summary: `Mode commercial préparatoire mis à jour : ${updated.store.displayName} (${updated.mode})`,
+          metadata: {
+            mode: updated.mode,
+            billingChanged: false,
+            subscriptionChanged: false,
+            storageTransferStarted: false,
+          },
+        });
+        return updated;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (code === "PLATFORM_STORE_PROTECTED") throw new TRPCError({ code: "FORBIDDEN", message: "MAZIGHO principal est protégé : son offre commerciale n’est pas modifiable ici." });
+        if (code === "STORE_COMMERCIAL_OFFER_CONFIRMATION_MISMATCH") throw new TRPCError({ code: "BAD_REQUEST", message: "Recopiez exactement le nom de la boutique avant de modifier son mode commercial." });
+        throw error;
+      }
+    }),
+    getSaasBillingDashboard: platformProcedure.input(z.object({
+      query: z.string().trim().max(80).optional(),
+      status: z.enum(["setup", "active", "limited", "suspended", "closed"]).optional(),
+      offerMode: z.enum(["undecided", "rental", "perpetual_sale"]).optional(),
+      planId: z.enum(["all", "unassigned", "free", "basic", "pro", "lifetime"]).optional(),
+      page: z.number().int().positive().max(10_000).optional(),
+      pageSize: z.union([z.literal(20), z.literal(50), z.literal(100)]).optional(),
+    }).optional()).query(async ({ input }) => {
+      return await db.getStudioSaasBillingDashboard(input ?? {});
+    }),
+    getSaasPlanCatalog: platformProcedure.query(async () => {
+      return await db.getStudioSaasPlanCatalog();
+    }),
+    saveSaasPlanCatalog: platformProcedure.input(z.object({ catalog: z.unknown() })).mutation(async ({ ctx, input }) => {
+      const catalog = await db.saveStudioSaasPlanCatalog(input.catalog);
+      logAudit(ctx, {
+        action: "studio.saas.plan_catalog.save",
+        entityType: "settings",
+        entityId: 0,
+        summary: "Catalogue de plans SaaS mis à jour comme brouillon interne.",
+        metadata: { planCount: catalog.plans.length, tenantAssignmentsChanged: false, featureFlagsApplied: false, subscriptionActivated: false, paymentCreated: false },
+      });
+      return catalog;
+    }),
+    assignStoreSaasPlanTemplate: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      confirmationName: z.string().trim().min(2).max(160),
+      planId: z.string().regex(/^[a-z][a-z0-9-]{1,39}$/),
+      acknowledged: z.literal(true),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const assigned = await db.assignStudioStoreSaasPlanTemplate(input);
+        logAudit(ctx, {
+          action: "studio.store.saas_plan.assignment.save",
+          entityType: "store",
+          entityId: assigned.store.id,
+          summary: `Plan SaaS attribué : ${assigned.assignment.planName}.`,
+          metadata: { planId: assigned.assignment.planId, featureCount: assigned.assignment.features.length, lifetimePurchasePriceCents: assigned.assignment.lifetimePurchasePriceCents, quotasRecalculated: true, stripeCommissionRecalculated: true, dropshippingAccessRecalculated: true, subscriptionActivated: false, paymentCreated: false, emailSent: false },
+        });
+        return assigned;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND" || code === "SAAS_PLAN_TEMPLATE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique ou modèle de plan introuvable." });
+        if (code === "SAAS_PLAN_TEMPLATE_NOT_OFFICIAL") throw new TRPCError({ code: "BAD_REQUEST", message: "Seules les offres officielles FREE, BASIC, PRO et LIFETIME peuvent être attribuées. Les autres modèles restent des brouillons commerciaux." });
+        if (code === "PLATFORM_STORE_PROTECTED") throw new TRPCError({ code: "FORBIDDEN", message: "MAZIGHO principal ne fait pas partie du portefeuille SaaS client." });
+        if (code === "SAAS_PLAN_ASSIGNMENT_CONFIRMATION_MISMATCH") throw new TRPCError({ code: "BAD_REQUEST", message: "Recopiez exactement le nom de la boutique avant d’attribuer le plan." });
+        throw error;
+      }
+    }),
+    setStoreDropshippingAccess: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      confirmationName: z.string().trim().min(2).max(160),
+      enabled: z.boolean(),
+      acknowledged: z.literal(true),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const result = await db.setStudioStoreDropshippingAccess(input);
+        logAudit(ctx, {
+          action: input.enabled ? "studio.store.dropshipping.grant" : "studio.store.dropshipping.revoke",
+          entityType: "store",
+          entityId: result.store.id,
+          summary: input.enabled ? "Accès dropshipping accordé explicitement par Studio." : "Accès dropshipping Studio retiré.",
+          metadata: { planChanged: false, supplierConnected: false, productImported: false, orderAutomationChanged: false },
+        });
+        return result;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (code === "PLATFORM_STORE_PROTECTED") throw new TRPCError({ code: "FORBIDDEN", message: "MAZIGHO principal ne fait pas partie du portefeuille SaaS client." });
+        if (code === "DROPSHIPPING_ACCESS_CONFIRMATION_MISMATCH") throw new TRPCError({ code: "BAD_REQUEST", message: "Recopiez exactement le nom de la boutique avant de modifier l’accès dropshipping." });
+        throw error;
+      }
+    }),
+    setStoreCommissionOverride: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      confirmationName: z.string().trim().min(2).max(160),
+      commissionRateBps: z.number().int().min(0).max(10_000),
+      acknowledged: z.literal(true),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const result = await db.setStudioStoreCommissionOverride(input);
+        logAudit(ctx, {
+          action: "studio.store.commission_override.save",
+          entityType: "store",
+          entityId: result.store.id,
+          summary: `Dérogation de commission Stripe Connect définie à ${(result.commissionOverride.commissionRateBps / 100).toFixed(2)} % pour les futurs encaissements.`,
+          metadata: { commissionRateBps: result.commissionOverride.commissionRateBps, officialPlanChanged: false, paymentCreated: false, existingOrdersChanged: false, emailSent: false },
+        });
+        return result;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (code === "PLATFORM_STORE_PROTECTED") throw new TRPCError({ code: "FORBIDDEN", message: "MAZIGHO principal ne fait pas partie du portefeuille SaaS client." });
+        if (code === "COMMISSION_OVERRIDE_CONFIRMATION_MISMATCH") throw new TRPCError({ code: "BAD_REQUEST", message: "Recopiez exactement le nom de la boutique avant de modifier sa commission." });
+        if (code === "STORE_COMMISSION_OVERRIDE_RATE_INVALID") throw new TRPCError({ code: "BAD_REQUEST", message: "Le taux de commission doit être compris entre 0 % et 100 %." });
+        throw error;
+      }
+    }),
+    clearStoreCommissionOverride: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      confirmationName: z.string().trim().min(2).max(160),
+      acknowledged: z.literal(true),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const result = await db.clearStudioStoreCommissionOverride(input);
+        logAudit(ctx, {
+          action: "studio.store.commission_override.clear",
+          entityType: "store",
+          entityId: result.store.id,
+          summary: "Dérogation de commission Stripe Connect retirée ; les futurs encaissements suivent à nouveau le taux officiel du plan.",
+          metadata: { commissionOverrideRemoved: true, officialPlanChanged: false, paymentCreated: false, existingOrdersChanged: false, emailSent: false },
+        });
+        return result;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (code === "PLATFORM_STORE_PROTECTED") throw new TRPCError({ code: "FORBIDDEN", message: "MAZIGHO principal ne fait pas partie du portefeuille SaaS client." });
+        if (code === "COMMISSION_OVERRIDE_CONFIRMATION_MISMATCH") throw new TRPCError({ code: "BAD_REQUEST", message: "Recopiez exactement le nom de la boutique avant de retirer sa dérogation de commission." });
+        throw error;
+      }
+    }),
+    setStoreQuotaOverride: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      confirmationName: z.string().trim().min(2).max(160),
+      quotas: z.object({
+        maxActiveProducts: z.number().int().positive().max(1_000_000).nullable(),
+        maxTeamMembers: z.number().int().positive().max(1_000).nullable(),
+        mediaQuotaBytes: z.number().int().positive().max(100 * 1024 * 1024 * 1024),
+        monthlyAiRequests: z.number().int().positive().max(100_000),
+        maxWorkspaceDocuments: z.number().int().positive().max(10_000),
+        maxWorkspaceTemplates: z.number().int().positive().max(10_000),
+      }),
+      acknowledged: z.literal(true),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const result = await db.setStudioStoreQuotaOverride(input);
+        logAudit(ctx, {
+          action: "studio.store.quota_override.save",
+          entityType: "store",
+          entityId: result.store.id,
+          summary: "Dérogation de capacités enregistrée pour cette boutique.",
+          metadata: { quotaOverride: true, officialPlanChanged: false, paymentCreated: false, invoiceCreated: false, emailSent: false },
+        });
+        return result;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (code === "PLATFORM_STORE_PROTECTED") throw new TRPCError({ code: "FORBIDDEN", message: "MAZIGHO principal dispose déjà de ses capacités opérateur et ne fait pas partie du portefeuille SaaS client." });
+        if (code === "QUOTA_OVERRIDE_CONFIRMATION_MISMATCH") throw new TRPCError({ code: "BAD_REQUEST", message: "Recopiez exactement le nom de la boutique avant de modifier ses capacités." });
+        if (code === "STORE_QUOTA_OVERRIDE_INVALID") throw new TRPCError({ code: "BAD_REQUEST", message: "Les capacités indiquées ne sont pas valides." });
+        throw error;
+      }
+    }),
+    clearStoreQuotaOverride: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      confirmationName: z.string().trim().min(2).max(160),
+      acknowledged: z.literal(true),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const result = await db.clearStudioStoreQuotaOverride(input);
+        logAudit(ctx, {
+          action: "studio.store.quota_override.clear",
+          entityType: "store",
+          entityId: result.store.id,
+          summary: "Dérogation de capacités retirée ; le plan officiel redevient la référence.",
+          metadata: { quotaOverrideRemoved: true, officialPlanChanged: false, paymentCreated: false, invoiceCreated: false, emailSent: false },
+        });
+        return result;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (code === "PLATFORM_STORE_PROTECTED") throw new TRPCError({ code: "FORBIDDEN", message: "MAZIGHO principal ne fait pas partie du portefeuille SaaS client." });
+        if (code === "QUOTA_OVERRIDE_CONFIRMATION_MISMATCH") throw new TRPCError({ code: "BAD_REQUEST", message: "Recopiez exactement le nom de la boutique avant de retirer sa dérogation." });
+        throw error;
+      }
+    }),
+    clearStoreSaasPlanAssignment: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      confirmationName: z.string().trim().min(2).max(160),
+      acknowledged: z.literal(true),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const cleared = await db.clearStudioStoreSaasPlanAssignment(input);
+        logAudit(ctx, {
+          action: "studio.store.saas_plan.assignment.clear",
+          entityType: "store",
+          entityId: cleared.store.id,
+          summary: "Attribution de plan SaaS retirée ; limites FREE restaurées.",
+          metadata: { quotasRecalculated: true, stripeCommissionRecalculated: true, dropshippingAccessRecalculated: true, subscriptionChanged: false, paymentChanged: false, emailSent: false },
+        });
+        return cleared;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (code === "PLATFORM_STORE_PROTECTED") throw new TRPCError({ code: "FORBIDDEN", message: "MAZIGHO principal ne fait pas partie du portefeuille SaaS client." });
+        if (code === "SAAS_PLAN_ASSIGNMENT_CONFIRMATION_MISMATCH") throw new TRPCError({ code: "BAD_REQUEST", message: "Recopiez exactement le nom de la boutique avant de retirer le plan." });
+        throw error;
+      }
+    }),
+    getStoreSupportTickets: platformProcedure.input(z.object({
+      query: z.string().trim().max(100).optional(),
+      status: z.enum(["open", "reviewing", "resolved"]).optional(),
+      needsAttention: z.boolean().optional(),
+      page: z.number().int().positive().max(10_000).optional(),
+      pageSize: z.union([z.literal(20), z.literal(50), z.literal(100)]).optional(),
+    }).optional()).query(async ({ input }) => {
+      return await db.getStudioSupportTickets(input ?? {});
+    }),
+    updateStoreSupportTicket: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      ticketId: z.string().regex(/^[a-zA-Z0-9_-]{8,80}$/),
+      status: z.enum(["open", "reviewing", "resolved"]),
+      operatorReply: z.string().trim().max(1600),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const updated = await db.updateStudioSupportTicket(input);
+        logAudit(ctx, {
+          action: "studio.store.support_ticket.update",
+          entityType: "store",
+          entityId: updated.store.id,
+          summary: "Ticket d’assistance boutique mis à jour sans accès au compte.",
+          metadata: { ticketId: input.ticketId, status: input.status, impersonationUsed: false, accountAccessChanged: false, emailSent: false },
+        });
+        return updated;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND" || code === "SUPPORT_TICKET_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Ticket ou boutique introuvable." });
+        if (code === "PLATFORM_STORE_PROTECTED") throw new TRPCError({ code: "FORBIDDEN", message: "Les tickets de MAZIGHO principal ne sont pas gérés dans le portefeuille client." });
+        if (code === "SUPPORT_TICKET_INVALID") throw new TRPCError({ code: "BAD_REQUEST", message: "Vérifiez le statut et la réponse du ticket." });
+        throw error;
+      }
+    }),
+    startStoreSupportImpersonation: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      ticketId: z.string().regex(/^[a-zA-Z0-9_-]{8,80}$/),
+      confirmationName: z.string().trim().min(2).max(160),
+      acknowledged: z.literal(true),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const target = await db.getStudioSupportImpersonationTarget(input.storeId, input.ticketId);
+        if (target.store.displayName.trim() !== input.confirmationName.trim()) {
+          throw new Error("SUPPORT_IMPERSONATION_CONFIRMATION_MISMATCH");
+        }
+        const recoveryHost = getStoreRecoveryHost(target.store.slug);
+        if (!recoveryHost) throw new Error("SUPPORT_IMPERSONATION_RECOVERY_HOST_UNAVAILABLE");
+        const identity = normalizeSupportImpersonationIdentity({
+          operatorOpenId: ctx.user.openId,
+          targetOpenId: target.target.openId,
+          storeId: target.store.id,
+        });
+
+        const expiresAt = supportImpersonationExpiresAt();
+        const sessionToken = await sdk.createSupportImpersonationToken({
+          operatorOpenId: identity.operatorOpenId,
+          targetOpenId: identity.targetOpenId,
+          storeId: identity.storeId,
+          name: target.target.name || target.store.displayName,
+          expiresInMs: SUPPORT_IMPERSONATION_TTL_MS,
+        });
+        await db.recordAuditLog({
+          storeId: target.store.id,
+          actorUserId: ctx.user.id,
+          actorName: ctx.user.name || ctx.user.email || "Opérateur MAZIGHO",
+          actorRole: ctx.user.role,
+          action: "studio.store.support_impersonation.start",
+          entityType: "support_session",
+          entityId: target.target.membershipId,
+          summary: "Session support temporaire, limitée à une boutique, ouverte depuis un ticket actif.",
+          metadata: {
+            ticketId: input.ticketId,
+            targetRole: target.target.role,
+            expiresAt,
+            durationMinutes: Math.round(SUPPORT_IMPERSONATION_TTL_MS / 60_000),
+            readOnlyIntent: true,
+            passwordRead: false,
+            paymentAccess: false,
+            apiKeyAccess: false,
+          },
+        });
+        const cookieOptions = getSupportImpersonationCookieOptions(ctx.req);
+        ctx.res.cookie(SUPPORT_IMPERSONATION_COOKIE_NAME, sessionToken, {
+          ...cookieOptions,
+          maxAge: SUPPORT_IMPERSONATION_TTL_MS,
+        });
+
+        return {
+          store: target.store,
+          expiresAt,
+          ownerPanelUrl: `https://${recoveryHost}/gestion-boutique`,
+          readOnlyIntent: true as const,
+        };
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND" || code === "SUPPORT_TICKET_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Ticket ou boutique introuvable." });
+        if (code === "PLATFORM_STORE_PROTECTED") throw new TRPCError({ code: "FORBIDDEN", message: "MAZIGHO principal ne peut jamais être ouvert en session support." });
+        if (code === "SUPPORT_IMPERSONATION_OWNER_UNAVAILABLE") throw new TRPCError({ code: "CONFLICT", message: "Aucun propriétaire actif n’est disponible pour cette boutique." });
+        if (code === "SUPPORT_IMPERSONATION_TICKET_RESOLVED") throw new TRPCError({ code: "CONFLICT", message: "Rouvrez ou mettez ce ticket en cours avant une intervention support." });
+        if (code === "SUPPORT_IMPERSONATION_CONFIRMATION_MISMATCH") throw new TRPCError({ code: "BAD_REQUEST", message: "Recopiez exactement le nom de la boutique avant d’ouvrir la session support." });
+        if (code === "SUPPORT_IMPERSONATION_RECOVERY_HOST_UNAVAILABLE") throw new TRPCError({ code: "CONFLICT", message: "L’adresse de récupération sécurisée de cette boutique est indisponible." });
+        throw error;
+      }
+    }),
+    endStoreSupportImpersonation: protectedProcedure.mutation(async ({ ctx }) => {
+      if (!ctx.supportImpersonation) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Aucune session support active à terminer." });
+      }
+      const cookieOptions = getSupportImpersonationCookieOptions(ctx.req);
+      ctx.res.clearCookie(SUPPORT_IMPERSONATION_COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
+      await db.recordAuditLog({
+        storeId: ctx.supportImpersonation.storeId,
+        actorUserId: ctx.supportImpersonation.operatorUserId,
+        actorName: ctx.supportImpersonation.operatorName,
+        actorRole: "admin",
+        action: "studio.store.support_impersonation.end",
+        entityType: "support_session",
+        summary: "Session support temporaire terminée par l’opérateur.",
+        metadata: { endedExplicitly: true, targetUserId: ctx.user.id, passwordRead: false, paymentAccess: false },
+      });
+      return { success: true as const, studioUrl: "https://studio.mazigho.ch/admin/studio/assistance" };
+    }),
+    saveStoreSaasBillingPlan: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      confirmationName: z.string().trim().min(2).max(160),
+      plan: z.object({
+        kind: z.enum(["rental", "perpetual_sale"]),
+        label: z.string().trim().min(1).max(90),
+        amountCents: z.number().int().positive().max(100_000_000),
+        currency: z.enum(["CHF", "EUR", "USD", "GBP"]),
+        interval: z.enum(["monthly", "yearly", "one_time"]),
+      }),
+      acknowledged: z.literal(true),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const saved = await db.saveStudioStoreSaasBillingPlan(input);
+        logAudit(ctx, {
+          action: "studio.store.saas_billing.plan_draft.save",
+          entityType: "store",
+          entityId: saved.store.id,
+          summary: "Plan SaaS enregistré comme brouillon interne.",
+          metadata: { kind: saved.billing.plan?.kind, interval: saved.billing.plan?.interval, amountCents: saved.billing.plan?.amountCents, currency: saved.billing.plan?.currency, subscriptionActivated: false, paymentCreated: false, invoiceIssued: false },
+        });
+        return saved;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (code === "PLATFORM_STORE_PROTECTED") throw new TRPCError({ code: "FORBIDDEN", message: "MAZIGHO principal ne fait pas partie du portefeuille SaaS client." });
+        if (code === "SAAS_BILLING_CONFIRMATION_MISMATCH") throw new TRPCError({ code: "BAD_REQUEST", message: "Recopiez exactement le nom de la boutique avant d’enregistrer le brouillon." });
+        if (code === "SAAS_BILLING_OFFER_MISMATCH") throw new TRPCError({ code: "CONFLICT", message: "Choisissez d’abord le même modèle commercial dans le registre Studio." });
+        if (code.startsWith("SAAS_BILLING_")) throw new TRPCError({ code: "BAD_REQUEST", message: "Vérifiez le montant, la devise et la périodicité du brouillon." });
+        throw error;
+      }
+    }),
+    createStoreSaasInvoiceDraft: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      confirmationName: z.string().trim().min(2).max(160),
+      reference: z.string().trim().min(1).max(80),
+      issueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      amountCents: z.number().int().positive().max(100_000_000),
+      currency: z.enum(["CHF", "EUR", "USD", "GBP"]),
+      acknowledged: z.literal(true),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const created = await db.createStudioStoreSaasInvoiceDraft(input);
+        logAudit(ctx, {
+          action: "studio.store.saas_billing.invoice_draft.create",
+          entityType: "store",
+          entityId: created.store.id,
+          summary: "Facture interne créée comme brouillon non fiscal.",
+          metadata: { reference: created.invoice.reference, amountCents: created.invoice.amountCents, currency: created.invoice.currency, invoiceIssued: false, paymentCreated: false, emailSent: false, accountingSynced: false },
+        });
+        return created;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (code === "PLATFORM_STORE_PROTECTED") throw new TRPCError({ code: "FORBIDDEN", message: "MAZIGHO principal ne fait pas partie du portefeuille SaaS client." });
+        if (code === "SAAS_BILLING_CONFIRMATION_MISMATCH") throw new TRPCError({ code: "BAD_REQUEST", message: "Recopiez exactement le nom de la boutique avant de créer le brouillon." });
+        if (code === "SAAS_BILLING_PLAN_REQUIRED") throw new TRPCError({ code: "CONFLICT", message: "Enregistrez d’abord un plan SaaS interne pour cette boutique." });
+        if (code === "SAAS_BILLING_REFERENCE_DUPLICATE") throw new TRPCError({ code: "CONFLICT", message: "Cette référence existe déjà dans les brouillons de cette boutique." });
+        if (code === "SAAS_BILLING_INVOICE_LIMIT_REACHED") throw new TRPCError({ code: "CONFLICT", message: "La limite de 24 brouillons est atteinte pour cette boutique." });
+        if (code.startsWith("SAAS_")) throw new TRPCError({ code: "BAD_REQUEST", message: "Vérifiez la référence, les dates, le montant et la devise du brouillon." });
+        throw error;
+      }
+    }),
+    updateStoreSaasInvoiceDraft: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      confirmationName: z.string().trim().min(2).max(160),
+      invoiceId: z.string().regex(/^[a-zA-Z0-9_-]{8,80}$/),
+      reference: z.string().trim().min(1).max(80),
+      issueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      amountCents: z.number().int().positive().max(100_000_000),
+      currency: z.enum(["CHF", "EUR", "USD", "GBP"]),
+      acknowledged: z.literal(true),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const updated = await db.updateStudioStoreSaasInvoiceDraft(input);
+        logAudit(ctx, {
+          action: "studio.store.saas_billing.invoice_draft.update",
+          entityType: "store",
+          entityId: updated.store.id,
+          summary: "Brouillon de facture interne mis à jour.",
+          metadata: { reference: updated.invoice.reference, amountCents: updated.invoice.amountCents, currency: updated.invoice.currency, invoiceIssued: false, paymentChanged: false, emailSent: false, accountingSynced: false },
+        });
+        return updated;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (code === "PLATFORM_STORE_PROTECTED") throw new TRPCError({ code: "FORBIDDEN", message: "MAZIGHO principal ne fait pas partie du portefeuille SaaS client." });
+        if (code === "SAAS_BILLING_CONFIRMATION_MISMATCH") throw new TRPCError({ code: "BAD_REQUEST", message: "Recopiez exactement le nom de la boutique avant de modifier le brouillon." });
+        if (code === "SAAS_BILLING_INVOICE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Brouillon de facture introuvable." });
+        if (code === "SAAS_BILLING_REFERENCE_DUPLICATE") throw new TRPCError({ code: "CONFLICT", message: "Cette référence existe déjà dans les brouillons de cette boutique." });
+        if (code.startsWith("SAAS_")) throw new TRPCError({ code: "BAD_REQUEST", message: "Vérifiez la référence, les dates, le montant et la devise du brouillon." });
+        throw error;
+      }
+    }),
+    deleteStoreSaasInvoiceDraft: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      confirmationName: z.string().trim().min(2).max(160),
+      invoiceId: z.string().regex(/^[a-zA-Z0-9_-]{8,80}$/),
+      acknowledged: z.literal(true),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const deleted = await db.deleteStudioStoreSaasInvoiceDraft(input);
+        logAudit(ctx, {
+          action: "studio.store.saas_billing.invoice_draft.delete",
+          entityType: "store",
+          entityId: deleted.store.id,
+          summary: "Brouillon de facture interne supprimé.",
+          metadata: { invoiceId: input.invoiceId, invoiceIssued: false, paymentChanged: false, emailSent: false },
+        });
+        return deleted;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (code === "PLATFORM_STORE_PROTECTED") throw new TRPCError({ code: "FORBIDDEN", message: "MAZIGHO principal ne fait pas partie du portefeuille SaaS client." });
+        if (code === "SAAS_BILLING_CONFIRMATION_MISMATCH") throw new TRPCError({ code: "BAD_REQUEST", message: "Recopiez exactement le nom de la boutique avant de supprimer le brouillon." });
+        if (code === "SAAS_BILLING_INVOICE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Brouillon de facture introuvable." });
+        throw error;
+      }
+    }),
+    getStoreMediaUsage: platformProcedure.input(z.object({ storeId: z.number().int().positive() })).query(async ({ input }) => {
+      try {
+        return await db.getStudioStoreMediaUsage(input.storeId);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (code === "PLATFORM_STORE_PROTECTED") throw new TRPCError({ code: "FORBIDDEN", message: "Le quota de MAZIGHO principal ne fait pas partie du parc client Studio." });
+        throw error;
+      }
+    }),
+    getStoreCommercialSupervision: platformProcedure.input(z.object({ storeId: z.number().int().positive() })).query(async ({ input }) => {
+      try {
+        return await db.getStudioStoreCommercialSupervision(input.storeId);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (code === "PLATFORM_STORE_PROTECTED") throw new TRPCError({ code: "FORBIDDEN", message: "La supervision SaaS est réservée aux boutiques clientes, pas à MAZIGHO principal." });
+        throw error;
+      }
+    }),
+    getStoreProjectDesk: platformProcedure.input(z.object({ storeId: z.number().int().positive() })).query(async ({ input }) => {
+      try {
+        return await db.getStudioStoreProjectDesk(input.storeId);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (code === "PLATFORM_STORE_PROTECTED") throw new TRPCError({ code: "FORBIDDEN", message: "Le suivi de projet Studio est réservé aux boutiques clientes." });
+        if (code === "STUDIO_PROJECT_DESK_UNREADABLE") throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Les notes internes de cette boutique ne peuvent pas être relues de manière sûre." });
+        throw error;
+      }
+    }),
+    saveStoreProjectDesk: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      desk: z.object({
+        stage: z.enum(["new_project", "to_analyze", "to_prepare", "ready", "handed_over"]),
+        notes: z.string().max(4_000),
+        reminders: z.array(z.object({
+          id: z.string().regex(/^[a-zA-Z0-9_-]{8,80}$/),
+          title: z.string().trim().min(1).max(160),
+          dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+          completed: z.boolean(),
+          createdAt: z.string().datetime(),
+        })).max(12),
+        handover: z.object({ owner_access: z.boolean(), store_identity: z.boolean(), catalogue: z.boolean(), operations: z.boolean(), domain: z.boolean() }),
+      }),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const saved = await db.saveStudioStoreProjectDesk(input);
+        logAudit(ctx, {
+          action: "studio.store.project_desk.save",
+          entityType: "store",
+          entityId: saved.store.id,
+          summary: "Suivi interne de projet Studio mis à jour.",
+          metadata: { stage: saved.desk.stage, reminderCount: saved.desk.reminders.length, noteStoredEncrypted: true, emailSent: false, paymentChanged: false, domainChanged: false, storefrontActivated: false },
+        });
+        return saved;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (code === "PLATFORM_STORE_PROTECTED") throw new TRPCError({ code: "FORBIDDEN", message: "Le suivi de projet Studio est réservé aux boutiques clientes." });
+        if (code === "STUDIO_PROJECT_DESK_ENCRYPTION_NOT_CONFIGURED") throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Le chiffrement des notes Studio n’est pas disponible pour le moment." });
+        if (code === "STUDIO_PROJECT_DESK_UNREADABLE") throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Les notes internes de cette boutique ne peuvent pas être relues de manière sûre." });
+        throw error;
+      }
+    }),
+    updateStoreProjectStage: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      stage: z.enum(["new_project", "to_analyze", "to_prepare", "ready", "handed_over"]),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const updated = await db.updateStudioStoreProjectStage(input);
+        logAudit(ctx, {
+          action: "studio.store.project_desk.stage.update",
+          entityType: "store",
+          entityId: updated.store.id,
+          summary: "Étape de production Studio mise à jour.",
+          metadata: { stage: updated.stage, emailSent: false, paymentChanged: false, domainChanged: false, storefrontChanged: false, ownerAccessChanged: false },
+        });
+        return updated;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (code === "PLATFORM_STORE_PROTECTED") throw new TRPCError({ code: "FORBIDDEN", message: "Le suivi de projet Studio est réservé aux boutiques clientes." });
+        if (code === "STUDIO_PROJECT_DESK_ENCRYPTION_NOT_CONFIGURED") throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Le chiffrement des notes Studio n’est pas disponible pour le moment." });
+        if (code === "STUDIO_PROJECT_DESK_UNREADABLE") throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Les notes internes de cette boutique ne peuvent pas être relues de manière sûre." });
+        throw error;
+      }
+    }),
+    prepareOwnerCustomDomainGuide: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      providerLabel: z.string().trim().max(80).optional(),
+      records: z.array(z.object({
+        type: z.enum(["A", "CNAME", "TXT"]),
+        host: z.string().trim().min(1).max(80),
+        value: z.string().trim().min(1).max(500),
+      })).min(1).max(4),
+      note: z.string().trim().max(500).optional(),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const prepared = await db.prepareStudioOwnerCustomDomainGuide(input);
+        logAudit(ctx, {
+          action: "studio.store.domain_guide.prepare",
+          entityType: "store",
+          entityId: input.storeId,
+          summary: "Guide DNS manuel préparé pour une boutique cliente.",
+          metadata: { recordCount: prepared.guide?.records.length ?? 0, domainAssigned: false, dnsChanged: false, storefrontActivated: false },
+        });
+        return prepared;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (code === "OWNER_CUSTOM_DOMAIN_PLATFORM_STORE_FORBIDDEN") throw new TRPCError({ code: "FORBIDDEN", message: "Le domaine de MAZIGHO principal reste protégé." });
+        if (code === "OWNER_CUSTOM_DOMAIN_REQUEST_REQUIRED") throw new TRPCError({ code: "CONFLICT", message: "Le propriétaire doit d’abord enregistrer son domaine souhaité." });
+        if (code.startsWith("OWNER_DOMAIN_GUIDE_")) throw new TRPCError({ code: "BAD_REQUEST", message: "Vérifiez les enregistrements DNS indiqués dans le guide." });
+        throw error;
+      }
+    }),
+    restoreStoreRecoveryDomain: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      confirmationName: z.string().trim().min(2).max(160),
+      acknowledged: z.literal(true),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const restored = await db.restoreStudioStoreRecoveryDomain(input);
+        logAudit(ctx, {
+          action: "studio.store.domain.recovery.restore",
+          entityType: "store",
+          entityId: restored.store.id,
+          summary: "Adresse de récupération MAZIGHO rétablie pour une boutique cliente.",
+          metadata: { previousDomain: restored.previousDomain, recoveryDomain: restored.recoveryDomain, changed: restored.changed, dnsChanged: false, storefrontActivated: false },
+        });
+        return restored;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (code === "PLATFORM_STORE_PROTECTED") throw new TRPCError({ code: "FORBIDDEN", message: "MAZIGHO principal est protégé : son domaine ne peut pas être rétabli ici." });
+        if (code === "STORE_RECOVERY_DOMAIN_CONFIRMATION_MISMATCH") throw new TRPCError({ code: "BAD_REQUEST", message: "Recopiez exactement le nom de la boutique avant le rétablissement." });
+        if (code === "STORE_RECOVERY_DOMAIN_UNAVAILABLE") throw new TRPCError({ code: "CONFLICT", message: "Cette boutique ne possède pas d’adresse de récupération valide." });
+        throw error;
+      }
+    }),
+    activateClientStore: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      confirmationName: z.string().trim().min(2).max(160),
+      confirmationOwnerEmail: z.string().trim().email().max(320),
+      domainVerified: z.literal(true),
+      readinessVerified: z.literal(true),
+      ownerResponsibilityAcknowledged: z.literal(true),
+      activationAcknowledged: z.literal(true),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const activated = await db.activateStudioClientStore(input);
+        logAudit(ctx, {
+          action: "studio.store.activation.confirm",
+          entityType: "store",
+          entityId: activated.store.id,
+          summary: "Boutique cliente ouverte après confirmation manuelle du domaine et de la préparation.",
+          metadata: { domainVerifiedManually: true, readinessVerifiedManually: true, ownerResponsibilityAcknowledged: true, paymentActivated: false, subscriptionChanged: false, dnsChanged: false },
+        });
+        return activated;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (code === "PLATFORM_STORE_PROTECTED") throw new TRPCError({ code: "FORBIDDEN", message: "MAZIGHO principal ne peut pas être ouvert par ce contrôle." });
+        if (code === "STORE_NOT_ELIGIBLE_FOR_ACTIVATION") throw new TRPCError({ code: "CONFLICT", message: "Seule une boutique cliente encore en préparation peut être ouverte ici." });
+        if (code === "STORE_ACTIVATION_READINESS_INCOMPLETE") throw new TRPCError({ code: "CONFLICT", message: "La préparation commerciale n’est pas complète. Corrigez les éléments du panneau propriétaire avant l’ouverture." });
+        if (code === "ACTIVATION_NAME_CONFIRMATION_MISMATCH") throw new TRPCError({ code: "BAD_REQUEST", message: "Recopiez exactement le nom de la boutique avant l’ouverture." });
+        if (code === "ACTIVATION_OWNER_CONFIRMATION_MISMATCH") throw new TRPCError({ code: "BAD_REQUEST", message: "L’e-mail ne correspond pas à un propriétaire actif de cette boutique." });
+        if (code === "ACTIVATION_CONFIRMATION_INCOMPLETE") throw new TRPCError({ code: "BAD_REQUEST", message: "Confirmez le domaine, la préparation technique, la responsabilité du propriétaire et l’ouverture publique." });
+        if (code === "STORE_ACTIVATION_CONFLICT") throw new TRPCError({ code: "CONFLICT", message: "Le statut a changé entre-temps. Actualisez avant de réessayer." });
+        throw error;
+      }
+    }),
+    getProvisioningDrafts: platformProcedure.query(async () => db.getStudioProvisioningDrafts()),
+    getStoreCopySources: platformProcedure.query(async () => db.getStudioStoreCopySources()),
+    getStoreCopySourcePreview: platformProcedure.input(z.object({ sourceStoreId: z.number().int().positive() })).query(async ({ input }) => {
+      try {
+        return await db.getStudioStoreCopySourcePreview(input.sourceStoreId);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_COPY_SOURCE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique source introuvable." });
+        if (["STORE_COPY_PLATFORM_SOURCE_FORBIDDEN", "STORE_COPY_SOURCE_NOT_ELIGIBLE"].includes(code)) throw new TRPCError({ code: "FORBIDDEN", message: "Cette boutique ne peut pas servir de source à une copie contrôlée." });
+        throw error;
+      }
+    }),
+    getCatalogueImportTargets: platformProcedure.query(async () => db.getStudioCatalogueImportTargets()),
+    getProvisioningReviews: platformProcedure.query(async () => db.getStudioProvisioningDraftReviews()),
+    getLaunchPreflight: platformProcedure.input(z.object({ draftId: z.number().int().positive() })).query(async ({ input }) => db.getStudioStoreLaunchPreflight(input.draftId)),
+    getGiftStoreActivationPreflight: platformProcedure.input(z.object({ storeId: z.number().int().positive() })).query(async ({ input }) => db.getGiftStoreActivationPreflight(input.storeId)),
+    getPrivateStorefrontPreview: platformProcedure.input(z.object({ storeId: z.number().int().positive() })).query(async ({ input }) => {
+      try {
+        return await db.getStudioPrivateStorefrontPreview(input.storeId);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (["STORE_NOT_ELIGIBLE_FOR_PRIVATE_PREVIEW", "STORE_NOT_GIFT_PROVISIONED", "STORE_PROVISIONING_SOURCE_MISSING", "PROVISIONING_DRAFT_NOT_FOUND"].includes(code)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Cet aperçu privé est réservé à une boutique offerte préparée dans MAZIGHO Studio." });
+        }
+        throw error;
+      }
+    }),
+    getOwnerBuilderConfiguration: platformProcedure.input(z.object({ storeId: z.number().int().positive() })).query(async ({ input }) => {
+      try {
+        return await db.getStudioOwnerBuilderConfiguration(input.storeId);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (["STORE_NOT_ELIGIBLE_FOR_OWNER_BUILDER", "STORE_NOT_GIFT_PROVISIONED", "STORE_PROVISIONING_SOURCE_MISSING", "PROVISIONING_DRAFT_NOT_FOUND"].includes(code)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Le créateur privé est réservé à une boutique offerte encore en préparation dans MAZIGHO Studio." });
+        }
+        throw error;
+      }
+    }),
+    saveOwnerBuilderConfiguration: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      brandName: z.string().trim().min(2).max(160),
+      brandMessage: z.string().trim().max(220),
+      niche: z.string().trim().min(2).max(160),
+      model: z.enum(["commerce", "editorial", "catalogue"]),
+      pages: z.array(z.enum(["about", "faq", "contact", "lookbook"])).max(4),
+      paletteId: z.enum(["terracotta", "sage", "midnight", "rose", "violet"]),
+      typographyId: z.enum(["editorial", "modern", "classic"]),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const saved = await db.saveStudioOwnerBuilderConfiguration(input);
+        logAudit(ctx, {
+          action: "studio.gift_store.owner_builder.save",
+          entityType: "store",
+          entityId: saved.store.id,
+          summary: `Configuration privée du créateur enregistrée : ${saved.store.displayName}`,
+          metadata: { status: "setup", publicStorefront: false, publicationExecuted: false },
+        });
+        return saved;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (["STORE_NOT_ELIGIBLE_FOR_OWNER_BUILDER", "STORE_NOT_GIFT_PROVISIONED", "STORE_PROVISIONING_SOURCE_MISSING", "PROVISIONING_DRAFT_NOT_FOUND"].includes(code)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Le créateur privé est réservé à une boutique offerte encore en préparation dans MAZIGHO Studio." });
+        }
+        throw error;
+      }
+    }),
+    getOwnerCollectionDrafts: platformProcedure.input(z.object({ storeId: z.number().int().positive() })).query(async ({ input }) => {
+      try {
+        return await db.getStudioOwnerCollectionDrafts(input.storeId);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (["STORE_NOT_ELIGIBLE_FOR_OWNER_BUILDER", "STORE_NOT_GIFT_PROVISIONED", "STORE_PROVISIONING_SOURCE_MISSING", "PROVISIONING_DRAFT_NOT_FOUND"].includes(code)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Les collections privées sont réservées à une boutique offerte encore en préparation dans MAZIGHO Studio." });
+        }
+        throw error;
+      }
+    }),
+    saveOwnerCollectionDrafts: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      collections: z.array(z.object({
+        id: z.string().trim().min(1).max(32),
+        title: z.string().trim().min(2).max(72),
+        description: z.string().trim().min(2).max(220),
+        featured: z.boolean(),
+      })).min(1).max(8),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const saved = await db.saveStudioOwnerCollectionDrafts(input);
+        logAudit(ctx, {
+          action: "studio.gift_store.owner_collections.save",
+          entityType: "store",
+          entityId: saved.store.id,
+          summary: "Collections privées du créateur enregistrées",
+          metadata: { status: "setup", publicStorefront: false, publicationExecuted: false },
+        });
+        return saved;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (code === "OWNER_COLLECTION_DRAFTS_REQUIRED") throw new TRPCError({ code: "BAD_REQUEST", message: "Préparez au moins une collection." });
+        if (["STORE_NOT_ELIGIBLE_FOR_OWNER_BUILDER", "STORE_NOT_GIFT_PROVISIONED", "STORE_PROVISIONING_SOURCE_MISSING", "PROVISIONING_DRAFT_NOT_FOUND"].includes(code)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Les collections privées sont réservées à une boutique offerte encore en préparation dans MAZIGHO Studio." });
+        }
+        throw error;
+      }
+    }),
+    getOwnerProductDrafts: platformProcedure.input(z.object({ storeId: z.number().int().positive() })).query(async ({ input }) => {
+      try {
+        return await db.getStudioOwnerProductDrafts(input.storeId);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (["STORE_NOT_ELIGIBLE_FOR_OWNER_BUILDER", "STORE_NOT_GIFT_PROVISIONED", "STORE_PROVISIONING_SOURCE_MISSING", "PROVISIONING_DRAFT_NOT_FOUND"].includes(code)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Les fiches produits privées sont réservées à une boutique offerte encore en préparation dans MAZIGHO Studio." });
+        }
+        throw error;
+      }
+    }),
+    saveOwnerProductDrafts: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      products: z.array(z.object({
+        id: z.string().trim().min(1).max(32),
+        name: z.string().trim().min(2).max(120),
+        description: z.string().trim().min(2).max(700),
+        collectionId: z.string().trim().min(1).max(32),
+        priceCents: z.number().int().min(1).max(10_000_000),
+        featured: z.boolean(),
+      })).max(24),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const saved = await db.saveStudioOwnerProductDrafts(input);
+        logAudit(ctx, {
+          action: "studio.gift_store.owner_products.save",
+          entityType: "store",
+          entityId: saved.store.id,
+          summary: "Fiches produits privées du créateur enregistrées",
+          metadata: { status: "setup", publicStorefront: false, publicationExecuted: false },
+        });
+        return saved;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (["STORE_NOT_ELIGIBLE_FOR_OWNER_BUILDER", "STORE_NOT_GIFT_PROVISIONED", "STORE_PROVISIONING_SOURCE_MISSING", "PROVISIONING_DRAFT_NOT_FOUND"].includes(code)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Les fiches produits privées sont réservées à une boutique offerte encore en préparation dans MAZIGHO Studio." });
+        }
+        throw error;
+      }
+    }),
+    getOwnerProductOperationDrafts: platformProcedure.input(z.object({ storeId: z.number().int().positive() })).query(async ({ input }) => {
+      try {
+        return await db.getStudioOwnerProductOperationDrafts(input.storeId);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (["STORE_NOT_ELIGIBLE_FOR_OWNER_BUILDER", "STORE_NOT_GIFT_PROVISIONED", "STORE_PROVISIONING_SOURCE_MISSING", "PROVISIONING_DRAFT_NOT_FOUND"].includes(code)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "La préparation de stock et fournisseur est réservée à une boutique offerte encore en préparation dans MAZIGHO Studio." });
+        }
+        throw error;
+      }
+    }),
+    saveOwnerProductOperationDrafts: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      operations: z.array(z.object({
+        productId: z.string().trim().min(1).max(32),
+        stockState: z.enum(["to_confirm", "in_stock", "limited", "out_of_stock"]),
+        stockQuantity: z.number().int().min(0).max(999_999),
+        supplierName: z.string().trim().max(96),
+        supplierReference: z.string().trim().max(128),
+      })).max(24),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const saved = await db.saveStudioOwnerProductOperationDrafts(input);
+        logAudit(ctx, {
+          action: "studio.gift_store.owner_product_operations.save",
+          entityType: "store",
+          entityId: saved.store.id,
+          summary: "Préparation privée du stock et fournisseur enregistrée",
+          metadata: { status: "setup", publicStorefront: false, supplierIntegrationExecuted: false, publicationExecuted: false },
+        });
+        return saved;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (["STORE_NOT_ELIGIBLE_FOR_OWNER_BUILDER", "STORE_NOT_GIFT_PROVISIONED", "STORE_PROVISIONING_SOURCE_MISSING", "PROVISIONING_DRAFT_NOT_FOUND"].includes(code)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "La préparation de stock et fournisseur est réservée à une boutique offerte encore en préparation dans MAZIGHO Studio." });
+        }
+        throw error;
+      }
+    }),
+    getOwnerSetupIsolationReview: platformProcedure.input(z.object({ storeId: z.number().int().positive() })).query(async ({ input }) => {
+      try {
+        return await db.getStudioOwnerSetupIsolationReview(input.storeId);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (["STORE_NOT_ELIGIBLE_FOR_OWNER_BUILDER", "STORE_NOT_GIFT_PROVISIONED", "STORE_PROVISIONING_SOURCE_MISSING", "PROVISIONING_DRAFT_NOT_FOUND"].includes(code)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "La revue d’étanchéité est réservée à une boutique offerte encore en préparation dans MAZIGHO Studio." });
+        }
+        throw error;
+      }
+    }),
+    getOwnerPublicStorefrontContent: platformProcedure.input(z.object({ storeId: z.number().int().positive() })).query(async ({ input }) => {
+      try {
+        return await db.getStudioOwnerPublicStorefrontContent(input.storeId);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (["STORE_NOT_ELIGIBLE_FOR_STOREFRONT_CONTENT", "STORE_NOT_GIFT_PROVISIONED", "STORE_PROVISIONING_SOURCE_MISSING", "PROVISIONING_DRAFT_NOT_FOUND"].includes(code)) throw new TRPCError({ code: "FORBIDDEN", message: "Le contenu public est réservé à une boutique offerte gérée depuis MAZIGHO Studio." });
+        throw error;
+      }
+    }),
+    issueOwnerTemporaryPassword: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      confirmationEmail: z.string().trim().email().max(320),
+      acknowledged: z.literal(true),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const issued = await db.issueStudioGiftStoreOwnerTemporaryPassword({ storeId: input.storeId, confirmationEmail: input.confirmationEmail });
+        logAudit(ctx, { action: "studio.gift_store.owner.temporary_password.issue", entityType: "user", entityId: 0, summary: "Mot de passe temporaire propriétaire généré dans Studio", metadata: { storeId: input.storeId, secretStored: false } });
+        return issued;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "OWNER_CONFIRMATION_MISMATCH") throw new TRPCError({ code: "FORBIDDEN", message: "L’adresse ne correspond pas au propriétaire actif de cette boutique." });
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (["STORE_NOT_ELIGIBLE_FOR_STOREFRONT_CONTENT", "STORE_NOT_GIFT_PROVISIONED", "STORE_PROVISIONING_SOURCE_MISSING", "PROVISIONING_DRAFT_NOT_FOUND"].includes(code)) throw new TRPCError({ code: "FORBIDDEN", message: "Cette action est réservée à une boutique offerte gérée depuis MAZIGHO Studio." });
+        throw error;
+      }
+    }),
+    saveOwnerPublicStorefrontProfile: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      profile: z.object({
+        paletteId: z.enum(["terracotta", "sage", "midnight", "rose", "violet"]), typographyId: z.enum(["editorial", "modern", "classic"]),
+        brandName: z.string().trim().min(2).max(48), brandMessage: z.string().trim().max(120), brandLogoUrl: z.union([z.literal(""), visualUrlSchema]), faviconUrl: z.union([z.literal(""), visualUrlSchema]).default(""),
+        highlightEyebrow: z.string().trim().min(2).max(120), highlightTitle: z.string().trim().min(2).max(180), highlightText: z.string().trim().min(2).max(600), highlightImageUrl: visualUrlSchema,
+        storyTitle: z.string().trim().min(2).max(180), storyText: z.string().trim().min(2).max(1000), storyImageUrl: visualUrlSchema,
+        editorialEyebrow: z.string().trim().min(2).max(120), editorialTitle: z.string().trim().min(2).max(180), editorialImageUrl: visualUrlSchema,
+        navigationHome: z.string().trim().min(1).max(40), navigationShop: z.string().trim().min(1).max(40), navigationCategories: z.string().trim().min(1).max(40), navigationCreations: z.string().trim().min(1).max(40), navigationContact: z.string().trim().min(1).max(40),
+        navigationTranslations: z.object({ de: z.any().optional(), it: z.any().optional(), en: z.any().optional(), es: z.any().optional(), nl: z.any().optional(), ar: z.any().optional() }).default({}),
+        // Studio manages active boutique storefronts as well. Keep the exact
+        // same constrained navigation contract as the owner workspace: a
+        // maximum of sixteen entries and just one custom submenu level.
+        headerLayout: z.enum(["inline", "split", "searchFirst", "gallery", "market", "glamour"]),
+        navigationItems: z.array(navigationItem).min(1).max(16),
+        showDiscovery: z.boolean(), showStory: z.boolean(), showTestimonials: z.boolean(), showEditorial: z.boolean(), showFeatured: z.boolean(),
+        shopPageCopyCustomized: z.boolean(), shopEyebrow: z.string().trim().min(2).max(120), shopTitle: z.string().trim().min(2).max(180), shopIntro: z.string().trim().min(2).max(600),
+        shopProductsEyebrow: z.string().trim().min(2).max(120), shopProductsTitle: z.string().trim().min(2).max(180), showShopEditorial: z.boolean(),
+        shopEditorialEyebrow: z.string().trim().min(2).max(120), shopEditorialTitle: z.string().trim().min(2).max(180), shopEditorialImageUrl: visualUrlSchema, showShopReassurance: z.boolean(),
+        customColorsEnabled: z.boolean(), customPrimary: z.string().trim().regex(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/), customAccent: z.string().trim().regex(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/), customSoft: z.string().trim().regex(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/), buttonRadius: z.enum(["flat", "rounded", "full"]),
+        footerBackgroundColor: z.string().trim().regex(/^(|#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}))$/), footerTextColor: z.string().trim().regex(/^(|#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}))$/),
+        footerDescription: z.string().trim().max(420), footerNavigationTitle: z.string().trim().max(60), footerCategoriesTitle: z.string().trim().max(60), footerHelpTitle: z.string().trim().max(60),
+        footerContactText: z.string().trim().max(160), footerContactUrl: z.string().trim().max(300).refine(value => value === "" || (value.startsWith("/") && !value.startsWith("//")) || /^https:\/\//i.test(value), "Utilisez une URL https:// ou un chemin interne."),
+        footerDeliveryTitle: z.string().trim().max(80), footerDeliveryText: z.string().trim().max(220), footerSecureTitle: z.string().trim().max(80), footerSecureText: z.string().trim().max(220), footerServiceTitle: z.string().trim().max(80), footerServiceText: z.string().trim().max(220), footerCopyrightText: z.string().trim().max(160),
+        footerShowNavigation: z.boolean(), footerShowCategories: z.boolean(), footerShowHelp: z.boolean(), footerShowReassurance: z.boolean(),
+        footerSocialLinks: z.array(z.object({ id: z.enum(["instagram", "facebook", "tiktok", "youtube", "pinterest", "linkedin"]), url: z.string().trim().max(500).refine(value => value === "" || /^https:\/\//i.test(value), "Utilisez une URL https:// ou laissez le réseau social vide."), })).length(6),
+        homeOrder: z.array(z.string().max(60)).max(40), textBanners: z.array(z.object({ id: z.string().trim().min(1).max(60), eyebrow: z.string().trim().max(120), title: z.string().trim().min(1).max(180), text: z.string().trim().max(600), buttonLabel: z.string().trim().max(60), buttonUrl: z.string().trim().max(300), imageUrl: z.string().trim().max(1000).optional(), imageAlt: z.string().trim().max(180).optional(), layout: z.enum(["banner", "split", "framedSplit", "spotlight", "roundGallery"]).optional(), theme: z.enum(["primary", "dark", "soft", "light"]).optional(), galleryItems: z.array(z.object({ id: z.string().trim().min(4).max(60), label: z.string().trim().min(2).max(80), imageUrl: visualUrlSchema, imageAlt: z.string().trim().min(2).max(180), href: z.string().trim().max(300) })).max(6).optional(), enabled: z.boolean() })).max(8),
+      }),
+    })).mutation(async ({ ctx, input }) => {
+      const profile = await db.saveStudioOwnerPublicStorefrontProfile({ storeId: input.storeId, profile: input.profile });
+      logAudit(ctx, { action: "studio.gift_store.storefront.profile.save", entityType: "design", entityId: 1, summary: "Contenu public de boutique enregistré dans Studio", metadata: { storeId: input.storeId, publicStorefront: true, hasBrandLogo: Boolean(input.profile.brandLogoUrl) } });
+      return profile;
+    }),
+    saveOwnerPublicStorefrontHomepageSections: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      sections: ownerHomepageSections,
+    })).mutation(async ({ ctx, input }) => {
+      const current = await db.getDesignProfile(input.storeId);
+      const profile = await db.saveStudioOwnerPublicStorefrontProfile({ storeId: input.storeId, profile: { ...current, ...input.sections } });
+      const publicCopyFields = [
+        "discoveryEyebrow", "discoveryTitle", "discoveryText", "discoveryAllShopLabel", "discoveryBrowseShopLabel",
+        "testimonialsEyebrow", "testimonialsTitle", "testimonialsText", "testimonialsCtaLabel",
+        "closingEyebrow", "closingTitle", "closingText", "closingShopCtaLabel", "closingContactCtaLabel", "closingVisualValue", "closingVisualText",
+      ] as const;
+      if (publicCopyFields.some(field => current[field] !== profile[field])) await db.markPublicContentTranslationsStale("design", 1, input.storeId);
+      logAudit(ctx, { action: "studio.storefront.home_sections.save", entityType: "design", entityId: 1, summary: "Sections d’accueil enregistrées depuis Studio", metadata: { storeId: input.storeId, publicStorefront: true } });
+      return profile;
+    }),
+    getStorefrontThemeAccess: platformProcedure.input(z.object({ storeId: z.number().int().positive() })).query(async ({ input }) => await db.getStorefrontThemeAccess(input.storeId)),
+    saveStorefrontThemeAccess: platformProcedure.input(z.object({ storeId: z.number().int().positive(), themeIds: z.array(storefrontThemeIdSchema).min(1).max(storefrontThemeIds.length) })).mutation(async ({ ctx, input }) => {
+      const saved = await db.saveStorefrontThemeAccess(input.storeId, { themeIds: input.themeIds });
+      logAudit(ctx, { action: "studio.storefront.theme_access.save", entityType: "store", entityId: input.storeId, summary: "Bibliothèque de thèmes attribuée à la boutique", metadata: { storeId: input.storeId, themeCount: saved.themeIds.length } });
+      return saved;
+    }),
+    applyStorefrontTheme: platformProcedure.input(z.object({ storeId: z.number().int().positive(), themeId: storefrontThemeIdSchema })).mutation(async ({ ctx, input }) => applyStorefrontTheme(ctx, input.storeId, input.themeId)),
+    // Compatibility endpoint for the first published Studio preset.
+    applyVioletCraftStorefrontTemplate: platformProcedure.input(z.object({ storeId: z.number().int().positive() })).mutation(async ({ ctx, input }) => applyStorefrontTheme(ctx, input.storeId, "violetCraft")),
+    saveOwnerPublicStorefrontBanner: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(), bannerId: z.number().int().positive().optional(), title: z.string().trim().min(2).max(180), subtitle: z.string().trim().max(600).optional(), imageUrl: visualUrlSchema, linkUrl: z.string().trim().max(300).optional(), active: z.number().int().min(0).max(1), displayOrder: z.number().int().min(0).max(100),
+    })).mutation(async ({ ctx, input }) => {
+      const saved = await db.saveStudioOwnerPublicStorefrontBanner(input);
+      logAudit(ctx, { action: "studio.gift_store.storefront.banner.save", entityType: "banner", entityId: input.bannerId ?? 0, summary: "Bannière publique de boutique enregistrée dans Studio", metadata: { storeId: input.storeId, publicStorefront: true, active: Boolean(input.active) } });
+      return saved;
+    }),
+    deleteOwnerPublicStorefrontBanner: platformProcedure.input(z.object({ storeId: z.number().int().positive(), bannerId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+      const deleted = await db.deleteStudioOwnerPublicStorefrontBanner(input);
+      logAudit(ctx, { action: "studio.gift_store.storefront.banner.delete", entityType: "banner", entityId: input.bannerId, summary: "Bannière publique de boutique supprimée dans Studio", metadata: { storeId: input.storeId, publicStorefront: true } });
+      return deleted;
+    }),
+    uploadOwnerPublicStorefrontImage: platformProcedure.input(z.object({ storeId: z.number().int().positive(), dataUrl: z.string().max(7_100_000), fileName: z.string().trim().min(1).max(160) })).mutation(async ({ ctx, input }) => {
+      await db.getStudioOwnerPublicStorefrontContent(input.storeId);
+      const image = decodeDesignImage(input.dataUrl);
+      const safeName = input.fileName.replace(/[^a-z0-9_-]/gi, "-").replace(/-+/g, "-").slice(0, 80) || "visuel";
+      const entitlements = await db.getStoreSaasEntitlements(input.storeId);
+      const { url } = await storagePut(`studio-storefront/${input.storeId}/${Date.now()}-${safeName}.${image.extension}`, image.buffer, image.contentType, { storeId: input.storeId, quotaBytes: entitlements.mediaQuotaBytes });
+      logAudit(ctx, { action: "studio.gift_store.storefront.image.upload", entityType: "design", entityId: 1, summary: "Visuel storefront téléversé dans Studio", metadata: { storeId: input.storeId, publicStorefront: true } });
+      return { url };
+    }),
+    getOwnerExistingCatalogue: platformProcedure.input(z.object({ storeId: z.number().int().positive() })).query(async ({ input }) => {
+      try {
+        return await db.getStudioOwnerExistingCatalogue(input.storeId);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (["STORE_NOT_ELIGIBLE_FOR_OWNER_BUILDER", "STORE_NOT_GIFT_PROVISIONED", "STORE_PROVISIONING_SOURCE_MISSING", "PROVISIONING_DRAFT_NOT_FOUND"].includes(code)) throw new TRPCError({ code: "FORBIDDEN", message: "L’éditeur de catalogue est réservé à une boutique offerte encore en préparation dans MAZIGHO Studio." });
+        throw error;
+      }
+    }),
+    saveOwnerExistingCatalogueCategory: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      categoryId: z.number().int().positive(),
+      name: z.string().trim().min(2).max(100),
+      description: z.string().trim().max(2000),
+      imageUrl: z.union([z.literal(""), visualUrlSchema]).optional(),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const saved = await db.saveStudioOwnerExistingCatalogueCategory(input);
+        logAudit(ctx, { action: "studio.gift_store.catalogue.category.save", entityType: "category", entityId: input.categoryId, summary: "Catégorie du catalogue existant modifiée dans Studio", metadata: { storeId: input.storeId, publicStorefront: false } });
+        return saved;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "CATEGORY_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Catégorie introuvable dans cette boutique." });
+        if (["STORE_NOT_ELIGIBLE_FOR_OWNER_BUILDER", "STORE_NOT_GIFT_PROVISIONED", "STORE_PROVISIONING_SOURCE_MISSING", "PROVISIONING_DRAFT_NOT_FOUND"].includes(code)) throw new TRPCError({ code: "FORBIDDEN", message: "Cette modification est réservée à une boutique offerte encore en préparation." });
+        throw error;
+      }
+    }),
+    createOwnerExistingCatalogueCategory: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      name: z.string().trim().min(2).max(100),
+      description: z.string().trim().max(2000),
+      imageUrl: z.union([z.literal(""), visualUrlSchema]).optional(),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const catalogue = await db.createStudioOwnerExistingCatalogueCategory(input);
+        logAudit(ctx, { action: "studio.gift_store.catalogue.category.create", entityType: "category", entityId: null, summary: "Catégorie ajoutée au catalogue de boutique", metadata: { storeId: input.storeId, publicStorefront: false } });
+        return catalogue;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (["STORE_NOT_ELIGIBLE_FOR_OWNER_BUILDER", "STORE_NOT_GIFT_PROVISIONED", "STORE_PROVISIONING_SOURCE_MISSING", "PROVISIONING_DRAFT_NOT_FOUND"].includes(code)) throw new TRPCError({ code: "FORBIDDEN", message: "Cet ajout est réservé à une boutique offerte encore en préparation." });
+        throw error;
+      }
+    }),
+    saveOwnerExistingCatalogueProduct: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      productId: z.number().int().positive(),
+      categoryId: z.number().int().positive(),
+      name: z.string().trim().min(2).max(200),
+      description: z.string().trim().max(2000),
+      longDescription: z.string().trim().max(6000),
+      priceCents: z.number().int().min(0).max(10_000_000),
+      stock: z.number().int().min(0).max(999_999),
+      featured: z.boolean(),
+      showNewBadge: z.boolean(),
+      status: z.enum(["draft", "active", "archived"]),
+      images: z.array(z.string().trim().max(1000).refine(value => value.startsWith("/") || /^https:\/\//i.test(value), "Utilisez une URL https:// ou un chemin interne.")).max(8),
+      options: z.array(z.object({ name: z.string().trim().min(1).max(60), values: z.array(z.string().trim().min(1).max(60)).min(1).max(30) })).max(4),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const saved = await db.saveStudioOwnerExistingCatalogueProduct(input);
+        logAudit(ctx, { action: "studio.gift_store.catalogue.product.save", entityType: "product", entityId: input.productId, summary: "Produit du catalogue existant modifié dans Studio", metadata: { storeId: input.storeId, publicStorefront: false } });
+        return saved;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "PRODUCT_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Produit introuvable dans cette boutique." });
+        if (code === "CATEGORY_NOT_FOUND") throw new TRPCError({ code: "BAD_REQUEST", message: "Choisissez une catégorie de cette boutique." });
+        if (code === "CATALOGUE_ACTIVE_PRODUCT_PRICE_REQUIRED") throw new TRPCError({ code: "BAD_REQUEST", message: "Un produit actif doit avoir un prix supérieur à zéro." });
+        if (["STORE_NOT_ELIGIBLE_FOR_OWNER_BUILDER", "STORE_NOT_GIFT_PROVISIONED", "STORE_PROVISIONING_SOURCE_MISSING", "PROVISIONING_DRAFT_NOT_FOUND"].includes(code)) throw new TRPCError({ code: "FORBIDDEN", message: "Cette modification est réservée à une boutique offerte encore en préparation." });
+        throw error;
+      }
+    }),
+    getOwnerExistingCatalogueProductVariants: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      productId: z.number().int().positive(),
+    })).query(async ({ input }) => {
+      const catalogue = await db.getStudioOwnerExistingCatalogue(input.storeId);
+      if (!catalogue.products.some(product => product.id === input.productId)) throw new TRPCError({ code: "NOT_FOUND", message: "Produit introuvable dans cette boutique." });
+      return await db.getOwnerProductVariants(input.productId, input.storeId);
+    }),
+    createOwnerExistingCatalogueProductVariant: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      productId: z.number().int().positive(),
+      variant: ownerProductVariantFields,
+    })).mutation(async ({ ctx, input }) => {
+      const catalogue = await db.getStudioOwnerExistingCatalogue(input.storeId);
+      if (!catalogue.products.some(product => product.id === input.productId)) throw new TRPCError({ code: "NOT_FOUND", message: "Produit introuvable dans cette boutique." });
+      const created = await db.createOwnerProductVariant(input.productId, input.variant, input.storeId);
+      logAudit(ctx, { action: "studio.gift_store.catalogue.variant.create", entityType: "product_variant", entityId: created.id, summary: "Variante locale avec stock ajoutée au catalogue Studio", metadata: { storeId: input.storeId, productId: input.productId, stock: input.variant.stock, status: input.variant.status, publicStorefront: false } });
+      return created;
+    }),
+    createOwnerExistingCatalogueProductVariantMatrix: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      productId: z.number().int().positive(),
+      variants: z.array(ownerProductVariantFields).min(1).max(100),
+    })).mutation(async ({ ctx, input }) => {
+      const catalogue = await db.getStudioOwnerExistingCatalogue(input.storeId);
+      if (!catalogue.products.some(product => product.id === input.productId)) throw new TRPCError({ code: "NOT_FOUND", message: "Produit introuvable dans cette boutique." });
+      const created = await db.createOwnerProductVariantMatrix(input.productId, input.variants, input.storeId);
+      logAudit(ctx, { action: "studio.gift_store.catalogue.variant.matrix.create", entityType: "product_variant", entityId: null, summary: `${created.created} combinaison(s) de variantes ajoutée(s) au catalogue Studio`, metadata: { storeId: input.storeId, productId: input.productId, created: created.created, skipped: created.skipped, publicStorefront: false } });
+      return created;
+    }),
+    updateOwnerExistingCatalogueProductVariant: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      productId: z.number().int().positive(),
+      variantId: z.number().int().positive(),
+      variant: ownerProductVariantFields,
+    })).mutation(async ({ ctx, input }) => {
+      const catalogue = await db.getStudioOwnerExistingCatalogue(input.storeId);
+      if (!catalogue.products.some(product => product.id === input.productId)) throw new TRPCError({ code: "NOT_FOUND", message: "Produit introuvable dans cette boutique." });
+      const updated = await db.updateOwnerProductVariant(input.productId, input.variantId, input.variant, input.storeId);
+      logAudit(ctx, { action: "studio.gift_store.catalogue.variant.update", entityType: "product_variant", entityId: input.variantId, summary: "Variante locale avec stock modifiée dans Studio", metadata: { storeId: input.storeId, productId: input.productId, stock: input.variant.stock, status: input.variant.status, publicStorefront: false } });
+      return updated;
+    }),
+    deleteOwnerExistingCatalogueProductVariant: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      productId: z.number().int().positive(),
+      variantId: z.number().int().positive(),
+    })).mutation(async ({ ctx, input }) => {
+      const catalogue = await db.getStudioOwnerExistingCatalogue(input.storeId);
+      if (!catalogue.products.some(product => product.id === input.productId)) throw new TRPCError({ code: "NOT_FOUND", message: "Produit introuvable dans cette boutique." });
+      const deleted = await db.deleteOwnerProductVariant(input.productId, input.variantId, input.storeId);
+      logAudit(ctx, { action: "studio.gift_store.catalogue.variant.delete", entityType: "product_variant", entityId: input.variantId, summary: "Variante locale supprimée du catalogue Studio", metadata: { storeId: input.storeId, productId: input.productId, publicStorefront: false } });
+      return deleted;
+    }),
+    createOwnerExistingCatalogueProduct: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      categoryId: z.number().int().positive(),
+      name: z.string().trim().min(2).max(200),
+      description: z.string().trim().max(2000),
+      longDescription: z.string().trim().max(6000),
+      priceCents: z.number().int().min(0).max(10_000_000),
+      stock: z.number().int().min(0).max(999_999),
+      featured: z.boolean(),
+      showNewBadge: z.boolean(),
+      status: z.enum(["draft", "active", "archived"]),
+      images: z.array(z.string().trim().max(1000).refine(value => value.startsWith("/") || /^https:\/\//i.test(value), "Utilisez une URL https:// ou un chemin interne.")).max(8),
+      options: z.array(z.object({ name: z.string().trim().min(1).max(60), values: z.array(z.string().trim().min(1).max(60)).min(1).max(30) })).max(4),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const created = await db.createStudioOwnerExistingCatalogueProduct(input);
+        logAudit(ctx, { action: "studio.gift_store.catalogue.product.create", entityType: "product", entityId: created.productId, summary: "Produit ajouté au catalogue existant depuis Studio", metadata: { storeId: input.storeId, publicStorefront: false } });
+        return created;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "CATEGORY_NOT_FOUND") throw new TRPCError({ code: "BAD_REQUEST", message: "Choisissez une catégorie de cette boutique." });
+        if (code === "CATALOGUE_ACTIVE_PRODUCT_PRICE_REQUIRED") throw new TRPCError({ code: "BAD_REQUEST", message: "Un produit actif doit avoir un prix supérieur à zéro." });
+        if (["STORE_NOT_ELIGIBLE_FOR_OWNER_BUILDER", "STORE_NOT_GIFT_PROVISIONED", "STORE_PROVISIONING_SOURCE_MISSING", "PROVISIONING_DRAFT_NOT_FOUND"].includes(code)) throw new TRPCError({ code: "FORBIDDEN", message: "Cet ajout est réservé à une boutique offerte encore en préparation." });
+        throw error;
+      }
+    }),
+    importOwnerExistingCatalogueProducts: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      rows: z.array(storeCatalogueImportRowSchema).min(1).max(100),
+      status: z.enum(["draft", "active", "archived"]),
+      acknowledged: z.literal(true),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const result = await db.importStudioOwnerExistingCatalogueProducts({ storeId: input.storeId, rows: input.rows, status: input.status });
+        logAudit(ctx, {
+          action: "studio.gift_store.catalogue.import",
+          entityType: "catalogue",
+          entityId: null,
+          summary: `${result.imported} fiche(s) ajoutée(s) au catalogue de boutique depuis un import contrôlé`,
+          metadata: { storeId: input.storeId, imported: result.imported, status: input.status, publicStorefront: false },
+        });
+        return result;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "CATALOGUE_ACTIVE_PRODUCT_PRICE_REQUIRED") throw new TRPCError({ code: "BAD_REQUEST", message: "Un import actif exige un prix supérieur à zéro pour chaque fiche." });
+        if (["STORE_NOT_ELIGIBLE_FOR_OWNER_BUILDER", "STORE_NOT_GIFT_PROVISIONED", "STORE_PROVISIONING_SOURCE_MISSING", "PROVISIONING_DRAFT_NOT_FOUND", "STORE_NOT_CATALOGUE_IMPORT_TARGET"].includes(code)) throw new TRPCError({ code: "FORBIDDEN", message: "Cet import est réservé à une nouvelle boutique créée depuis cet atelier et encore en préparation." });
+        throw error;
+      }
+    }),
+    uploadOwnerExistingCatalogueProductImage: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      productId: z.number().int().positive(),
+      dataUrl: z.string().max(7_100_000),
+      fileName: z.string().trim().min(1).max(160),
+    })).mutation(async ({ ctx, input }) => {
+      const catalogue = await db.getStudioOwnerExistingCatalogue(input.storeId);
+      if (!catalogue.products.some(product => product.id === input.productId)) throw new TRPCError({ code: "NOT_FOUND", message: "Produit introuvable dans cette boutique." });
+      const image = decodeDesignImage(input.dataUrl);
+      const safeName = input.fileName.replace(/[^a-z0-9_-]/gi, "-").replace(/-+/g, "-").slice(0, 80) || "produit";
+      const key = `studio-catalogue/${input.storeId}/${input.productId}/${Date.now()}-${safeName}.${image.extension}`;
+      const entitlements = await db.getStoreSaasEntitlements(input.storeId);
+      const { url } = await storagePut(key, image.buffer, image.contentType, { storeId: input.storeId, quotaBytes: entitlements.mediaQuotaBytes });
+      logAudit(ctx, { action: "studio.gift_store.catalogue.image.upload", entityType: "product", entityId: input.productId, summary: "Image produit téléversée dans Studio", metadata: { storeId: input.storeId, publicStorefront: false } });
+      return { url };
+    }),
+    uploadOwnerExistingCatalogueCategoryImage: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      categoryId: z.number().int().positive(),
+      dataUrl: z.string().max(7_100_000),
+      fileName: z.string().trim().min(1).max(160),
+    })).mutation(async ({ ctx, input }) => {
+      const catalogue = await db.getStudioOwnerExistingCatalogue(input.storeId);
+      if (!catalogue.categories.some(category => category.id === input.categoryId)) throw new TRPCError({ code: "NOT_FOUND", message: "Catégorie introuvable dans cette boutique." });
+      const image = decodeDesignImage(input.dataUrl);
+      const safeName = input.fileName.replace(/[^a-z0-9_-]/gi, "-").replace(/-+/g, "-").slice(0, 80) || "categorie";
+      const key = `studio-catalogue/${input.storeId}/categories/${input.categoryId}/${Date.now()}-${safeName}.${image.extension}`;
+      const entitlements = await db.getStoreSaasEntitlements(input.storeId);
+      const { url } = await storagePut(key, image.buffer, image.contentType, { storeId: input.storeId, quotaBytes: entitlements.mediaQuotaBytes });
+      logAudit(ctx, { action: "studio.gift_store.catalogue.category_image.upload", entityType: "category", entityId: input.categoryId, summary: "Image de catégorie téléversée dans Studio", metadata: { storeId: input.storeId, publicStorefront: false } });
+      return { url };
+    }),
+    getOwnerCataloguePublicationPreview: platformProcedure.input(z.object({ storeId: z.number().int().positive() })).query(async ({ input }) => {
+      try {
+        return await db.getStudioOwnerCataloguePublicationPreview(input.storeId);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (["STORE_NOT_ELIGIBLE_FOR_OWNER_BUILDER", "STORE_NOT_GIFT_PROVISIONED", "STORE_PROVISIONING_SOURCE_MISSING", "PROVISIONING_DRAFT_NOT_FOUND"].includes(code)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "L’aperçu de publication est réservé à une boutique offerte encore en préparation dans MAZIGHO Studio." });
+        }
+        throw error;
+      }
+    }),
+    publishOwnerCatalogueFromPreview: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      planToken: z.string().trim().length(24),
+      confirmationName: z.string().trim().min(2).max(160),
+      previewAcknowledged: z.literal(true),
+      missingMediaVariantsAcknowledged: z.literal(true),
+      operationsLegalDomainAcknowledged: z.literal(true),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const published = await db.publishStudioOwnerCatalogueFromPreview(input);
+        logAudit(ctx, {
+          action: "studio.gift_store.catalogue.publish",
+          entityType: "store",
+          entityId: published.store.id,
+          summary: "Catalogue Studio publié après aperçu et confirmations explicites",
+          metadata: { status: published.store.status, categoryCount: published.categoryCount, productCount: published.productCount, publicStorefront: false, publicCart: false, publicCheckout: false },
+        });
+        return published;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (["STORE_NOT_ELIGIBLE_FOR_CATALOGUE_PUBLICATION", "STORE_NOT_GIFT_PROVISIONED"].includes(code)) throw new TRPCError({ code: "FORBIDDEN", message: "La publication catalogue est réservée à une boutique offerte encore en préparation." });
+        if (code === "CATALOGUE_PUBLICATION_EXISTING_CATALOGUE") throw new TRPCError({ code: "CONFLICT", message: "Un catalogue réel existe déjà. Cette publication ne remplace ni ne supprime de données existantes." });
+        if (code === "CATALOGUE_PUBLICATION_PREVIEW_STALE") throw new TRPCError({ code: "CONFLICT", message: "L’aperçu a changé. Rechargez-le et relisez-le avant de confirmer." });
+        if (code === "CATALOGUE_PUBLICATION_NAME_CONFIRMATION_MISMATCH") throw new TRPCError({ code: "BAD_REQUEST", message: "Recopiez exactement le nom de la boutique pour confirmer." });
+        if (code === "CATALOGUE_PUBLICATION_CONFIRMATION_INCOMPLETE") throw new TRPCError({ code: "BAD_REQUEST", message: "Toutes les confirmations de publication sont requises." });
+        if (code === "CATALOGUE_PUBLICATION_PREFLIGHT_INCOMPLETE") throw new TRPCError({ code: "CONFLICT", message: "La préparation actuelle ne peut pas encore être publiée. Consultez les blocages de l’aperçu." });
+        throw error;
+      }
+    }),
+    getOwnerManualCommercialPassageReview: platformProcedure.input(z.object({ storeId: z.number().int().positive() })).query(async ({ input }) => {
+      try {
+        return await db.getStudioOwnerManualCommercialPassageReview(input.storeId);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (["STORE_NOT_ELIGIBLE_FOR_OWNER_BUILDER", "STORE_NOT_GIFT_PROVISIONED", "STORE_PROVISIONING_SOURCE_MISSING", "PROVISIONING_DRAFT_NOT_FOUND"].includes(code)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "La revue manuelle de passage est réservée à une boutique offerte encore en préparation dans MAZIGHO Studio." });
+        }
+        throw error;
+      }
+    }),
+    getOwnerCommercialPublicationPreflight: platformProcedure.input(z.object({ storeId: z.number().int().positive() })).query(async ({ input }) => {
+      try {
+        return await db.getStudioOwnerCommercialPublicationPreflight(input.storeId);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (["STORE_NOT_ELIGIBLE_FOR_OWNER_BUILDER", "STORE_NOT_GIFT_PROVISIONED", "STORE_PROVISIONING_SOURCE_MISSING", "PROVISIONING_DRAFT_NOT_FOUND"].includes(code)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Le prévol commercial est réservé à une boutique offerte encore en préparation dans MAZIGHO Studio." });
+        }
+        throw error;
+      }
+    }),
+    getOwnerPrivateCartSimulation: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      lines: z.array(z.object({
+        productId: z.string().trim().min(1).max(32),
+        quantity: z.number().int().min(1).max(99),
+      })).max(24),
+    })).query(async ({ input }) => {
+      try {
+        return await db.getStudioOwnerPrivateCartSimulation(input);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (["STORE_NOT_ELIGIBLE_FOR_OWNER_BUILDER", "STORE_NOT_GIFT_PROVISIONED", "STORE_PROVISIONING_SOURCE_MISSING", "PROVISIONING_DRAFT_NOT_FOUND"].includes(code)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "La simulation privée de panier est réservée à une boutique offerte encore en préparation dans MAZIGHO Studio." });
+        }
+        throw error;
+      }
+    }),
+    getOwnerFullPagePreview: platformProcedure.input(z.object({ storeId: z.number().int().positive() })).query(async ({ input }) => {
+      try {
+        return await db.getStudioOwnerFullPagePreview(input.storeId);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (["STORE_NOT_ELIGIBLE_FOR_OWNER_BUILDER", "STORE_NOT_GIFT_PROVISIONED", "STORE_PROVISIONING_SOURCE_MISSING", "PROVISIONING_DRAFT_NOT_FOUND"].includes(code)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "L’aperçu complet est réservé à une boutique offerte encore en préparation dans MAZIGHO Studio." });
+        }
+        throw error;
+      }
+    }),
+    getOwnerNavigationDraft: platformProcedure.input(z.object({ storeId: z.number().int().positive() })).query(async ({ input }) => {
+      try {
+        return await db.getStudioOwnerNavigationDraft(input.storeId);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (["STORE_NOT_ELIGIBLE_FOR_OWNER_BUILDER", "STORE_NOT_GIFT_PROVISIONED", "STORE_PROVISIONING_SOURCE_MISSING", "PROVISIONING_DRAFT_NOT_FOUND"].includes(code)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "La navigation privée est réservée à une boutique offerte encore en préparation dans MAZIGHO Studio." });
+        }
+        throw error;
+      }
+    }),
+    saveOwnerNavigationDraft: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      items: z.array(z.object({
+        pageId: z.enum(["home", "about", "faq", "contact", "lookbook"]),
+        label: z.string().trim().min(2).max(40),
+        visible: z.boolean(),
+      })).length(5),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const saved = await db.saveStudioOwnerNavigationDraft(input);
+        logAudit(ctx, {
+          action: "studio.gift_store.owner_navigation.save",
+          entityType: "store",
+          entityId: saved.store.id,
+          summary: "Navigation privée du créateur enregistrée",
+          metadata: { status: "setup", publicStorefront: false, publicationExecuted: false },
+        });
+        return saved;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (["STORE_NOT_ELIGIBLE_FOR_OWNER_BUILDER", "STORE_NOT_GIFT_PROVISIONED", "STORE_PROVISIONING_SOURCE_MISSING", "PROVISIONING_DRAFT_NOT_FOUND"].includes(code)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "La navigation privée est réservée à une boutique offerte encore en préparation dans MAZIGHO Studio." });
+        }
+        throw error;
+      }
+    }),
+    getOwnerPageDrafts: platformProcedure.input(z.object({ storeId: z.number().int().positive() })).query(async ({ input }) => {
+      try {
+        return await db.getStudioOwnerPageDrafts(input.storeId);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (["STORE_NOT_ELIGIBLE_FOR_OWNER_BUILDER", "STORE_NOT_GIFT_PROVISIONED", "STORE_PROVISIONING_SOURCE_MISSING", "PROVISIONING_DRAFT_NOT_FOUND"].includes(code)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "L’éditeur privé de pages est réservé à une boutique offerte encore en préparation dans MAZIGHO Studio." });
+        }
+        throw error;
+      }
+    }),
+    uploadOwnerPageImage: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      dataUrl: z.string().max(7_100_000),
+      fileName: z.string().trim().min(1).max(160),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        await db.getStudioOwnerPageDrafts(input.storeId);
+        const image = decodeDesignImage(input.dataUrl);
+        const safeName = input.fileName.replace(/[^a-z0-9_-]/gi, "-").replace(/-+/g, "-").slice(0, 80) || "couverture";
+        const key = `studio-private/store-${input.storeId}/page-cover-${Date.now()}-${safeName}.${image.extension}`;
+        const { url } = await storagePut(key, image.buffer, image.contentType);
+        logAudit(ctx, {
+          action: "studio.gift_store.owner_page_image.upload",
+          entityType: "store",
+          entityId: input.storeId,
+          summary: "Image de couverture privée préparée pour une boutique offerte",
+          metadata: { status: "setup", publicStorefront: false, publicationExecuted: false },
+        });
+        return { url };
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (["STORE_NOT_ELIGIBLE_FOR_OWNER_BUILDER", "STORE_NOT_GIFT_PROVISIONED", "STORE_PROVISIONING_SOURCE_MISSING", "PROVISIONING_DRAFT_NOT_FOUND"].includes(code)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Les médias privés sont réservés à une boutique offerte encore en préparation dans MAZIGHO Studio." });
+        }
+        throw error;
+      }
+    }),
+    saveOwnerPageDraft: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      pageId: z.enum(["about", "faq", "contact", "lookbook"]),
+      enabled: z.boolean(),
+      coverImageUrl: z.string().trim().max(2000).refine(value => !value || value.startsWith("https://") || value.startsWith("/"), "Utilisez une URL https:// ou un chemin interne."),
+      blocks: z.array(z.object({
+        id: z.enum(["intro", "detail", "reassurance"]),
+        visible: z.boolean(),
+        title: z.string().trim().min(1).max(120),
+        body: z.string().trim().min(1).max(1200),
+      })).min(3).max(3),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const saved = await db.saveStudioOwnerPageDraft(input);
+        logAudit(ctx, {
+          action: "studio.gift_store.owner_page_draft.save",
+          entityType: "store",
+          entityId: saved.store.id,
+          summary: `Brouillon de page privé enregistré : ${saved.store.displayName}`,
+          metadata: { status: "setup", publicStorefront: false, publicationExecuted: false },
+        });
+        return saved;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND" || code === "OWNER_PAGE_DRAFT_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Brouillon de page introuvable." });
+        if (["STORE_NOT_ELIGIBLE_FOR_OWNER_BUILDER", "STORE_NOT_GIFT_PROVISIONED", "STORE_PROVISIONING_SOURCE_MISSING", "PROVISIONING_DRAFT_NOT_FOUND"].includes(code)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "L’éditeur privé de pages est réservé à une boutique offerte encore en préparation dans MAZIGHO Studio." });
+        }
+        throw error;
+      }
+    }),
+    getGiftStoreLaunchCenter: platformProcedure.input(z.object({ storeId: z.number().int().positive() })).query(async ({ input }) => {
+      try {
+        return await db.getStudioGiftStoreLaunchCenter(input.storeId);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (["STORE_NOT_ELIGIBLE_FOR_OWNER_BUILDER", "STORE_NOT_GIFT_PROVISIONED", "STORE_PROVISIONING_SOURCE_MISSING", "PROVISIONING_DRAFT_NOT_FOUND"].includes(code)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Le centre de lancement est réservé à une boutique offerte encore en préparation dans MAZIGHO Studio." });
+        }
+        throw error;
+      }
+    }),
+    getGiftStorePreparationChecklist: platformProcedure.input(z.object({ storeId: z.number().int().positive() })).query(async ({ input }) => {
+      try {
+        return await db.getStudioGiftStorePreparationChecklist(input.storeId);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (["STORE_NOT_ELIGIBLE_FOR_OWNER_BUILDER", "STORE_NOT_GIFT_PROVISIONED", "STORE_PROVISIONING_SOURCE_MISSING", "PROVISIONING_DRAFT_NOT_FOUND"].includes(code)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "La checklist privée est réservée à une boutique offerte encore en préparation dans MAZIGHO Studio." });
+        }
+        throw error;
+      }
+    }),
+    getGiftStoreActivityTimeline: platformProcedure.input(z.object({ storeId: z.number().int().positive() })).query(async ({ input }) => {
+      try {
+        return await db.getStudioGiftStoreActivityTimeline(input.storeId);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (["STORE_NOT_ELIGIBLE_FOR_PRIVATE_TIMELINE", "STORE_NOT_GIFT_PROVISIONED"].includes(code)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Cet historique privé est réservé à une boutique offerte préparée dans MAZIGHO Studio." });
+        }
+        throw error;
+      }
+    }),
+    updateGiftStorePrimaryDomain: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      confirmationName: z.string().trim().min(2).max(160),
+      primaryDomain: z.string().trim().min(4).max(253),
+      acknowledged: z.literal(true),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const updated = await db.updateGiftStorePrimaryDomain(input);
+        logAudit(ctx, {
+          action: "studio.gift_store.domain.update",
+          entityType: "store",
+          entityId: updated.store.id,
+          summary: `Domaine de boutique offert mis à jour : ${updated.store.displayName}`,
+          metadata: { status: "setup", previousDomain: updated.store.previousDomain, primaryDomain: updated.store.primaryDomain, publicActivationExecuted: false },
+        });
+        return updated;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (code === "STORE_DOMAIN_INVALID") throw new TRPCError({ code: "BAD_REQUEST", message: "Indiquez un domaine public valide ; les domaines .local et .test ne sont pas acceptés." });
+        if (code === "STORE_DOMAIN_UPDATE_CONFIRMATION_MISMATCH") throw new TRPCError({ code: "BAD_REQUEST", message: "Recopiez exactement le nom de la boutique et confirmez le remplacement du domaine." });
+        if (code === "STORE_DOMAIN_ALREADY_IN_USE") throw new TRPCError({ code: "CONFLICT", message: "Ce domaine est déjà attribué à une autre boutique." });
+        if (["STORE_NOT_ELIGIBLE_FOR_DOMAIN_UPDATE", "STORE_NOT_GIFT_PROVISIONED"].includes(code)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Seule une boutique offerte encore en préparation peut changer de domaine depuis Studio." });
+        }
+        throw error;
+      }
+    }),
+    getGiftStoreSetupReadiness: platformProcedure.input(z.object({ storeId: z.number().int().positive() })).query(async ({ input }) => {
+      try {
+        return await db.getStudioGiftStoreSetupReadiness(input.storeId);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (["STORE_NOT_ELIGIBLE_FOR_SETUP_READINESS", "STORE_NOT_GIFT_PROVISIONED", "STORE_PROVISIONING_SOURCE_MISSING", "PROVISIONING_DRAFT_NOT_FOUND"].includes(code)) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "Ce suivi privé est réservé à une boutique offerte encore en préparation dans MAZIGHO Studio." });
+        }
+        throw error;
+      }
+    }),
+    getGiftDemoLibraryCandidates: platformProcedure.query(async () => db.getGiftDemoLibraryCandidates()),
+    installGiftDemoLibrarySetup: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      confirmationName: z.string().trim().min(2).max(160),
+      acknowledged: z.literal(true),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const installed = await db.installGiftDemoLibrarySetup(input);
+        logAudit(ctx, {
+          action: "studio.gift_store.demo_library.install",
+          entityType: "store",
+          entityId: installed.store.id,
+          summary: `Kit de démonstration ${installed.kit.label} installé : ${installed.store.displayName}`,
+          metadata: { status: "setup", kitId: installed.kit.id, businessType: installed.businessType, billing: "none", invitationsSent: 0, externalCalls: 0 },
+        });
+        return installed;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (code === "DEMO_LIBRARY_CONFIRMATION_MISMATCH") throw new TRPCError({ code: "BAD_REQUEST", message: "Recopiez exactement le nom de la boutique et confirmez l’installation du kit." });
+        if (["STORE_NOT_ELIGIBLE_FOR_DEMO_LIBRARY", "STORE_NOT_GIFT_PROVISIONED", "STORE_PROVISIONING_SOURCE_MISSING", "STORE_NOT_DEMO_LIBRARY_ELIGIBLE", "DEMO_LIBRARY_SETUP_ALREADY_INSTALLED"].includes(code)) {
+          throw new TRPCError({ code: "CONFLICT", message: "Cette boutique ne peut pas recevoir ce kit de démonstration." });
+        }
+        throw error;
+      }
+    }),
+    installGiftPetDemoSetup: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      confirmationName: z.string().trim().min(2).max(160),
+      acknowledged: z.literal(true),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const installed = await db.installGiftPetDemoSetup(input);
+        logAudit(ctx, {
+          action: "studio.gift_store.pet_demo.install",
+          entityType: "store",
+          entityId: installed.store.id,
+          summary: `Kit de démonstration animalier installé : ${installed.store.displayName}`,
+          metadata: { status: "setup", billing: "none", invitationsSent: 0, externalCalls: 0 },
+        });
+        return installed;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (["PET_SETUP_CONFIRMATION_MISMATCH", "DEMO_LIBRARY_CONFIRMATION_MISMATCH"].includes(code)) throw new TRPCError({ code: "BAD_REQUEST", message: "Recopiez exactement le nom de la boutique et confirmez l’installation du kit." });
+        if (["STORE_NOT_ELIGIBLE_FOR_PET_SETUP", "STORE_NOT_ELIGIBLE_FOR_DEMO_LIBRARY", "STORE_NOT_GIFT_PROVISIONED", "STORE_PROVISIONING_SOURCE_MISSING", "STORE_NOT_ANIMALIER", "STORE_NOT_DEMO_LIBRARY_ELIGIBLE", "DEMO_LIBRARY_SETUP_ALREADY_INSTALLED"].includes(code)) throw new TRPCError({ code: "CONFLICT", message: "Cette boutique ne peut pas recevoir le kit animalier de démonstration." });
+        throw error;
+      }
+    }),
+    copyPlatformLegalProfileToGiftStore: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      confirmationName: z.string().trim().min(2).max(160),
+      acknowledged: z.literal(true),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const copied = await db.copyPlatformLegalProfileToGiftStore(input);
+        logAudit(ctx, {
+          action: "studio.gift_store.legal_profile.copy_from_platform",
+          entityType: "store",
+          entityId: copied.store.id,
+          summary: `Coordonnées légales plateforme copiées avec autorisation : ${copied.store.displayName}`,
+          metadata: { status: "setup", source: "platform_legal_profile", publicStorefront: false },
+        });
+        return copied;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (code === "LEGAL_COPY_CONFIRMATION_MISMATCH") throw new TRPCError({ code: "BAD_REQUEST", message: "Recopiez exactement le nom de la boutique et confirmez la copie." });
+        if (["STORE_NOT_ELIGIBLE_FOR_LEGAL_COPY", "STORE_NOT_GIFT_PROVISIONED"].includes(code)) throw new TRPCError({ code: "CONFLICT", message: "Cette boutique ne peut pas recevoir les coordonnées légales de plateforme." });
+        if (["PLATFORM_STORE_NOT_FOUND", "PLATFORM_LEGAL_PROFILE_UNAVAILABLE", "PLATFORM_LEGAL_PROFILE_INVALID", "PLATFORM_LEGAL_PROFILE_INCOMPLETE"].includes(code)) throw new TRPCError({ code: "CONFLICT", message: "Les coordonnées légales MAZIGHO ne sont pas encore complètes ou disponibles." });
+        throw error;
+      }
+    }),
+    openGiftStoreShowcase: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      confirmationName: z.string().trim().min(2).max(160),
+      acknowledged: z.literal(true),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const opened = await db.openGiftStoreShowcase(input);
+        logAudit(ctx, {
+          action: "studio.gift_store.showcase.open",
+          entityType: "store",
+          entityId: opened.store.id,
+          summary: `Vitrine publique ouverte sans commerce : ${opened.store.displayName}`,
+          metadata: { domain: opened.store.primaryDomain, status: "limited", commerceEnabled: false, billing: "none", invitationsSent: 0 },
+        });
+        return opened;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (code === "SHOWCASE_CONFIRMATION_MISMATCH") throw new TRPCError({ code: "BAD_REQUEST", message: "Recopiez exactement le nom de la boutique et confirmez l’ouverture de la vitrine." });
+        if (["STORE_NOT_ELIGIBLE_FOR_SHOWCASE", "STORE_NOT_GIFT_PROVISIONED", "SHOWCASE_PREFLIGHT_INCOMPLETE", "STORE_SHOWCASE_CONFLICT"].includes(code)) {
+          throw new TRPCError({ code: "CONFLICT", message: "La vitrine ne peut pas être ouverte : vérifiez le domaine, l’identité et le catalogue avec ses visuels." });
+        }
+        throw error;
+      }
+    }),
+    activateGiftStore: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      confirmationName: z.string().trim().min(2).max(160),
+      confirmationOwnerEmail: z.string().trim().email().max(320),
+      domainVerified: z.literal(true),
+      variantsReviewed: z.literal(true),
+      shippingReturnsReviewed: z.literal(true),
+      ownerResponsibilityAcknowledged: z.literal(true),
+      activationAcknowledged: z.literal(true),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const activated = await db.activateGiftStore(input);
+        logAudit(ctx, {
+          action: "studio.gift_store.activate",
+          entityType: "store",
+          entityId: activated.store.id,
+          summary: `Boutique offerte activée après prévol manuel : ${activated.store.displayName}`,
+          metadata: { domain: activated.store.primaryDomain, status: "active", ownerResponsibilityAcknowledged: true, billing: "none", invitationsSent: 0 },
+        });
+        return activated;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (code === "ACTIVATION_NAME_CONFIRMATION_MISMATCH") throw new TRPCError({ code: "BAD_REQUEST", message: "Recopiez exactement le nom de la boutique pour confirmer l’activation." });
+        if (code === "ACTIVATION_OWNER_CONFIRMATION_MISMATCH") throw new TRPCError({ code: "BAD_REQUEST", message: "Le propriétaire actif ne correspond pas à l’e-mail confirmé." });
+        if (code === "ACTIVATION_CONFIRMATION_INCOMPLETE") throw new TRPCError({ code: "BAD_REQUEST", message: "Les confirmations de domaine, variantes, informations client, responsabilité du propriétaire et activation sont obligatoires." });
+        if (["STORE_NOT_ELIGIBLE_FOR_ACTIVATION", "STORE_NOT_GIFT_PROVISIONED", "STORE_PROVISIONING_SOURCE_MISSING", "ACTIVATION_PREFLIGHT_INCOMPLETE", "STORE_ACTIVATION_CONFLICT"].includes(code)) throw new TRPCError({ code: "CONFLICT", message: "Les critères de sécurité de l’activation ne sont pas tous remplis." });
+        throw error;
+      }
+    }),
+    getGiftStoreOwnerHandoff: platformProcedure.input(z.object({ storeId: z.number().int().positive() })).query(async ({ input }) => db.getGiftStoreOwnerHandoffPreflight(input.storeId)),
+    reissueGiftStoreOwnerInvitation: platformProcedure.input(z.object({ storeId: z.number().int().positive(), confirmationEmail: z.string().trim().email().max(320) })).mutation(async ({ ctx, input }) => {
+      try {
+        const reissued = await db.reissueGiftStoreOwnerInvitation(input);
+        logAudit(ctx, {
+          action: "studio.gift_store.owner_handoff.reissue",
+          entityType: "store",
+          entityId: reissued.store.id,
+          summary: `Lien propriétaire régénéré sans envoi : ${reissued.store.displayName}`,
+          metadata: { invitationsSent: 0 },
+        });
+        return { ...reissued, invitation: { expiresAt: reissued.invitation.expiresAt, email: reissued.invitation.email, link: getAccountInvitationLink(reissued.invitation.token) } };
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (["STORE_NOT_ELIGIBLE_FOR_OWNER_HANDOFF", "STORE_NOT_GIFT_PROVISIONED", "STORE_PROVISIONING_SOURCE_MISSING", "OWNER_INVITATION_NOT_PENDING", "OWNER_MEMBERSHIP_MISSING"].includes(code)) throw new TRPCError({ code: "CONFLICT", message: "Aucun lien propriétaire en attente ne peut être régénéré pour cette boutique." });
+        if (code === "OWNER_INVITATION_CONFIRMATION_MISMATCH") throw new TRPCError({ code: "BAD_REQUEST", message: "Recopiez exactement l’e-mail du bénéficiaire pour confirmer la régénération." });
+        throw error;
+      }
+    }),
+    prepareGiftStoreOwnerInvitation: platformProcedure.input(z.object({ storeId: z.number().int().positive(), confirmationEmail: z.string().trim().email().max(320) })).mutation(async ({ ctx, input }) => {
+      try {
+        const prepared = await db.prepareGiftStoreOwnerInvitation(input);
+        logAudit(ctx, {
+          action: "studio.gift_store.owner_handoff.prepare",
+          entityType: "store",
+          entityId: prepared.store.id,
+          summary: prepared.owner.attached ? `Propriétaire existant attribué : ${prepared.store.displayName}` : `Invitation propriétaire préparée sans envoi : ${prepared.store.displayName}`,
+          metadata: { invitationPrepared: prepared.owner.invitationPrepared, createdAccount: prepared.owner.createdAccount, invitationsSent: 0 },
+        });
+        return prepared.invitation ? { ...prepared, invitation: { expiresAt: prepared.invitation.expiresAt, email: prepared.invitation.email, link: getAccountInvitationLink(prepared.invitation.token) } } : prepared;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (["STORE_NOT_ELIGIBLE_FOR_OWNER_HANDOFF", "STORE_NOT_GIFT_PROVISIONED", "STORE_PROVISIONING_SOURCE_MISSING", "OWNER_ALREADY_ATTACHED"].includes(code)) throw new TRPCError({ code: "CONFLICT", message: "Cette boutique ne peut pas recevoir ce parcours propriétaire." });
+        if (code === "OWNER_INVITATION_CONFIRMATION_MISMATCH") throw new TRPCError({ code: "BAD_REQUEST", message: "Recopiez exactement l’e-mail du bénéficiaire pour confirmer la préparation." });
+        throw error;
+      }
+    }),
+    transferStoreOwnership: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      confirmationName: z.string().trim().min(2).max(160),
+      newOwnerName: z.string().trim().min(2).max(160),
+      newOwnerEmail: z.string().trim().email().max(320),
+      confirmationEmail: z.string().trim().email().max(320),
+      acknowledged: z.literal(true),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const transferred = await db.transferStudioStoreOwnership(input);
+        logAudit(ctx, {
+          action: "studio.store.owner.transfer",
+          entityType: "store",
+          entityId: transferred.store.id,
+          summary: `Transfert de propriété préparé : ${transferred.store.displayName}`,
+          metadata: {
+            accountCreated: transferred.owner.accountCreated,
+            invitationPrepared: transferred.owner.invitationPrepared,
+            formerOwnersBlocked: transferred.formerOwnersBlocked,
+            invitationsSent: 0,
+          },
+        });
+        return transferred.invitation
+          ? {
+            store: transferred.store,
+            owner: transferred.owner,
+            formerOwnersBlocked: transferred.formerOwnersBlocked,
+            invitation: { expiresAt: transferred.invitation.expiresAt, link: getAccountInvitationLink(transferred.invitation.token) },
+          }
+          : {
+            store: transferred.store,
+            owner: transferred.owner,
+            formerOwnersBlocked: transferred.formerOwnersBlocked,
+            invitation: null,
+          };
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (code === "PLATFORM_STORE_PROTECTED") throw new TRPCError({ code: "FORBIDDEN", message: "La boutique principale MAZIGHO ne peut pas être transférée depuis ce contrôle." });
+        if (code === "OWNER_TRANSFER_NAME_CONFIRMATION_MISMATCH") throw new TRPCError({ code: "BAD_REQUEST", message: "Recopiez exactement le nom de la boutique pour confirmer le transfert." });
+        if (code === "OWNER_TRANSFER_EMAIL_CONFIRMATION_MISMATCH") throw new TRPCError({ code: "BAD_REQUEST", message: "Recopiez exactement l’e-mail du nouveau propriétaire pour confirmer le transfert." });
+        if (code === "OWNER_TRANSFER_TARGET_ACCOUNT_BLOCKED") throw new TRPCError({ code: "CONFLICT", message: "Ce compte est bloqué et ne peut pas devenir propriétaire." });
+        if (code === "OWNER_TRANSFER_TARGET_ALREADY_OWNER") throw new TRPCError({ code: "CONFLICT", message: "Ce compte est déjà propriétaire actif de cette boutique." });
+        if (code === "OWNER_TRANSFER_CONFIRMATION_INCOMPLETE") throw new TRPCError({ code: "BAD_REQUEST", message: "La confirmation explicite du transfert est obligatoire." });
+        throw error;
+      }
+    }),
+    restoreStoreOwnerMembership: platformProcedure.input(z.object({
+      storeId: z.number().int().positive(),
+      confirmationName: z.string().trim().min(2).max(160),
+      ownerEmail: z.string().trim().email().max(320),
+      acknowledged: z.literal(true),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const restored = await db.restoreStudioStoreOwnerMembership(input);
+        logAudit(ctx, {
+          action: "studio.store.owner_membership.restore",
+          entityType: "store",
+          entityId: restored.store.id,
+          summary: `Accès propriétaire restauré : ${restored.store.displayName}`,
+          metadata: { storeScoped: true, ownershipTransferred: false, otherMembershipsChanged: false },
+        });
+        return restored;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "STORE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique introuvable." });
+        if (code === "PLATFORM_STORE_PROTECTED") throw new TRPCError({ code: "FORBIDDEN", message: "La boutique principale MAZIGHO ne peut pas être modifiée depuis ce contrôle." });
+        if (code === "OWNER_RESTORE_NAME_CONFIRMATION_MISMATCH") throw new TRPCError({ code: "BAD_REQUEST", message: "Recopiez exactement le nom de la boutique pour confirmer la restauration." });
+        if (code === "OWNER_RESTORE_USER_INVALID") throw new TRPCError({ code: "CONFLICT", message: "Ce compte doit être actif avant de pouvoir devenir propriétaire." });
+        throw error;
+      }
+    }),
+    provisionGiftStore: platformProcedure.input(z.object({ draftId: z.number().int().positive(), confirmationName: z.string().trim().min(2).max(160) })).mutation(async ({ ctx, input }) => {
+      try {
+        const provisioned = await db.provisionGiftStoreFromDraft(input);
+        const domainAutomation = await ensureVercelManagedStoreDomain(provisioned.store.primaryDomain);
+        let themeApplied = false;
+        if (provisioned.themePreset && storefrontThemeIdSchema.safeParse(provisioned.themePreset).success) {
+          try {
+            await applyStorefrontTheme(ctx, provisioned.store.id, provisioned.themePreset as StorefrontThemeId);
+            themeApplied = true;
+          } catch (error) {
+            console.error("[studio] selected storefront theme could not be applied", error instanceof Error ? error.message : error);
+          }
+        }
+        logAudit(ctx, {
+          action: "studio.gift_store.provision",
+          entityType: "store",
+          entityId: provisioned.store.id,
+          summary: `Boutique offerte créée en préparation : ${provisioned.store.displayName}`,
+          metadata: { draftId: input.draftId, storeSlug: provisioned.store.slug, billing: provisioned.billing, invitationsSent: provisioned.invitationsSent, themePreset: provisioned.themePreset ?? null, themeApplied, domainAutomationStatus: domainAutomation.status },
+        });
+        return { ...provisioned, themeApplied, domainAutomation };
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "PROVISIONING_DRAFT_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Brouillon introuvable." });
+        if (code === "PROVISIONING_DRAFT_ARCHIVED" || code === "PROVISIONING_DRAFT_ALREADY_PROVISIONED") throw new TRPCError({ code: "CONFLICT", message: "Ce brouillon ne peut plus être provisionné." });
+        if (code === "PROVISIONING_CONFIRMATION_MISMATCH") throw new TRPCError({ code: "BAD_REQUEST", message: "Recopiez exactement le nom de la boutique pour confirmer la création." });
+        if (code === "PROVISIONING_PREFLIGHT_INCOMPLETE") throw new TRPCError({ code: "CONFLICT", message: "Le prévol local doit être complet et sans conflit avant de créer la boutique." });
+        if (["STORE_COPY_DRAFT_INVALID", "STORE_COPY_SOURCE_NOT_FOUND", "STORE_COPY_SOURCE_NOT_ELIGIBLE", "STORE_COPY_PLATFORM_SOURCE_FORBIDDEN", "STORE_COPY_DESTINATION_NOT_ISOLATED_SETUP", "STORE_COPY_SOURCE_DESTINATION_MATCH"].includes(code)) throw new TRPCError({ code: "CONFLICT", message: "La source ou le périmètre de copie n’est plus valide. Actualisez le brouillon et le prévol." });
+        if (code === "STORE_COPY_CATEGORY_MAPPING_MISSING") throw new TRPCError({ code: "CONFLICT", message: "La structure de catégories de la boutique source a changé. Actualisez le brouillon avant de confirmer." });
+        throw error;
+      }
+    }),
+    createProvisioningDraft: platformProcedure.input(studioProvisioningDraftInputSchema).mutation(async ({ ctx, input }) => {
+      try {
+        const draft = await db.createStudioProvisioningDraft({ ...input, createdByUserId: ctx.user.id });
+        logAudit(ctx, {
+          action: "studio.provisioning_draft.create",
+          entityType: "store_provisioning_draft",
+          entityId: draft.id,
+          summary: `Brouillon de mise en service créé pour ${input.displayName}`,
+          metadata: { requestedDomain: input.requestedDomain, businessType: input.businessType, preferredCurrency: input.preferredCurrency, themePreset: input.themePreset ?? null, factoryModel: input.factoryModel, provisioningTemplate: input.provisioningTemplate, paymentRoute: input.paymentRoute },
+        });
+        return draft;
+      } catch (error) {
+        if (error instanceof Error && error.message === "PROVISIONING_CUSTOM_THEME_REQUIRED") throw new TRPCError({ code: "BAD_REQUEST", message: "Renseignez la thématique ou niche de la boutique lorsque vous choisissez « Autre univers »." });
+        throw error;
+      }
+    }),
+    createStoreCopyProvisioningDraft: platformProcedure.input(studioProvisioningDraftInputSchema.extend({
+      copySourceStoreId: z.number().int().positive(),
+      copySelection: studioStoreCopySelectionSchema,
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const draft = await db.createStudioStoreCopyProvisioningDraft({ ...input, createdByUserId: ctx.user.id });
+        logAudit(ctx, {
+          action: "studio.store_copy.draft.create",
+          entityType: "store_provisioning_draft",
+          entityId: draft.id,
+          summary: "Brouillon de copie contrôlée créé",
+          metadata: { sourceStoreId: draft.sourceStoreId, selectedScopes: Object.entries(draft.selection).filter(([, selected]) => selected).map(([scope]) => scope), destinationDomain: input.requestedDomain },
+        });
+        return draft;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "PROVISIONING_CUSTOM_THEME_REQUIRED") throw new TRPCError({ code: "BAD_REQUEST", message: "Renseignez la thématique de la nouvelle boutique." });
+        if (code === "STORE_COPY_SOURCE_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Boutique source introuvable." });
+        if (["STORE_COPY_PLATFORM_SOURCE_FORBIDDEN", "STORE_COPY_SOURCE_NOT_ELIGIBLE"].includes(code)) throw new TRPCError({ code: "FORBIDDEN", message: "Cette boutique ne peut pas servir de source à une copie contrôlée." });
+        if (code === "STORE_COPY_SELECTION_EMPTY") throw new TRPCError({ code: "BAD_REQUEST", message: "Choisissez au moins un élément autorisé à copier." });
+        throw error;
+      }
+    }),
+    updateProvisioningDraft: platformProcedure.input(studioProvisioningDraftInputSchema.extend({ id: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+      try {
+        const draft = await db.updateStudioProvisioningDraft(input);
+        logAudit(ctx, {
+          action: "studio.provisioning_draft.update",
+          entityType: "store_provisioning_draft",
+          entityId: draft.id,
+          summary: "Brouillon de mise en service modifié",
+          metadata: { businessType: input.businessType, preferredCurrency: input.preferredCurrency, themePreset: input.themePreset ?? null, factoryModel: input.factoryModel, provisioningTemplate: input.provisioningTemplate, paymentRoute: input.paymentRoute },
+        });
+        return draft;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "PROVISIONING_DRAFT_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Brouillon introuvable." });
+        if (code === "PROVISIONING_DRAFT_LOCKED") throw new TRPCError({ code: "CONFLICT", message: "Ce brouillon est déjà provisionné ou archivé et ne peut plus être modifié." });
+        if (code === "STORE_COPY_DRAFT_LOCKED") throw new TRPCError({ code: "CONFLICT", message: "Le périmètre d’une copie contrôlée est immuable. Créez un nouveau brouillon si la source ou les éléments à copier doivent changer." });
+        if (code === "PROVISIONING_CUSTOM_THEME_REQUIRED") throw new TRPCError({ code: "BAD_REQUEST", message: "Renseignez la thématique ou niche de la boutique lorsque vous choisissez « Autre univers »." });
+        throw error;
+      }
+    }),
+    deleteProvisioningDraft: platformProcedure.input(z.object({ id: z.number().int().positive(), confirmationName: z.string().trim().min(2).max(160) })).mutation(async ({ ctx, input }) => {
+      try {
+        const draft = await db.deleteStudioProvisioningDraft(input);
+        logAudit(ctx, {
+          action: "studio.provisioning_draft.delete",
+          entityType: "store_provisioning_draft",
+          entityId: draft.id,
+          summary: "Brouillon de mise en service supprimé",
+          metadata: {},
+        });
+        return draft;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "PROVISIONING_DRAFT_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Brouillon introuvable." });
+        if (code === "PROVISIONING_DRAFT_LOCKED") throw new TRPCError({ code: "CONFLICT", message: "Ce brouillon est déjà provisionné ou archivé et ne peut plus être supprimé." });
+        if (code === "PROVISIONING_DRAFT_CONFIRMATION_MISMATCH") throw new TRPCError({ code: "BAD_REQUEST", message: "Recopiez exactement le nom de la boutique pour confirmer la suppression." });
+        throw error;
+      }
+    }),
+  }),
+
+  // Scheduled marketing campaigns (temporal banners + FOMO countdown) — admin-only.
+  campaigns: router({
+    getAll: adminProcedure.query(async ({ ctx }) => db.getAllCampaignsAdmin(ctx.store?.id)),
+    create: adminProcedure.input(campaignInputSchema).mutation(async ({ ctx, input }) => db.createCampaign(input, ctx.store?.id)),
+    update: adminProcedure.input(campaignInputSchema.extend({ id: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+      const { id, ...data } = input;
+      return db.updateCampaign(id, data, ctx.store?.id);
+    }),
+    delete: adminProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ ctx, input }) => db.deleteCampaign(input.id, ctx.store?.id)),
+    toggle: adminProcedure.input(z.object({ id: z.number().int().positive(), enabled: z.boolean() })).mutation(async ({ ctx, input }) => db.toggleCampaign(input.id, input.enabled, ctx.store?.id)),
+  }),
+
+  // Dashboard Stats
+  getStats: adminProcedure.query(async ({ ctx }) => {
+    return await db.getAdminStats(ctx.store?.id);
+  }),
+
+  // Staff activity audit trail (admin-only)
+  audit: router({
+    getLogs: adminProcedure.input(z.object({
+      entityType: z.string().trim().max(40).optional(),
+      action: z.string().trim().max(80).optional(),
+      actorUserId: z.number().int().positive().optional(),
+      search: z.string().trim().max(200).optional(),
+      page: z.number().int().min(1).default(1),
+      pageSize: z.number().int().min(1).max(100).default(50),
+    })).query(async ({ ctx, input }) => {
+      const { entries, total } = await db.getAuditLogs({
+        storeId: ctx.store?.id,
+        entityType: input.entityType || undefined,
+        action: input.action || undefined,
+        actorUserId: input.actorUserId,
+        search: input.search || undefined,
+        limit: input.pageSize,
+        offset: (input.page - 1) * input.pageSize,
+      });
+      return { entries, total, page: input.page, pageSize: input.pageSize };
+    }),
+    getFilters: adminProcedure.query(async ({ ctx }) => {
+      return await db.getAuditLogFilterOptions(ctx.store?.id);
+    }),
+  }),
+
+  // Products Management
+  products: router({
+    getAll: catalogEditorProcedure.query(async ({ ctx }) => {
+      return await db.getAllProductsAdmin(ctx.store?.id);
+    }),
+    preview: catalogEditorProcedure.input(z.object({
+      key: z.string().trim().min(1).max(220),
+      locale: z.enum(["fr", "de", "it", "en", "es", "nl", "ar"]).default("fr"),
+    })).query(async ({ ctx, input }) => {
+      const isId = /^\d+$/.test(input.key);
+      const product = await db.getProductForPreview(isId ? { id: Number(input.key) } : { slug: input.key }, ctx.store?.id);
+      if (!product) return null;
+      const translation = input.locale === "fr" ? null : await db.getReadyProductTranslation(product.id, input.locale, ctx.store?.id);
+      const localized = translation
+        ? { ...product, name: translation.name, description: translation.description, longDescription: translation.longDescription, options: translation.options }
+        : product;
+      const [images, reviews, averageRating] = await Promise.all([
+        db.getProductImages(product.id, ctx.store?.id),
+        db.getProductReviews(product.id, ctx.store?.id),
+        db.getAverageRating(product.id, ctx.store?.id),
+      ]);
+      return { ...localized, images, reviews, averageRating };
+    }),
+    getTranslations: catalogEditorProcedure.input(z.number().int().positive()).query(async ({ ctx, input }) => {
+      return await db.getProductTranslations(input, ctx.store?.id);
+    }),
+    getTranslationOverview: catalogEditorProcedure.query(async ({ ctx }) => {
+      return await db.getProductTranslationOverview(ctx.store?.id);
+    }),
+    applyDraftSeoBatch: catalogEditorProcedure.input(z.object({
+      updates: z.array(z.object({
+        id: z.number().int().positive(),
+        name: z.string().trim().min(28).max(200).optional(),
+        description: z.string().trim().min(90).max(1000).optional(),
+        longDescription: z.string().trim().min(350).max(10000).optional(),
+        archive: z.boolean().optional(),
+      }).superRefine((update, context) => {
+        if (update.archive) return;
+        if (!update.name || !update.description || !update.longDescription) {
+          context.addIssue({ code: z.ZodIssueCode.custom, message: "Une fiche SEO doit contenir un titre, une accroche et une description détaillée." });
+        }
+      })).min(1).max(20),
+    })).mutation(async ({ ctx, input }) => {
+      const result = await db.applyDraftSeoUpdates(input.updates, ctx.store?.id);
+      logAudit(ctx, {
+        action: "product.seo_batch_apply",
+        entityType: "product",
+        entityId: null,
+        summary: `Optimisation SEO des brouillons : ${result.updated} enrichi(s), ${result.archived} archivé(s), ${result.skipped} ignoré(s).`,
+        metadata: result,
+      });
+      return result;
+    }),
+    importDraftCsv: catalogEditorProcedure.input(z.object({
+      updates: z.array(z.object({
+        sku: z.string().trim().regex(/^MAZIGHO-[1-9]\d*$/, "Le SKU doit respecter le format MAZIGHO-<id>."),
+        name: z.string().trim().max(200).optional(),
+        description: z.string().trim().max(1000).optional(),
+        longDescription: z.string().trim().max(10000).optional(),
+      })).min(1).max(100),
+    }).superRefine((input, context) => {
+      const seenSkus = new Set<string>();
+      input.updates.forEach((update, index) => {
+        if (seenSkus.has(update.sku)) {
+          context.addIssue({ code: z.ZodIssueCode.custom, path: ["updates", index, "sku"], message: "Chaque SKU ne peut apparaître qu’une fois dans le fichier." });
+        }
+        seenSkus.add(update.sku);
+      });
+    })).mutation(async ({ ctx, input }) => {
+      const updates = input.updates.map(update => ({
+        id: Number(update.sku.slice("MAZIGHO-".length)),
+        name: update.name,
+        description: update.description,
+        longDescription: update.longDescription,
+      }));
+      const result = await db.applyDraftCsvEditorialUpdates(updates, ctx.store?.id);
+      logAudit(ctx, {
+        action: "product.draft_csv_import",
+        entityType: "product",
+        entityId: null,
+        summary: `Import CSV éditorial : ${result.updated} brouillon(s) mis à jour, ${result.missing + result.skippedNotDraft + result.skippedEmpty} ignoré(s).`,
+        metadata: { importedSkus: input.updates.map(update => update.sku), ...result },
+      });
+      return result;
+    }),
+    syncCjDraftVariants: catalogEditorProcedure.input(z.object({
+      productIds: z.array(z.number().int().positive()).min(1).max(10),
+    })).mutation(async ({ ctx, input }) => {
+      const candidates = await db.getCjVariantSyncCandidates(input.productIds, ctx.store?.id);
+      let updated = 0;
+      let noVariants = 0;
+      let skipped = input.productIds.length - candidates.length;
+      const failed: number[] = [];
+      for (const candidate of candidates) {
+        try {
+          // This deliberate, bounded action refreshes only public option labels
+          // and the private CJ VID mapping for an existing active or draft item.
+          // It never creates a supplier order, changes prices or re-quotes delivery.
+          // CJ may occasionally return a transient gateway response when several
+          // product details are read in sequence, so a single bounded retry avoids
+          // leaving a valid draft without its selectable options.
+          let prepared: Awaited<ReturnType<typeof prepareCjProductImport>> | null = null;
+          for (let attempt = 0; attempt < 2 && !prepared; attempt += 1) {
+            try {
+              prepared = await prepareCjProductImport({ productId: candidate.supplierProductId, skipStockLookup: true });
+            } catch (error) {
+              if (attempt === 1) throw error;
+              await new Promise(resolve => setTimeout(resolve, 750));
+            }
+          }
+          if (!prepared) throw new Error("CJ_VARIANT_SYNC_UNAVAILABLE");
+          const variantData = buildCjVariantStoreData(prepared.variants);
+          if (!variantData.options || !variantData.mappings) {
+            noVariants += 1;
+            continue;
+          }
+          const wrote = await db.updateCjVariantData(candidate.id, {
+            options: variantData.options,
+            supplierVariantMappings: variantData.mappings,
+          }, ctx.store?.id);
+          if (wrote) updated += 1;
+          else skipped += 1;
+        } catch {
+          failed.push(candidate.id);
+        }
+      }
+      const result = { updated, noVariants, skipped, failedIds: failed };
+      logAudit(ctx, {
+        action: "product.cj_variants_sync",
+        entityType: "product",
+        entityId: null,
+        summary: `Révalidation CJ des variantes : ${updated} produit(s) actif(s) ou brouillon(s) actualisé(s), ${noVariants + skipped + failed.length} ignoré(s).`,
+        metadata: { requestedIds: input.productIds, ...result },
+      });
+      return result;
+    }),
+    translate: catalogEditorProcedure.input(z.object({
+      productId: z.number().int().positive(),
+      locales: z.array(z.enum(["de", "it", "en", "es", "nl", "ar"])).min(1).max(6),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const { translateProductFromFrench } = await import("./productTranslation");
+        return await translateProductFromFrench(input.productId, input.locales, ctx.store?.id);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Erreur inconnue";
+        if (message.includes("Produit introuvable")) {
+          throw new TRPCError({ code: "NOT_FOUND", message });
+        }
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "La génération de traduction est momentanément indisponible. Réessayez dans quelques instants." });
+      }
+    }),
+    saveTranslation: catalogEditorProcedure.input(z.object({
+      productId: z.number().int().positive(),
+      locale: z.enum(["de", "it", "en", "es", "nl", "ar"]),
+      name: z.string().trim().min(1).max(200),
+      description: z.string().trim().max(10000).nullable().optional(),
+      longDescription: z.string().trim().max(30000).nullable().optional(),
+      options: z.string().trim().max(30000).nullable().optional(),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const { saveManualProductTranslation } = await import("./productTranslation");
+        return await saveManualProductTranslation({
+          ...input,
+          description: input.description ?? null,
+          longDescription: input.longDescription ?? null,
+          options: input.options ?? null,
+          storeId: ctx.store?.id,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Erreur inconnue";
+        if (message.includes("Produit introuvable")) {
+          throw new TRPCError({ code: "NOT_FOUND", message });
+        }
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Impossible d’enregistrer cette traduction. Vérifiez le contenu et réessayez." });
+      }
+    }),
+    create: catalogEditorProcedure.input(z.object({
+      categoryId: z.number(),
+      name: z.string(),
+      slug: z.string(),
+      description: z.string().optional(),
+      longDescription: z.string().optional(),
+      price: z.number(),
+      originalPrice: z.number().optional(),
+      stock: z.number(),
+      featured: z.number(),
+      status: z.enum(["active", "draft", "archived"]),
+      images: z.array(z.string()).optional(),
+      options: z.string().optional(),
+      supplier: z.string().optional(),
+      supplierUrl: z.string().optional(),
+      supplierProductId: z.string().max(128).optional(),
+      supplierVariantMappings: z.string().max(20000).optional(),
+      supplierPrice: z.number().optional(),
+      categoryIds: z.array(z.number().int().positive()).min(1).max(20).optional(),
+      deliveryProfiles: deliveryProfilesInput.optional(),
+    })).mutation(async ({ ctx, input }) => {
+      const createdProduct = await db.createProduct(input, ctx.store?.id);
+      const newId = (createdProduct as any)?.id;
+      autoTranslateProduct(newId, ctx.store?.id);
+      logAudit(ctx, { action: "product.create", entityType: "product", entityId: newId ?? null, summary: `Produit créé : « ${input.name} » (${(input.price / 100).toFixed(2)} CHF, ${input.status})` });
+      return createdProduct;
+    }),
+    update: catalogEditorProcedure.input(z.object({
+      id: z.number(),
+      categoryId: z.number().optional(),
+      name: z.string().optional(),
+      description: z.string().optional(),
+      longDescription: z.string().optional(),
+      price: z.number().optional(),
+      originalPrice: z.number().optional(),
+      stock: z.number().optional(),
+      featured: z.number().optional(),
+      status: z.enum(["active", "draft", "archived"]).optional(),
+      images: z.array(z.string()).optional(),
+      options: z.string().optional(),
+      supplier: z.string().optional(),
+      supplierUrl: z.string().optional(),
+      supplierProductId: z.string().max(128).optional(),
+      supplierVariantMappings: z.string().max(20000).optional(),
+      supplierPrice: z.number().optional(),
+      categoryIds: z.array(z.number().int().positive()).min(1).max(20).optional(),
+      deliveryProfiles: deliveryProfilesInput.optional(),
+    })).mutation(async ({ ctx, input }) => {
+      const updatedProduct = await db.updateProduct(input.id, input, ctx.store?.id);
+      autoTranslateProduct(input.id, ctx.store?.id);
+      const name = input.name ?? (await db.getProductNameById(input.id, ctx.store?.id)) ?? `#${input.id}`;
+      const changes: string[] = [];
+      if (input.price != null) changes.push(`prix ${(input.price / 100).toFixed(2)} CHF`);
+      if (input.stock != null) changes.push(`stock ${input.stock}`);
+      if (input.status != null) changes.push(`statut ${input.status}`);
+      if (input.featured != null) changes.push(input.featured ? "mis en avant" : "retiré de la mise en avant");
+      const detail = changes.length ? ` — ${changes.join(", ")}` : "";
+      logAudit(ctx, { action: "product.update", entityType: "product", entityId: input.id, summary: `Produit modifié : « ${name} »${detail}`, metadata: { price: input.price, stock: input.stock, status: input.status } });
+      return updatedProduct;
+    }),
+    delete: catalogEditorProcedure.input(z.number()).mutation(async ({ ctx, input }) => {
+      const name = (await db.getProductNameById(input, ctx.store?.id)) ?? `#${input}`;
+      const result = await db.deleteProduct(input, ctx.store?.id);
+      logAudit(ctx, { action: "product.delete", entityType: "product", entityId: input, summary: `Produit supprimé : « ${name} »` });
+      return result;
+    }),
+    bulkImportAliExpress: catalogEditorProcedure.input(z.object({
+      categoryId: z.number().int().positive(),
+      urls: z.array(z.string().trim().url()).min(1).max(50),
+    })).mutation(async ({ ctx, input }) => {
+      const result = await db.bulkCreateAliExpressDrafts(input.categoryId, input.urls, ctx.store?.id);
+      logAudit(ctx, { action: "product.bulk_aliexpress_import", entityType: "product", entityId: null, summary: `${result.created} brouillon(s) AliExpress importé(s)`, metadata: { created: result.created, skipped: result.skipped.length } });
+      return result;
+    }),
+    bulkArchive: catalogEditorProcedure.input(z.object({
+      ids: z.array(z.number().int().positive()).min(1).max(100),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const result = await db.archiveCatalogProductsBulk(input.ids, ctx.store?.id);
+        logAudit(ctx, { action: "product.bulk_archive", entityType: "product", entityId: null, summary: `${result.updated} produit(s) archivé(s)`, metadata: { productIds: result.ids } });
+        return result;
+      } catch {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Impossible d’archiver cette sélection. Vérifiez que les produits existent encore." });
+      }
+    }),
+    bulkActivate: catalogEditorProcedure.input(z.object({
+      ids: z.array(z.number().int().positive()).min(1).max(100),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const result = await db.activateCatalogProductsBulk(input.ids, ctx.store?.id);
+        logAudit(ctx, { action: "product.bulk_activate", entityType: "product", entityId: null, summary: `${result.updated} produit(s) activé(s) ou réactivé(s)`, metadata: { productIds: result.ids } });
+        return result;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code.startsWith("CATALOG_PRODUCT_NOT_READY_FOR_ACTIVATION")) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Activation refusée : chaque produit à activer doit disposer d’un prix positif et d’au moins un profil de livraison validé." });
+        }
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Impossible d’activer cette sélection. Vérifiez que les produits existent encore." });
+      }
+    }),
+    bulkUpdate: catalogEditorProcedure.input(z.object({
+      ids: z.array(z.number().int().positive()).min(1).max(100),
+      categoryId: z.number().int().positive().optional(),
+      price: z.number().int().positive().max(1_000_000).optional(),
+      stock: z.number().int().min(0).max(1_000_000).optional(),
+    }).superRefine((input, context) => {
+      if (input.categoryId == null && input.price == null && input.stock == null) {
+        context.addIssue({ code: z.ZodIssueCode.custom, message: "Indiquez au moins une valeur à modifier." });
+      }
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const result = await db.updateCatalogProductsBulk(input, ctx.store?.id);
+        const changes = [input.categoryId != null ? "catégorie" : null, input.price != null ? "prix" : null, input.stock != null ? "stock" : null].filter(Boolean);
+        logAudit(ctx, { action: "product.bulk_update", entityType: "product", entityId: null, summary: `${result.updated} produit(s) modifié(s) : ${changes.join(", ")}`, metadata: { productIds: result.ids, categoryId: input.categoryId, price: input.price, stock: input.stock } });
+        return result;
+      } catch {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Impossible de modifier cette sélection. Vérifiez les produits et la catégorie choisie." });
+      }
+    }),
+    bulkDeleteArchived: catalogEditorProcedure.input(z.object({
+      ids: z.array(z.number().int().positive()).min(1).max(100),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const result = await db.deleteCatalogArchivedProductsBulk(input.ids, ctx.store?.id);
+        logAudit(ctx, { action: "product.bulk_delete_archived", entityType: "product", entityId: null, summary: `${result.deleted} produit(s) archivé(s) supprimé(s) définitivement`, metadata: { productIds: result.ids } });
+        return result;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code.startsWith("CATALOG_PRODUCT_MUST_BE_ARCHIVED")) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Suppression refusée : archivez d’abord tous les produits sélectionnés, puis relancez la suppression." });
+        }
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Impossible de supprimer cette sélection. Vérifiez que les produits existent encore." });
+      }
+    }),
+    previewImport: catalogEditorProcedure.input(previewProductInput).mutation(async ({ ctx, input }) => {
+      await assertDropshippingAccess(ctx.store?.id);
+      if (input.rawHtml && input.rawHtml.trim().length > 0) {
+        return await previewSupplierProductFromHtml(input.rawHtml, input.url);
+      }
+      if (!input.url) {
+        throw new Error("Veuillez fournir une URL ou coller le code source HTML.");
+      }
+      return await previewSupplierProduct(input.url);
+    }),
+    importFromUrl: catalogEditorProcedure.input(importedProductInputSchema()).mutation(async ({ ctx, input }) => {
+      await assertDropshippingAccess(ctx.store?.id);
+      return await db.createProduct(normalizeImportedProduct(input), ctx.store?.id);
+    }),
+    importCjDraft: catalogEditorProcedure.input(z.object({
+      categoryId: z.number().int().positive(),
+      productId: z.string().trim().min(1).max(128),
+      sku: z.string().trim().max(200).nullable().optional(),
+      name: z.string().trim().min(3).max(200),
+      slug: z.string().trim().min(3).max(200),
+      description: z.string().trim().max(10_000).nullable().optional(),
+      priceCents: z.number().int().positive(),
+      supplierPriceCents: z.number().int().nonnegative().nullable().optional(),
+      stock: z.number().int().min(0).max(1_000_000).default(0),
+      images: z.array(z.string().url()).min(1).max(12),
+      deliveryProfiles: z.array(z.object({
+        countryCode: z.enum(["CH", "FR", "DE", "IT", "AT", "BE", "NL", "ES"]),
+        supplierVariantId: z.string().trim().min(1).max(128),
+        supplierShippingCost: z.number().int().min(0),
+        customerShippingCost: z.number().int().min(0),
+        deliveryMethod: z.string().trim().max(255).nullable().optional(),
+        minDeliveryDays: z.number().int().min(0).nullable().optional(),
+        maxDeliveryDays: z.number().int().min(0).nullable().optional(),
+      })).min(1).max(8).superRefine((profiles, ctx) => {
+        const countries = new Set<string>();
+        profiles.forEach((profile, index) => {
+          if (countries.has(profile.countryCode)) {
+            ctx.addIssue({ code: z.ZodIssueCode.custom, path: [index, "countryCode"], message: "Un seul profil de livraison est autorisé par pays." });
+          }
+          countries.add(profile.countryCode);
+          if (profile.minDeliveryDays != null && profile.maxDeliveryDays != null && profile.maxDeliveryDays < profile.minDeliveryDays) {
+            ctx.addIssue({ code: z.ZodIssueCode.custom, path: [index, "maxDeliveryDays"], message: "Le délai maximal doit être supérieur ou égal au délai minimal." });
+          }
+        });
+      }),
+    })).mutation(async ({ ctx, input }) => {
+      await assertDropshippingAccess(ctx.store?.id);
+      const existing = await db.getProductBySupplierReference("CJdropshipping", input.productId, ctx.store?.id);
+      if (existing) {
+        throw new TRPCError({ code: "CONFLICT", message: `Ce produit CJ est déjà enregistré dans MAZIGHO sous « ${existing.name} » (${existing.status === "draft" ? "brouillon" : existing.status}).` });
+      }
+      const created = await db.createProduct({
+        categoryId: input.categoryId,
+        name: input.name,
+        slug: input.slug,
+        description: input.description || null,
+        price: input.priceCents,
+        originalPrice: null,
+        stock: input.stock,
+        featured: 0,
+        status: "draft" as const,
+        images: input.images,
+        supplier: "CJdropshipping",
+        supplierProductId: input.productId,
+        supplierPrice: input.supplierPriceCents ?? null,
+        deliveryProfiles: input.deliveryProfiles.map(profile => ({
+          ...profile,
+          deliveryMethod: profile.deliveryMethod ?? null,
+          minDeliveryDays: profile.minDeliveryDays ?? null,
+          maxDeliveryDays: profile.maxDeliveryDays ?? null,
+        })),
+        lastSyncedAt: new Date(),
+      }, ctx.store?.id);
+      logAudit(ctx, { action: "product.import_cj", entityType: "product", entityId: (created as any)?.id ?? null, summary: `Brouillon CJ importé : « ${input.name} » (${(input.priceCents / 100).toFixed(2)} CHF)`, metadata: { supplierProductId: input.productId } });
+      return created;
+    }),
+  }),
+
+  // Categories Management
+  categories: router({
+    create: catalogEditorProcedure.input(z.object({
+      name: z.string(),
+      slug: z.string(),
+      description: z.string().optional(),
+      imageUrl: z.string().optional(),
+      icon: z.string().optional(),
+      displayOrder: z.number().optional(),
+      catalogSection: z.enum(["standard", "creations"]).optional(),
+    })).mutation(async ({ ctx, input }) => {
+      const createdCategory = await db.createCategory(input, ctx.store?.id);
+      autoTranslateContent("category", (createdCategory as any)?.id, ctx.store?.id);
+      logAudit(ctx, { action: "category.create", entityType: "category", entityId: (createdCategory as any)?.id ?? null, summary: `Catégorie créée : « ${input.name} »` });
+      return createdCategory;
+    }),
+    update: catalogEditorProcedure.input(z.object({
+      id: z.number(),
+      name: z.string().optional(),
+      slug: z.string().optional(),
+      description: z.string().optional(),
+      imageUrl: z.string().optional(),
+      icon: z.string().optional(),
+      displayOrder: z.number().optional(),
+      catalogSection: z.enum(["standard", "creations"]).optional(),
+    })).mutation(async ({ ctx, input }) => {
+      const category = await db.updateCategory(input.id, input, ctx.store?.id);
+      autoTranslateContent("category", input.id, ctx.store?.id);
+      await db.markPublicContentTranslationsStale("category", input.id, ctx.store?.id);
+      const name = input.name ?? (await db.getCategoryNameById(input.id, ctx.store?.id)) ?? `#${input.id}`;
+      logAudit(ctx, { action: "category.update", entityType: "category", entityId: input.id, summary: `Catégorie modifiée : « ${name} »` });
+      return category;
+    }),
+    delete: catalogEditorProcedure.input(z.number()).mutation(async ({ ctx, input }) => {
+      const name = (await db.getCategoryNameById(input, ctx.store?.id)) ?? `#${input}`;
+      const result = await db.deleteCategory(input, ctx.store?.id);
+      logAudit(ctx, { action: "category.delete", entityType: "category", entityId: input, summary: `Catégorie supprimée : « ${name} »` });
+      return result;
+    }),
+    seedDefault: catalogEditorProcedure.mutation(async () => {
+      const logs: string[] = [];
+      const connectionString = process.env.DATABASE_URL;
+      if (!connectionString) throw new Error("DATABASE_URL non définie");
+
+      logs.push("Connexion directe pour initialisation...");
+      const mysql = await import("mysql2/promise");
+      const connection = await mysql.createConnection({
+        uri: connectionString,
+        ssl: { rejectUnauthorized: false }
+      });
+
+      try {
+        // 1. DROP AND CREATE TABLES (Clean Slate)
+        const tableDefinitions = [
+          { name: "users", sql: "CREATE TABLE `users` (`id` int AUTO_INCREMENT PRIMARY KEY, `openId` varchar(64) NOT NULL UNIQUE, `name` text, `email` varchar(320), `loginMethod` varchar(64), `role` enum('user','admin') DEFAULT 'user' NOT NULL, `createdAt` timestamp DEFAULT CURRENT_TIMESTAMP NOT NULL, `updatedAt` timestamp DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP NOT NULL, `lastSignedIn` timestamp DEFAULT CURRENT_TIMESTAMP NOT NULL)" },
+          { name: "categories", sql: "CREATE TABLE `categories` (`id` int AUTO_INCREMENT PRIMARY KEY, `name` varchar(100) NOT NULL, `slug` varchar(100) NOT NULL UNIQUE, `description` text, `imageUrl` varchar(500), `icon` varchar(20), `displayOrder` int DEFAULT 0 NOT NULL, `createdAt` timestamp DEFAULT CURRENT_TIMESTAMP NOT NULL)" },
+          { name: "products", sql: "CREATE TABLE `products` (`id` int AUTO_INCREMENT PRIMARY KEY, `categoryId` int NOT NULL, `name` varchar(200) NOT NULL, `slug` varchar(200) NOT NULL UNIQUE, `description` text, `longDescription` text, `price` int NOT NULL, `originalPrice` int, `stock` int DEFAULT 0 NOT NULL, `featured` int DEFAULT 0 NOT NULL, `status` enum('active','draft','archived') DEFAULT 'active' NOT NULL, `supplier` varchar(32), `supplierProductId` varchar(128), `supplierUrl` varchar(1000), `supplierPrice` int, `options` text, `lastSyncedAt` timestamp, `createdAt` timestamp DEFAULT CURRENT_TIMESTAMP NOT NULL, `updatedAt` timestamp DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP NOT NULL)" },
+          { name: "productImages", sql: "CREATE TABLE `productImages` (`id` int AUTO_INCREMENT PRIMARY KEY, `productId` int NOT NULL, `imageUrl` varchar(500) NOT NULL, `displayOrder` int DEFAULT 0 NOT NULL, `createdAt` timestamp DEFAULT CURRENT_TIMESTAMP NOT NULL)" },
+          { name: "orders", sql: "CREATE TABLE `orders` (`id` int AUTO_INCREMENT PRIMARY KEY, `userId` int NOT NULL, `status` enum('pending','processing','shipped','delivered','cancelled') DEFAULT 'pending' NOT NULL, `totalAmount` int NOT NULL, `shippingAddress` text NOT NULL, `billingAddress` text, `paymentStatus` enum('unpaid','paid','refunded') DEFAULT 'unpaid' NOT NULL, `paymentMethod` varchar(50), `trackingNumber` varchar(100), `notes` text, `createdAt` timestamp DEFAULT CURRENT_TIMESTAMP NOT NULL, `updatedAt` timestamp DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP NOT NULL)" },
+          { name: "orderItems", sql: "CREATE TABLE `orderItems` (`id` int AUTO_INCREMENT PRIMARY KEY, `orderId` int NOT NULL, `productId` int NOT NULL, `quantity` int NOT NULL, `priceAtPurchase` int NOT NULL, `createdAt` timestamp DEFAULT CURRENT_TIMESTAMP NOT NULL)" },
+          { name: "reviews", sql: "CREATE TABLE `reviews` (`id` int AUTO_INCREMENT PRIMARY KEY, `productId` int NOT NULL, `userId` int NOT NULL, `rating` int NOT NULL, `comment` text, `status` enum('pending','approved','rejected') DEFAULT 'pending' NOT NULL, `createdAt` timestamp DEFAULT CURRENT_TIMESTAMP NOT NULL)" },
+          { name: "contactMessages", sql: "CREATE TABLE `contactMessages` (`id` int AUTO_INCREMENT PRIMARY KEY, `name` varchar(200) NOT NULL, `email` varchar(320) NOT NULL, `subject` varchar(200), `message` text NOT NULL, `status` enum('unread','read','archived') DEFAULT 'unread' NOT NULL, `createdAt` timestamp DEFAULT CURRENT_TIMESTAMP NOT NULL)" },
+          { name: "banners", sql: "CREATE TABLE `banners` (`id` int AUTO_INCREMENT PRIMARY KEY, `title` varchar(200) NOT NULL, `subtitle` text, `imageUrl` varchar(500) NOT NULL, `linkUrl` varchar(500), `active` int DEFAULT 1 NOT NULL, `displayOrder` int DEFAULT 0 NOT NULL, `createdAt` timestamp DEFAULT CURRENT_TIMESTAMP NOT NULL)" },
+          { name: "settings", sql: "CREATE TABLE `settings` (`id` int AUTO_INCREMENT PRIMARY KEY, `key` varchar(100) NOT NULL UNIQUE, `value` text NOT NULL, `description` text, `updatedAt` timestamp DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP NOT NULL)" },
+          { name: "promotions", sql: "CREATE TABLE `promotions` (`id` int AUTO_INCREMENT PRIMARY KEY, `code` varchar(64) NOT NULL UNIQUE, `type` enum('percent','fixed') DEFAULT 'percent' NOT NULL, `value` int NOT NULL, `minOrderAmount` int, `maxUses` int, `usedCount` int DEFAULT 0 NOT NULL, `active` int DEFAULT 1 NOT NULL, `startsAt` timestamp, `expiresAt` timestamp, `createdAt` timestamp DEFAULT CURRENT_TIMESTAMP NOT NULL, `updatedAt` timestamp DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP NOT NULL)" }
+        ];
+
+        // We drop in reverse order to handle potential future foreign keys safely
+        const tablesToDrop = [...tableDefinitions].reverse();
+        
+        // Disable foreign key checks for a clean wipe
+        await connection.execute("SET FOREIGN_KEY_CHECKS = 0");
+        
+        for (const table of tablesToDrop) {
+          logs.push(`Suppression table ${table.name}...`);
+          await connection.execute(`DROP TABLE IF EXISTS \`${table.name}\``);
+        }
+
+        for (const table of tableDefinitions) {
+          logs.push(`Création table ${table.name}...`);
+          await connection.execute(table.sql);
+        }
+        
+        await connection.execute("SET FOREIGN_KEY_CHECKS = 1");
+
+        // 2. INSERT CATEGORIES (Direct SQL)
+        const demoCategories = [
+          { name: "High-Tech & Gadgets", slug: "high-tech-gadgets", description: "Accessoires téléphone, Gadgets innovants, Charge & Câbles", icon: "📱", displayOrder: 1 },
+          { name: "Maison & Organisation", slug: "maison-organisation", description: "Rangement malin, Cuisine pratique, Nettoyage intelligent", icon: "🏠", displayOrder: 2 },
+          { name: "Beauté & Bien-Être", slug: "beaute-bien-etre", description: "Soins visage, Massage & relaxation, Coiffure", icon: "💄", displayOrder: 3 },
+          { name: "Sport & Fitness", slug: "sport-fitness", description: "Fitness à domicile, Yoga & pilates, Accessoires sport", icon: "🏋️", displayOrder: 4 },
+          { name: "Auto & Accessoires", slug: "auto-accessoires", description: "Supports téléphone voiture, Nettoyage auto, Sécurité & assistance", icon: "🚗", displayOrder: 5 },
+          { name: "Mode", slug: "mode", description: "Vêtements, Chaussures, Accessoires de mode", icon: "👗", displayOrder: 6 },
+        ];
+
+        let createdCount = 0;
+        for (const cat of demoCategories) {
+          const [rows]: any = await connection.execute("SELECT id FROM categories WHERE slug = ?", [cat.slug]);
+          if (rows.length === 0) {
+            logs.push(`Insertion catégorie ${cat.name}...`);
+            await connection.execute(
+              "INSERT INTO categories (name, slug, description, icon, displayOrder) VALUES (?, ?, ?, ?, ?)",
+              [cat.name, cat.slug, cat.description, cat.icon, cat.displayOrder]
+            );
+            createdCount++;
+          }
+        }
+
+        // 3. INSERT BANNERS (Direct SQL)
+        const demoBanners = [
+          { title: "Découvrez nos Meilleures Offres", subtitle: "Simplifiez votre quotidien avec style", imageUrl: "https://placehold.co/1200x600/FF8C00/FFFFFF?text=MEILLEURES+OFFRES", linkUrl: "/boutique", active: 1, displayOrder: 1 },
+          { title: "Mode & Accessoires", subtitle: "Les dernières tendances de la saison", imageUrl: "https://placehold.co/1200x600/4B0082/FFFFFF?text=MODE+ET+ACCESSOIRES", linkUrl: "/categorie/mode", active: 1, displayOrder: 2 },
+          { title: "Beauté & Bien-Être", subtitle: "Prenez soin de vous avec nos produits premium", imageUrl: "https://placehold.co/1200x600/FF69B4/FFFFFF?text=BEAUTE+ET+BIEN+ETRE", linkUrl: "/categorie/beaute-bien-etre", active: 1, displayOrder: 3 },
+        ];
+
+        for (const banner of demoBanners) {
+          const [rows]: any = await connection.execute("SELECT id FROM banners WHERE title = ?", [banner.title]);
+          if (rows.length === 0) {
+            logs.push(`Insertion bannière ${banner.title}...`);
+            await connection.execute(
+              "INSERT INTO banners (title, subtitle, imageUrl, linkUrl, active, displayOrder) VALUES (?, ?, ?, ?, ?, ?)",
+              [banner.title, banner.subtitle, banner.imageUrl, banner.linkUrl, banner.active, banner.displayOrder]
+            );
+          }
+        }
+
+        logs.push("Initialisation terminée avec succès.");
+        return { success: true, createdCount, logs };
+      } catch (err: any) {
+        logs.push(`ERREUR: ${err.message}`);
+        throw new Error(`Échec de l'initialisation: ${err.message}. Logs: ${logs.join(" | ")}`);
+      } finally {
+        await connection.end();
+      }
+    }),
+  }),
+
+  // Orders Management
+  orders: router({
+    reconcileStripeTestAndAccept: orderOperatorProcedure.input(z.object({
+      orderId: z.number().int().positive(),
+    })).mutation(async ({ input, ctx }) => {
+      const sessionId = await db.getStripeSessionIdForOrder(input.orderId, ctx.store?.id);
+      if (!sessionId) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Cette commande n’est pas une session Stripe Test réconciliable." });
+      }
+      const secretKey = process.env.STRIPE_SECRET_KEY?.trim();
+      if (!secretKey?.startsWith("sk_test_")) {
+        throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Stripe Test n’est pas configuré sur le serveur." });
+      }
+
+      let session: Stripe.Checkout.Session;
+      try {
+        session = await new Stripe(secretKey).checkout.sessions.retrieve(sessionId);
+      } catch {
+        throw new TRPCError({ code: "BAD_GATEWAY", message: "La session Stripe Test n’a pas pu être vérifiée." });
+      }
+      if (!isVerifiedPaidStripeTestSession(session)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Stripe Test ne confirme pas encore ce paiement. La commande reste en attente." });
+      }
+
+      const paid = await db.markOrderPaidByStripeSession(session.id);
+      // This completion is idempotent: it stores the Stripe address, retries Odoo
+      // and queues only a dormant CJ sandbox preparation. It never pays CJ.
+      await completePaidStripeOrder(session, { sendCustomerEmail: paid.justPaid });
+      const decision = await db.recordOrderDecision({
+        orderId: input.orderId,
+        action: "accepted",
+        actorUserId: ctx.user.id,
+        reason: "Commande Stripe Test vérifiée côté Stripe et acceptée pour validation sandbox.",
+        storeId: ctx.store?.id,
+      });
+      logAudit(ctx, {
+        action: "order.stripe_test_reconciled_and_accepted",
+        entityType: "order",
+        entityId: input.orderId,
+        summary: `Commande Stripe Test #${input.orderId} vérifiée puis acceptée ; synchronisation Odoo et préparation CJ sandbox relancées.`,
+        metadata: { stripeSessionId: session.id, justMarkedPaid: paid.justPaid, livemode: session.livemode },
+      });
+      return { ...decision, paymentReconciled: true, justMarkedPaid: paid.justPaid };
+    }),
+    getAll: orderOperatorProcedure.query(async ({ ctx }) => {
+      return await db.getAllOrdersAdmin(ctx.store?.id);
+    }),
+    getItems: orderOperatorProcedure.input(z.object({ orderId: z.number() })).query(async ({ ctx, input }) => {
+      return await db.getOrderItemsAdmin(input.orderId, ctx.store?.id);
+    }),
+    getAliExpressPreparationManifest: orderOperatorProcedure.input(z.object({ orderId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+      try {
+        return await db.getAliExpressPreparationManifestAdmin(input.orderId, ctx.store?.id);
+      } catch (error) {
+        if (error instanceof Error && error.message === "ORDER_NOT_FOUND") {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Commande introuvable." });
+        }
+        throw error;
+      }
+    }),
+    getDecisions: orderOperatorProcedure.input(z.object({ orderId: z.number() })).query(async ({ ctx, input }) => {
+      return await db.getOrderDecisionsAdmin(input.orderId, ctx.store?.id);
+    }),
+    getFulfillmentLog: orderOperatorProcedure.input(z.object({ orderId: z.number().int().positive() })).query(({ ctx, input }) => db.getOrderFulfillmentLog(input.orderId, ctx.store?.id)),
+    logFulfillmentEvent: orderOperatorProcedure.input(z.object({
+      orderId: z.number().int().positive(),
+      event: z.enum(["extension_sent", "extension_started", "extension_error", "note"]),
+      detail: z.string().max(300).optional(),
+    })).mutation(({ ctx, input }) => {
+      const labels: Record<string, string> = {
+        extension_sent: "Manifeste envoyé à l'extension Chrome",
+        extension_started: "Extension : onglet AliExpress ouvert",
+        extension_error: "Extension : erreur au démarrage",
+        note: "Note",
+      };
+      logAudit(ctx, { action: `fulfillment.${input.event}`, entityType: "order", entityId: input.orderId, summary: `${labels[input.event]}${input.detail ? " — " + input.detail : ""}`.slice(0, 500) });
+      return { ok: true } as const;
+    }),
+    getFulfillment: orderOperatorProcedure.input(z.object({ orderId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+      return await db.getOrderFulfillmentAdmin(input.orderId, ctx.store?.id);
+    }),
+    getCjSafetyStatus: orderOperatorProcedure.query(() => getCjFulfillmentSafetyStatus()),
+    prepareCjSandbox: orderOperatorProcedure.input(z.object({
+      orderId: z.number().int().positive(),
+      confirmation: z.string().trim().max(80),
+    })).mutation(async ({ input, ctx }) => {
+      const expected = `TEST CJ #${input.orderId}`;
+      if (input.confirmation !== expected) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: `Pour lancer le test sans débit, saisissez exactement : ${expected}` });
+      }
+      try {
+        const result = await prepareCjSandboxOrder(input.orderId, ctx.store?.id);
+        logAudit(ctx, {
+          action: "order.cj_sandbox_prepare",
+          entityType: "order",
+          entityId: input.orderId,
+          summary: result.prepared ? `Commande CJ sandbox préparée pour la commande #${input.orderId}.` : `Préparation CJ sandbox non exécutée pour la commande #${input.orderId} : ${result.reason}.`,
+          metadata: { sandbox: true, prepared: result.prepared, supplierOrderCount: result.supplierOrders.length },
+        });
+        return result;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "CJ_PREPARATION_FAILED";
+        logAudit(ctx, {
+          action: "order.cj_sandbox_exception",
+          entityType: "order",
+          entityId: input.orderId,
+          summary: `Préparation CJ sandbox interrompue pour la commande #${input.orderId} : ${code.slice(0, 180)}.`,
+          metadata: { sandbox: true, error: code.slice(0, 400) },
+        });
+        const messages: Record<string, string> = {
+          CJ_PREPARATION_NOT_QUEUED: "Cette commande n’a pas de préparation CJ en attente. Les commandes antérieures à cette mise à jour restent manuelles.",
+          CJ_PREPARATION_IN_PROGRESS: "Une préparation CJ est déjà en cours pour cette commande.",
+          CJ_PREPARATION_ALREADY_COMPLETED: "Le test CJ a déjà été préparé pour cette commande.",
+          CJ_PREPARATION_REQUIRES_REVIEW: "Cette préparation CJ est en exception et doit être vérifiée avant toute nouvelle tentative.",
+          CJ_MAPPING_INCOMPLETE: "La variante CJ n’est pas suffisamment mappée pour une préparation sûre.",
+          CJ_VARIANT_OPTIONS_UNMAPPED: "Les options choisies n’ont pas de correspondance CJ vérifiée.",
+          CJ_ADDRESS_INCOMPLETE: "L’adresse collectée dans Stripe est incomplète pour CJ.",
+          CJ_DELIVERY_NOT_AVAILABLE: "CJ ne confirme plus de transport pour cette destination.",
+          CJ_OUT_OF_STOCK: "Le stock CJ n’est plus suffisant au moment de la vérification.",
+          CJ_MARGIN_BELOW_SAFETY_THRESHOLD: "Le coût fournisseur laisse une marge inférieure au seuil de sécurité.",
+          CJ_ORDER_INTERCEPTED: "CJ a signalé une anomalie sur cette commande sandbox.",
+        };
+        const prefix = code.split(":")[0];
+        throw new TRPCError({ code: "BAD_REQUEST", message: messages[prefix] || "La préparation CJ sandbox n’a pas abouti. Aucune commande CJ payante n’a été créée." });
+      }
+    }),
+    decide: orderOperatorProcedure.input(z.object({
+      orderId: z.number(),
+      action: z.enum(["accepted", "rejected", "refund_requested"]),
+      reason: z.string().trim().max(500).optional(),
+      confirmation: z.string().trim().max(80).optional(),
+    })).mutation(async ({ input, ctx }) => {
+      const expectedConfirmation = input.action === "rejected" ? `REFUSER #${input.orderId}` : input.action === "refund_requested" ? `REMBOURSER #${input.orderId}` : null;
+      if (expectedConfirmation && input.confirmation !== expectedConfirmation) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: `Pour confirmer cette action, saisissez exactement : ${expectedConfirmation}` });
+      }
+      try {
+        const decision = await db.recordOrderDecision({
+          orderId: input.orderId,
+          action: input.action,
+          reason: input.reason,
+          actorUserId: ctx.user.id,
+          storeId: ctx.store?.id,
+        });
+        const actionLabel = input.action === "accepted" ? "acceptée" : input.action === "rejected" ? "refusée" : "remboursement demandé";
+        logAudit(ctx, { action: "order.decide", entityType: "order", entityId: input.orderId, summary: `Commande #${input.orderId} ${actionLabel}${input.reason ? ` — ${input.reason}` : ""}`, metadata: { action: input.action } });
+        return decision;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "ORDER_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Commande introuvable." });
+        if (code === "ORDER_NOT_PAID") throw new TRPCError({ code: "BAD_REQUEST", message: "Seule une commande réellement payée peut être acceptée pour traitement." });
+        if (code === "ORDER_NOT_PENDING") throw new TRPCError({ code: "BAD_REQUEST", message: "Cette commande n’est plus en attente de validation." });
+        if (code === "ORDER_ALREADY_FULFILLED") throw new TRPCError({ code: "BAD_REQUEST", message: "Une commande expédiée ou livrée ne peut pas être refusée ici." });
+        throw error;
+      }
+    }),
+    updateStatus: orderOperatorProcedure.input(z.object({
+      id: z.number(),
+      status: z.enum(["pending", "processing", "shipped", "delivered", "cancelled"]),
+      trackingNumber: z.string().optional(),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const result = await db.updateOrderStatus(input.id, input.status, input.trackingNumber, ctx.store?.id);
+        const statusLabels: Record<string, string> = { pending: "en attente", processing: "en préparation", shipped: "expédiée", delivered: "livrée", cancelled: "annulée" };
+        logAudit(ctx, { action: "order.status", entityType: "order", entityId: input.id, summary: `Commande #${input.id} → ${statusLabels[input.status] || input.status}${input.trackingNumber ? ` (suivi ${input.trackingNumber})` : ""}`, metadata: { status: input.status } });
+        if (input.status === "shipped") {
+          const contact = await db.getOrderContactById(input.id, ctx.store?.id);
+          if (contact?.userEmail) {
+            const { sendOrderShippedEmail } = await import("./emails");
+            sendOrderShippedEmail({ email: contact.userEmail, name: contact.userName, orderId: input.id, trackingNumber: contact.trackingNumber }).catch(err => console.error("[email:order-shipped]", err));
+          }
+        }
+        return result;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "ORDER_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Commande introuvable." });
+        if (code === "ORDER_REQUIRES_APPROVAL") throw new TRPCError({ code: "BAD_REQUEST", message: "Acceptez d’abord cette commande dans le sas de validation." });
+        if (code === "ORDER_REQUIRES_REJECTION") throw new TRPCError({ code: "BAD_REQUEST", message: "Utilisez le bouton Refuser avec sa double confirmation pour annuler une commande." });
+        throw error;
+      }
+    }),
+    getTimeline: orderOperatorProcedure.input(z.object({ orderId: z.number().int().positive() })).query(async ({ ctx, input }) => {
+      return await db.getOrderTimeline(input.orderId, ctx.store?.id);
+    }),
+    refund: adminProcedure.input(z.object({ orderId: z.number().int().positive() })).mutation(async () => {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "Les remboursements Stripe sont désactivés pendant la phase Test. Utilisez uniquement le suivi manuel des retours.",
+      });
+    }),
+  }),
+
+  // Returns / RMA management (Lot C)
+  returns: router({
+    getAll: orderOperatorProcedure.query(async ({ ctx }) => {
+      return await db.getAllReturnRequestsAdmin(ctx.store?.id);
+    }),
+    updateStatus: orderOperatorProcedure.input(z.object({
+      id: z.number().int().positive(),
+      action: z.enum(["approve", "reject", "mark_received", "close"]),
+      note: z.string().trim().max(1000).optional(),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const result = await db.updateOwnerReturnRequest({ id: input.id, action: input.action, note: input.note, actorUserId: ctx.user.id, storeId: ctx.store?.id });
+        logAudit(ctx, { action: "return.status", entityType: "return", entityId: input.id, summary: `Retour #${input.id} : ${result.label} (commande #${result.orderId})`, metadata: { action: input.action, status: result.status } });
+        return result;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "RETURN_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Demande de retour introuvable dans cette boutique." });
+        if (code === "RETURN_NOTE_REQUIRED") throw new TRPCError({ code: "BAD_REQUEST", message: "Ajoutez une note ou des instructions claires pour cette décision." });
+        if (code === "RETURN_TRANSITION_INVALID") throw new TRPCError({ code: "BAD_REQUEST", message: "Cette transition de retour n’est pas autorisée." });
+        throw error;
+      }
+    }),
+  }),
+
+  // Users Management
+  users: router({
+    getAll: orderOperatorProcedure.query(async () => {
+      return await db.getAllUsersAdmin();
+    }),
+    getCustomerSegments: orderOperatorProcedure.query(async ({ ctx }) => {
+      return await db.getCustomerSegmentsAdmin(ctx.store?.id);
+    }),
+    create: adminProcedure.input(z.object({
+      name: z.string().trim().min(1).max(200),
+      email: z.string().trim().email().max(320),
+      role: z.enum(["user", "catalog_editor", "support_agent", "order_operator", "admin"]),
+    })).mutation(async ({ ctx, input }) => {
+            try {
+        const invitation = await db.createPendingInvitation(input);
+        logAudit(ctx, { action: "user.invite", entityType: "user", entityId: invitation.userId ?? null, summary: `Invitation créée pour ${input.email} (rôle ${input.role})`, metadata: { role: input.role } });
+        return {
+          success: true,
+          invitationLink: getAccountInvitationLink(invitation.invitation.token),
+          invitationExpiresAt: invitation.invitation.expiresAt,
+          recipient: { id: invitation.userId, name: invitation.name, email: invitation.email, role: invitation.role },
+          emailDeliveryAvailable: isTransactionalEmailConfigured(),
+        };
+      } catch (error) {
+        return rethrowUserManagementError(error);
+      }
+    }),
+    resendInvitation: orderOperatorProcedure.input(z.object({ id: z.number() })).mutation(async ({ input }) => {
+            try {
+        const invitation = await db.reissuePendingInvitation(input.id);
+        return {
+          success: true,
+          invitationLink: getAccountInvitationLink(invitation.invitation.token),
+          invitationExpiresAt: invitation.invitation.expiresAt,
+          recipient: { id: invitation.userId, name: invitation.name, email: invitation.email },
+          emailDeliveryAvailable: isTransactionalEmailConfigured(),
+        };
+      } catch (error) {
+        return rethrowUserManagementError(error);
+      }
+    }),
+    sendInvitationEmail: orderOperatorProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+      if (!isTransactionalEmailConfigured()) {
+        throw new TRPCError({ code: "PRECONDITION_FAILED", message: "L’envoi e-mail n’est pas encore configuré. Vérifiez la clé Brevo et l’adresse expéditrice vérifiée." });
+      }
+      try {
+        // Creating the token only at dispatch time keeps email delivery explicit
+        // and invalidates any previously copied personal link.
+        const invitation = await db.reissuePendingInvitation(input.id);
+        const delivery = await sendAccountInvitationEmail({
+          email: invitation.email,
+          name: invitation.name,
+          token: invitation.invitation.token,
+          tokenId: invitation.invitation.id,
+        });
+        if (!delivery.delivered) throw new Error(delivery.reason);
+        logAudit(ctx, {
+          action: "user.invitation.email.send",
+          entityType: "user",
+          entityId: invitation.userId,
+          summary: `Invitation envoyée par e-mail à ${invitation.email}`,
+          metadata: { provider: "brevo", messageId: delivery.id },
+        });
+        return {
+          success: true,
+          invitationLink: getAccountInvitationLink(invitation.invitation.token),
+          invitationExpiresAt: invitation.invitation.expiresAt,
+          recipient: { id: invitation.userId, name: invitation.name, email: invitation.email },
+        };
+      } catch (error) {
+        return rethrowUserManagementError(error);
+      }
+    }),
+    updateProfile: orderOperatorProcedure.input(z.object({
+      id: z.number(),
+      name: z.string().trim().min(1).max(200),
+      email: z.string().trim().email(),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const result = await db.updateUserProfileAdmin({ ...input, actorId: ctx.user.id });
+        logAudit(ctx, { action: "user.profile", entityType: "user", entityId: input.id, summary: `Profil client modifié : ${input.name} (${input.email})` });
+        return result;
+      } catch (error) {
+        return rethrowUserManagementError(error);
+      }
+    }),
+    updateRole: adminProcedure.input(z.object({
+      id: z.number(),
+      role: z.enum(["user", "catalog_editor", "support_agent", "order_operator", "admin"]),
+      confirmation: z.string().trim().max(400).optional(),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const result = await db.updateUserRoleAdmin({ ...input, actorId: ctx.user.id });
+        const name = (await db.getUserNameById(input.id)) ?? `#${input.id}`;
+        logAudit(ctx, { action: "user.role", entityType: "user", entityId: input.id, summary: `Rôle modifié pour ${name} → ${input.role}`, metadata: { role: input.role } });
+        return result;
+      } catch (error) {
+        return rethrowUserManagementError(error);
+      }
+    }),
+    setAccountStatus: orderOperatorProcedure.input(z.object({
+      id: z.number(),
+      accountStatus: z.enum(["active", "blocked"]),
+      confirmation: z.string().trim().max(400).optional(),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const result = await db.setUserAccountStatusAdmin({ ...input, actorId: ctx.user.id });
+        const name = (await db.getUserNameById(input.id)) ?? `#${input.id}`;
+        logAudit(ctx, { action: "user.status", entityType: "user", entityId: input.id, summary: `Compte ${input.accountStatus === "blocked" ? "bloqué" : "réactivé"} : ${name}`, metadata: { accountStatus: input.accountStatus } });
+        return result;
+      } catch (error) {
+        return rethrowUserManagementError(error);
+      }
+    }),
+    delete: adminProcedure.input(z.object({
+      id: z.number(),
+      confirmation: z.string().trim().max(400).optional(),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const name = (await db.getUserNameById(input.id)) ?? `#${input.id}`;
+        const result = await db.deleteUserAdmin({ ...input, actorId: ctx.user.id });
+        logAudit(ctx, { action: "user.delete", entityType: "user", entityId: input.id, summary: `Compte supprimé : ${name}` });
+        return result;
+      } catch (error) {
+        return rethrowUserManagementError(error);
+      }
+    }),
+  }),
+
+  // Reviews Moderation
+  reviews: router({
+    getAll: orderOperatorProcedure.query(async ({ ctx }) => {
+      return await db.getAllReviewsAdmin(ctx.store?.id);
+    }),
+    updateStatus: orderOperatorProcedure.input(z.object({
+      id: z.number(),
+      status: z.enum(["pending", "approved", "rejected"]),
+    })).mutation(async ({ ctx, input }) => {
+      return await db.updateReviewStatus(input.id, input.status, ctx.store?.id);
+    }),
+  }),
+
+  // Contact Messages
+  messages: router({
+    getAll: orderOperatorProcedure.query(async ({ ctx }) => {
+      return await db.getAllMessagesAdmin(ctx.store?.id);
+    }),
+    updateStatus: orderOperatorProcedure.input(z.object({
+      id: z.number(),
+      status: z.enum(["unread", "read", "archived"]),
+    })).mutation(async ({ ctx, input }) => {
+      return await db.updateMessageStatus(input.id, input.status, ctx.store?.id);
+    }),
+  }),
+
+  // Discount codes
+  promotions: router({
+    getAll: adminProcedure.query(async ({ ctx }) => {
+      return await db.getAllPromotions(ctx.store?.id);
+    }),
+    create: adminProcedure.input(z.object({
+      code: z.string().min(2).max(64),
+      type: z.enum(["percent", "fixed"]),
+      value: z.number().int().positive(),
+      minOrderAmount: z.number().int().nonnegative().optional(),
+      maxUses: z.number().int().positive().optional(),
+      active: z.number().int().min(0).max(1).default(1),
+      scope: z.enum(["all", "first_order", "category"]).default("all"),
+      categoryId: z.number().int().positive().nullable().optional(),
+      perUserLimit: z.number().int().positive().nullable().optional(),
+      startsAt: z.coerce.date().optional(),
+      expiresAt: z.coerce.date().optional(),
+    })).mutation(async ({ ctx, input }) => {
+      if (input.type === "percent" && input.value > 100) throw new Error("La remise en pourcentage ne peut pas dépasser 100");
+      if (input.expiresAt && input.startsAt && input.expiresAt <= input.startsAt) throw new Error("La date de fin doit être après la date de début");
+      if (input.scope === "category" && !input.categoryId) throw new TRPCError({ code: "BAD_REQUEST", message: "Sélectionnez une catégorie pour ce code ciblé." });
+      const result = await db.createPromotion(input, ctx.store?.id);
+      logAudit(ctx, { action: "promotion.create", entityType: "promotion", entityId: (result as any)?.id ?? null, summary: `Code promo créé : ${input.code} (${input.type === "percent" ? `${input.value}%` : `${(input.value / 100).toFixed(2)} CHF`}, portée ${input.scope})` });
+      return result;
+    }),
+    update: adminProcedure.input(z.object({
+      id: z.number(),
+      code: z.string().min(2).max(64),
+      type: z.enum(["percent", "fixed"]),
+      value: z.number().int().positive(),
+      minOrderAmount: z.number().int().nonnegative().optional(),
+      maxUses: z.number().int().positive().optional(),
+      active: z.number().int().min(0).max(1),
+      scope: z.enum(["all", "first_order", "category"]).default("all"),
+      categoryId: z.number().int().positive().nullable().optional(),
+      perUserLimit: z.number().int().positive().nullable().optional(),
+      startsAt: z.coerce.date().optional(),
+      expiresAt: z.coerce.date().optional(),
+    })).mutation(async ({ ctx, input }) => {
+      if (input.type === "percent" && input.value > 100) throw new Error("La remise en pourcentage ne peut pas dépasser 100");
+      if (input.scope === "category" && !input.categoryId) throw new TRPCError({ code: "BAD_REQUEST", message: "Sélectionnez une catégorie pour ce code ciblé." });
+      const { id, ...data } = input;
+      const result = await db.updatePromotion(id, data, ctx.store?.id);
+      logAudit(ctx, { action: "promotion.update", entityType: "promotion", entityId: id, summary: `Code promo modifié : ${input.code} (${input.active ? "actif" : "inactif"}, portée ${input.scope})` });
+      return result;
+    }),
+    delete: adminProcedure.input(z.number()).mutation(async ({ ctx, input }) => {
+      const result = await db.deletePromotion(input, ctx.store?.id);
+      logAudit(ctx, { action: "promotion.delete", entityType: "promotion", entityId: input, summary: `Code promo supprimé (#${input})` });
+      return result;
+    }),
+  }),
+
+  // Abandoned carts recovery (Lot B)
+  marketing: router({
+    abandonedCarts: adminProcedure.input(z.object({ olderThanHours: z.number().int().min(1).max(720).default(4) })).query(async ({ ctx, input }) => {
+      const carts = await db.getAbandonedCarts(input.olderThanHours, ctx.store?.id);
+      return { carts, emailConfigured: (await import("./transactionalEmail")).isTransactionalEmailConfigured() };
+    }),
+    sendCartReminder: adminProcedure.input(z.object({ cartId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+      const carts = await db.getAbandonedCarts(0, ctx.store?.id);
+      const cart = carts.find(c => c.cartId === input.cartId);
+      if (!cart) throw new TRPCError({ code: "NOT_FOUND", message: "Panier introuvable ou déjà vidé." });
+      if (!cart.userEmail) throw new TRPCError({ code: "BAD_REQUEST", message: "Ce client n'a pas d'adresse e-mail." });
+      const { sendAbandonedCartEmail } = await import("./emails");
+      const outcome = await sendAbandonedCartEmail({
+        email: cart.userEmail,
+        name: cart.userName,
+        cartId: cart.cartId,
+        total: cart.total,
+        items: cart.items,
+      });
+      if (!outcome.delivered) {
+        if (outcome.reason === "EMAIL_NOT_CONFIGURED") throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Service e-mail non configuré (ajoutez BREVO_API_KEY et une adresse expéditrice Brevo vérifiée)." });
+        if (outcome.reason === "TEMPLATE_DISABLED") throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Le modèle « panier abandonné » est désactivé." });
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "L'envoi de la relance a échoué." });
+      }
+      await db.markCartReminderSent(cart.cartId, ctx.store?.id);
+      logAudit(ctx, { action: "cart.reminder", entityType: "cart", entityId: cart.cartId, summary: `Relance panier envoyée à ${cart.userEmail} (${(cart.total / 100).toFixed(2)} CHF)` });
+      return { success: true };
+    }),
+  }),
+
+  // Customizable transactional email templates (Lot B)
+  emailTemplates: router({
+    getAll: adminProcedure.query(async () => {
+      return {
+        templates: await db.getAllEmailTemplates(),
+        emailConfigured: (await import("./transactionalEmail")).isTransactionalEmailConfigured(),
+      };
+    }),
+    marketingStatus: platformProcedure.query(() => getBrevoMarketingStatus()),
+    getMarketingLists: platformProcedure.query(async () => {
+      const status = getBrevoMarketingStatus();
+      if (!status.configured) {
+        throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Brevo n’est pas encore configuré. Ajoutez la clé API et un expéditeur vérifié au déploiement." });
+      }
+      try {
+        return { lists: await listBrevoMarketingLists() };
+      } catch (error) {
+        console.error("[Brevo] marketing-list lookup failed", String(error));
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Les listes Brevo sont indisponibles. Vérifiez la configuration Brevo puis réessayez." });
+      }
+    }),
+    createMarketingDraft: platformProcedure.input(z.object({
+      name: z.string().trim().min(3).max(120),
+      subject: z.string().trim().min(3).max(200),
+      previewText: z.string().trim().max(180).optional(),
+      htmlContent: z.string().trim().min(11).max(900_000),
+      listIds: z.array(z.number().int().positive()).min(1).max(20),
+    })).mutation(async ({ ctx, input }) => {
+      const status = getBrevoMarketingStatus();
+      if (!status.configured) {
+        throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Brevo n’est pas encore configuré. Ajoutez la clé API et un expéditeur vérifié au déploiement." });
+      }
+      try {
+        // Brevo creates this endpoint's result in draft status. The application
+        // deliberately offers no send action: a human reviews recipients,
+        // unsubscribe settings and content in Brevo before any campaign launch.
+        const campaign = await createBrevoMarketingCampaignDraft(input);
+        logAudit(ctx, {
+          action: "brevo.marketing_campaign.draft.create",
+          entityType: "email_campaign",
+          entityId: campaign.id,
+          summary: `Brouillon Brevo créé : ${input.name}`,
+          metadata: { provider: "brevo", listIds: input.listIds, sent: false },
+        });
+        return { success: true, campaignId: campaign.id, mode: "draft_only" as const };
+      } catch (error) {
+        console.error("[Brevo] marketing draft creation failed", String(error));
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Le brouillon Brevo n’a pas pu être créé. Vérifiez l’expéditeur, les listes et la configuration Brevo." });
+      }
+    }),
+    save: adminProcedure.input(z.object({
+      type: z.enum(["order_confirmation", "order_shipped", "abandoned_cart"]),
+      subject: z.string().trim().min(2).max(200),
+      heading: z.string().trim().min(2).max(200),
+      body: z.string().trim().min(2).max(6000),
+      buttonLabel: z.string().trim().max(60),
+      enabled: z.boolean(),
+    })).mutation(async ({ ctx, input }) => {
+      const { type, ...template } = input;
+      const result = await db.saveEmailTemplate(type, template);
+      logAudit(ctx, { action: "email_template.update", entityType: "email_template", entityId: null, summary: `Modèle e-mail « ${type} » mis à jour (${template.enabled ? "activé" : "désactivé"})` });
+      return result;
+    }),
+  }),
+
+  // Live SEO snippet (Lot C)
+  seo: router({
+    get: adminProcedure.query(async ({ ctx }) => {
+      const all = await db.getAllStorefrontSettings(ctx.store?.id);
+      const find = (key: string) => all.find(s => s.key === key)?.value ?? "";
+      return {
+        title: find("seo_default_title") || "MAZIGHO — Boutique en ligne créative & tendance",
+        description: find("seo_default_description") || "Découvrez MAZIGHO : une sélection soignée de produits et créations originales, livrés en Suisse et en Europe.",
+        siteUrl: (process.env.MAZIGHO_PUBLIC_URL?.trim() || "https://www.mazigho.ch").replace(/\/$/, ""),
+      };
+    }),
+    save: adminProcedure.input(z.object({
+      title: z.string().trim().min(3).max(70),
+      description: z.string().trim().min(10).max(320),
+    })).mutation(async ({ ctx, input }) => {
+      await db.upsertStorefrontSetting({ key: "seo_default_title", value: input.title, description: "Titre SEO par défaut" }, ctx.store?.id);
+      await db.upsertStorefrontSetting({ key: "seo_default_description", value: input.description, description: "Méta-description SEO par défaut" }, ctx.store?.id);
+      logAudit(ctx, { action: "seo.update", entityType: "seo", entityId: null, summary: `Aperçu SEO mis à jour : « ${input.title.slice(0, 60)} »` });
+      return { success: true };
+    }),
+  }),
+
+  // Initial setup: non-sensitive storefront identity only. Technical credentials remain deployment secrets.
+  setup: router({
+    getStatus: adminProcedure.query(async ({ ctx }) => await db.getSetupWizardStatus(ctx.store?.id)),
+    completeNonSensitive: adminProcedure.input(z.object({
+      siteName: z.string().trim().min(2, "Saisissez un nom de boutique.").max(100),
+      contactEmail: z.string().trim().email("Saisissez un e-mail de support valide.").max(320),
+    })).mutation(async ({ ctx, input }) => {
+      const status = await db.completeSetupWizard(input, ctx.store?.id);
+      logAudit(ctx, {
+        action: "setup.complete_non_sensitive",
+        entityType: "settings",
+        entityId: null,
+        summary: "Assistant de démarrage complété pour les réglages non sensibles.",
+      });
+      return status;
+    }),
+  }),
+
+  // Site settings
+  settings: router({
+    getAll: adminProcedure.query(async ({ ctx }) => {
+      return await db.getAllStorefrontSettings(ctx.store?.id);
+    }),
+    update: adminProcedure.input(z.object({
+      key: z.enum(["site_name", "contact_email", "currency", "store_currency_code", "store_currency_rate_bps", "shipping_policy", "free_shipping_threshold", "flat_shipping_rate", "meta_pixel_id", "tiktok_pixel_id"]),
+      value: z.string().max(1000),
+      description: z.string().optional(),
+    }).superRefine((input, ctx) => {
+      if (input.key === "store_currency_code" && !(SUPPORTED_STORE_CURRENCIES as readonly string[]).includes(input.value)) {
+        ctx.addIssue({ code: "custom", message: "Devise de vente non prise en charge" });
+      }
+      if (input.key === "store_currency_rate_bps" && (!/^\d{4,7}$/.test(input.value) || Number(input.value) > 2_000_000)) {
+        ctx.addIssue({ code: "custom", message: "Taux de conversion invalide" });
+      }
+      if (input.key === "shipping_policy" && input.value !== "included" && input.value !== "flat_rate") {
+        ctx.addIssue({ code: "custom", message: "Politique de livraison invalide" });
+      }
+      if ((input.key === "free_shipping_threshold" || input.key === "flat_shipping_rate") && !/^\d{1,8}$/.test(input.value)) {
+        ctx.addIssue({ code: "custom", message: "Montant de livraison invalide" });
+      }
+      if (input.key === "meta_pixel_id" && input.value !== "" && !isValidMetaPixelId(input.value)) {
+        ctx.addIssue({ code: "custom", message: "Identifiant Meta Pixel invalide" });
+      }
+      if (input.key === "tiktok_pixel_id" && input.value !== "" && !isValidTikTokPixelId(input.value)) {
+        ctx.addIssue({ code: "custom", message: "Identifiant TikTok Pixel invalide" });
+      }
+    })).mutation(async ({ ctx, input }) => {
+      return await db.upsertStorefrontSetting(input, ctx.store?.id);
+    }),
+  }),
+
+  // Références de comptes : e-mail et note administrative uniquement, jamais de secret technique.
+  supplierAccounts: router({
+    get: platformProcedure.query(async () => {
+      return await db.getSupplierAccountReferences();
+    }),
+    update: platformProcedure.input(z.array(z.object({
+      service: z.enum(["cj", "aliexpress", "bigbuy", "printful"]),
+      name: z.string().trim().min(2).max(80),
+      email: z.union([z.literal(""), z.string().trim().email().max(254)]),
+      note: z.string().trim().max(250),
+    })).length(4)).mutation(async ({ input }) => {
+      return await db.updateSupplierAccountReferences(input);
+    }),
+  }),
+
+  // Supplier connections: credentials stay server-side in Vercel environment variables.
+  suppliers: router({
+    cjStatus: adminProcedure.query(() => getCjConnectionStatus()),
+    verifyCj: adminProcedure.mutation(() => verifyCjConnection()),
+    aliExpressStatus: adminProcedure.query(() => getAliExpressConnectionStatus()),
+    verifyAliExpress: adminProcedure.mutation(() => verifyAliExpressPreparation()),
+    bigBuyStatus: adminProcedure.query(() => getBigBuyConnectionStatus()),
+    verifyBigBuy: adminProcedure.mutation(() => verifyBigBuyPreparation()),
+    odooStatus: adminProcedure.query(() => getOdooStatus()),
+    verifyOdoo: adminProcedure.mutation(() => verifyOdooConnection()),
+    cjBatchCategories: adminProcedure.query(() => listCjBatchCategories()),
+    cjFashionBatchCategories: adminProcedure.query(() => listCjFashionBatchCategories()),
+    cjCustomSourcingConfig: adminProcedure.query(() => ({
+      countries: CJ_CUSTOM_SOURCING_COUNTRIES,
+      shippingMethods: CJ_CUSTOM_SOURCING_SHIPPING_METHODS,
+      rules: CJ_CUSTOM_SOURCING_RULES,
+      limits: CJ_CUSTOM_SOURCING_LIMITS,
+    })),
+    cjGlobalWarehouses: adminProcedure.query(async () => {
+      try {
+        return await getCjGlobalWarehouses();
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "CJ_UNREACHABLE") throw new TRPCError({ code: "TIMEOUT", message: "CJ ne répond pas pour la liste des entrepôts. Vous pouvez garder « tous entrepôts compatibles » et réessayer plus tard." });
+        throw new TRPCError({ code: "BAD_GATEWAY", message: "La liste des entrepôts CJ est momentanément indisponible. Le sourcing sans préférence d’entrepôt reste disponible." });
+      }
+    }),
+    importCjCustomDrafts: adminProcedure.input(z.object({
+      keyword: z.string().trim().min(2, "Saisissez au moins 2 caractères pour la niche.").max(120),
+      categoryIds: z.array(z.number().int().positive()).min(1, "Cochez au moins une catégorie.").max(12).refine(values => new Set(values).size === values.length, "Une catégorie ne peut être sélectionnée qu’une fois."),
+      countryCodes: z.array(z.enum(["CH", "FR", "DE", "IT", "AT", "BE", "NL", "ES"])).min(1, "Cochez au moins un pays de destination.").max(8).refine(values => new Set(values).size === values.length, "Un pays ne peut être sélectionné qu’une fois."),
+      warehouseCountryCodes: z.array(z.string().trim().regex(/^[A-Z]{2}$/, "Utilisez un code d’entrepôt à deux lettres.")).max(12).refine(values => new Set(values).size === values.length, "Un entrepôt ne peut être sélectionné qu’une fois."),
+      shippingMethodIds: z.array(z.enum(["cjpacket_fast", "express", "tracked_network"])).max(3).refine(values => new Set(values).size === values.length, "Une famille de transport ne peut être sélectionnée qu’une fois."),
+      requestedProducts: z.number().int().min(CJ_CUSTOM_SOURCING_LIMITS.minRequestedProducts).max(CJ_CUSTOM_SOURCING_LIMITS.maxRequestedProducts),
+      draftLimit: z.number().int().min(CJ_CUSTOM_SOURCING_LIMITS.minDraftLimit).max(CJ_CUSTOM_SOURCING_LIMITS.maxDraftLimit),
+      maxWeightG: z.number().int().min(CJ_CUSTOM_SOURCING_LIMITS.minWeightG).max(CJ_CUSTOM_SOURCING_LIMITS.maxWeightG),
+      priceMultiplier: z.number().min(CJ_CUSTOM_SOURCING_LIMITS.minPriceMultiplier).max(CJ_CUSTOM_SOURCING_LIMITS.maxPriceMultiplier),
+      searchPage: z.number().int().min(1).max(Math.ceil(CJ_CUSTOM_SOURCING_LIMITS.maxScannedCandidates / CJ_CUSTOM_SOURCING_LIMITS.catalogPageSize)).optional(),
+      candidateOffset: z.number().int().min(0).max(CJ_CUSTOM_SOURCING_LIMITS.catalogPageSize - 1).optional(),
+      rules: z.object({
+        requireVerifiedPositiveStock: z.boolean(),
+        enforceMaxWeight: z.boolean(),
+        requireProductImages: z.boolean(),
+        enforceSelectedShippingMethods: z.boolean(),
+        enforceMaxDeliveryDays: z.boolean(),
+        maxDeliveryDays: z.number().int().min(1).max(CJ_CUSTOM_SOURCING_LIMITS.maxDeliveryDays),
+      }),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const result = await importCjCustomDraftBatch(input, ctx.store?.id);
+        logAudit(ctx, {
+          action: "product.import_cj_custom",
+          entityType: "category",
+          entityId: input.categoryIds[0] ?? null,
+          summary: `Sourcing CJ personnalisé « ${input.keyword} » : ${result.imported}/${result.requested} brouillon(s) créé(s) pour ${result.countryNames.join(", ")}.`,
+          metadata: {
+            keyword: input.keyword,
+            categoryIds: input.categoryIds,
+            countryCodes: input.countryCodes,
+            warehouseCountryCodes: input.warehouseCountryCodes,
+            shippingMethodIds: input.shippingMethodIds,
+            requestedProducts: input.requestedProducts,
+            searchPage: input.searchPage ?? 1,
+            candidateOffset: input.candidateOffset ?? 0,
+            draftLimit: input.draftLimit,
+            maxWeightG: input.maxWeightG,
+            priceMultiplier: input.priceMultiplier,
+            rules: input.rules,
+            imported: result.imported,
+            skipped: result.skipped,
+            failures: result.failures.length,
+            shippingMethods: result.shippingMethodLabels,
+          },
+        });
+        return result;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "CJ_CUSTOM_CATEGORY_INVALID") throw new TRPCError({ code: "NOT_FOUND", message: "Choisissez une catégorie MAZIGHO standard pour recevoir les brouillons." });
+        if (code === "CJ_CUSTOM_DESTINATION_INVALID") throw new TRPCError({ code: "BAD_REQUEST", message: "La destination choisie n’est pas prise en charge par le sourcing CJ." });
+        if (code === "CJ_CUSTOM_WAREHOUSE_INVALID") throw new TRPCError({ code: "BAD_REQUEST", message: "La préférence d’entrepôt est invalide. Choisissez uniquement les entrepôts proposés par CJ." });
+        if (code === "CJ_CUSTOM_SHIPPING_METHOD_INVALID") throw new TRPCError({ code: "BAD_REQUEST", message: "Choisissez au moins une famille de transport autorisée." });
+        if (code === "CJ_CUSTOM_WEIGHT_INVALID") throw new TRPCError({ code: "BAD_REQUEST", message: `Le poids maximal doit être compris entre ${CJ_CUSTOM_SOURCING_LIMITS.minWeightG} g et ${CJ_CUSTOM_SOURCING_LIMITS.maxWeightG.toLocaleString("fr-CH")} g.` });
+        if (code === "CJ_CUSTOM_MULTIPLIER_INVALID") throw new TRPCError({ code: "BAD_REQUEST", message: `Le multiplicateur doit être compris entre ${CJ_CUSTOM_SOURCING_LIMITS.minPriceMultiplier} et ${CJ_CUSTOM_SOURCING_LIMITS.maxPriceMultiplier}.` });
+        if (code === "CJ_CUSTOM_DELIVERY_DAYS_INVALID") throw new TRPCError({ code: "BAD_REQUEST", message: `Le délai maximal doit être compris entre 1 et ${CJ_CUSTOM_SOURCING_LIMITS.maxDeliveryDays} jours.` });
+        if (code === "CJ_CUSTOM_SCAN_CURSOR_INVALID") throw new TRPCError({ code: "BAD_REQUEST", message: "La progression du sourcing est invalide. Relancez une nouvelle recherche." });
+        if (code === "CJ_UNREACHABLE") throw new TRPCError({ code: "TIMEOUT", message: "CJ ne répond pas pour le moment. Aucun brouillon non vérifié n’a été créé." });
+        if (code === "CJ_AUTHENTICATION_FAILED") throw new TRPCError({ code: "UNAUTHORIZED", message: "CJ a refusé l’autorisation. Vérifiez la connexion avant de relancer le sourcing." });
+        throw new TRPCError({ code: "BAD_GATEWAY", message: "Le sourcing personnalisé n’a pas pu être terminé. Les brouillons déjà vérifiés restent disponibles dans Produits." });
+      }
+    }),
+    importCjDraftBatch: adminProcedure.input(z.object({
+      categorySlug: z.enum(["high-tech-gadgets", "maison-organisation", "beaute-bien-etre", "sport-fitness", "auto-accessoires", "mode", "mode-femme", "mode-homme", "mode-enfant"]),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const result = await importCjDraftBatchForCategory(input.categorySlug, ctx.store?.id);
+        logAudit(ctx, {
+          action: "product.import_cj_batch",
+          entityType: "category",
+          summary: `Import CJ par lot : ${result.imported}/${result.requested} brouillon(s) créé(s) dans « ${result.category} »`,
+          metadata: { categorySlug: input.categorySlug, imported: result.imported, skipped: result.skipped, failures: result.failures.length },
+        });
+        return result;
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "CJ_BATCH_CATEGORY_INVALID" || code === "CJ_BATCH_CATEGORY_NOT_FOUND") {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Cette catégorie MAZIGHO ne peut pas recevoir un lot CJ automatique." });
+        }
+        if (code === "CJ_API_KEY_NOT_CONFIGURED") {
+          throw new TRPCError({ code: "PRECONDITION_FAILED", message: "La clé CJ doit être configurée dans Vercel avant l’import par lot." });
+        }
+        if (code === "CJ_AUTHENTICATION_FAILED") {
+          throw new TRPCError({ code: "UNAUTHORIZED", message: "CJ a refusé l’autorisation. Vérifiez la connexion CJ avant de relancer le lot." });
+        }
+        if (code === "CJ_UNREACHABLE") {
+          throw new TRPCError({ code: "TIMEOUT", message: "CJ ne répond pas pour le moment. Aucun produit non vérifié n’a été importé." });
+        }
+        throw new TRPCError({ code: "BAD_GATEWAY", message: "Impossible de terminer ce lot CJ. Les brouillons déjà créés restent disponibles dans Produits." });
+      }
+    }),
+    curateCjFashionDrafts: adminProcedure.mutation(async ({ ctx }) => {
+      try {
+        const result = await curateCjFashionDrafts(ctx.store?.id);
+        logAudit(ctx, {
+          action: "product.curate_cj_fashion_drafts",
+          entityType: "product",
+          summary: `Nettoyage Mode CJ : ${result.enriched} fiche(s) enrichie(s), ${result.archived} fiche(s) archivée(s)`,
+          metadata: { reviewed: result.reviewed, enriched: result.enriched, archived: result.archived },
+        });
+        return result;
+      } catch (error) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Impossible de nettoyer les brouillons Mode CJ pour le moment. Aucun produit n’a été publié." });
+      }
+    }),
+    prepareCjImport: adminProcedure.input(z.object({
+      productId: z.string().trim().min(1).max(128),
+      productSku: z.string().trim().max(200).optional(),
+      countryCode: z.string().trim().optional().transform(value => value || undefined).refine(value => value === undefined || /^[A-Z]{2}$/.test(value), "Utilisez un code pays à deux lettres."),
+    })).mutation(async ({ input }) => {
+      try {
+        return await prepareCjProductImport(input);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "CJ_UNREACHABLE") throw new TRPCError({ code: "BAD_GATEWAY", message: "CJdropshipping est momentanément inaccessible. Réessayez plus tard." });
+        if (code === "CJ_PRODUCT_DETAILS_FAILED") throw new TRPCError({ code: "NOT_FOUND", message: "La fiche CJ n’est plus disponible. Choisissez un autre produit." });
+        throw new TRPCError({ code: "BAD_GATEWAY", message: "Impossible de préparer cette fiche CJ pour le moment." });
+      }
+    }),
+    checkCjSwissDelivery: adminProcedure.input(z.object({
+      productId: z.string().trim().min(1).max(128),
+      productSku: z.string().trim().max(200).optional(),
+    })).mutation(async ({ input }) => {
+      try {
+        return await checkCjSwissDelivery(input.productId, input.productSku);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "CJ_PRODUCT_DETAILS_FAILED") return {
+          productId: input.productId,
+          deliverable: false,
+          variantLabel: null,
+          costUsd: null,
+          delay: null,
+          message: "CJ n’a pas renvoyé le détail de cette fiche dans le contrôle automatique. Vérifiez le devis Suisse depuis la fiche CJ officielle avant toute publication.",
+        };
+        if (code === "CJ_UNREACHABLE") throw new TRPCError({ code: "TIMEOUT", message: "CJ ne répond pas pour la vérification Suisse. Réessayez plus tard." });
+        throw new TRPCError({ code: "BAD_GATEWAY", message: "Impossible de vérifier la livraison Suisse pour le moment." });
+      }
+    }),
+    quoteCjDelivery: adminProcedure.input(z.object({
+      productId: z.string().trim().min(1).max(128),
+      variantId: z.string().trim().min(1).max(128),
+      countryCodes: z.array(z.enum(["CH", "FR", "DE", "IT", "AT", "BE", "NL", "ES"])).min(1).max(8).optional(),
+    })).mutation(async ({ input }) => {
+      try {
+        return await quoteCjDelivery(input);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "CJ_VARIANT_NOT_FOUND") throw new TRPCError({ code: "NOT_FOUND", message: "Cette variante CJ n’est plus disponible. Actualisez la fiche produit." });
+        if (code === "CJ_DELIVERY_DESTINATION_INVALID") throw new TRPCError({ code: "BAD_REQUEST", message: "Sélectionnez au moins une destination prise en charge." });
+        if (code === "CJ_UNREACHABLE") throw new TRPCError({ code: "TIMEOUT", message: "CJ ne répond pas pour le devis de livraison. Réessayez plus tard." });
+        throw new TRPCError({ code: "BAD_GATEWAY", message: "Impossible de calculer les frais de livraison CJ pour le moment." });
+      }
+    }),
+    searchCjByImage: adminProcedure.input(z.object({
+      imageDataUrl: z.string().min(32).max(6_000_000),
+      countryCode: z.string().trim().optional().transform(value => value || undefined).refine(value => value === undefined || /^[A-Z]{2}$/.test(value), "Utilisez un code pays à deux lettres."),
+    })).mutation(async ({ input }) => {
+      try {
+        return await searchCjCatalogByImage(input);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "CJ_IMAGE_ANALYSIS_NOT_CONFIGURED") throw new TRPCError({ code: "PRECONDITION_FAILED", message: "La recherche par photo doit encore être activée côté serveur. La recherche CJ par mot-clé reste disponible." });
+        if (code === "CJ_IMAGE_INVALID") throw new TRPCError({ code: "BAD_REQUEST", message: "Utilisez une image JPG, PNG ou WebP valide." });
+        if (code === "CJ_IMAGE_TOO_LARGE") throw new TRPCError({ code: "PAYLOAD_TOO_LARGE", message: "L’image doit faire au maximum 4 Mo." });
+        if (code === "CJ_IMAGE_NOT_PRODUCT") throw new TRPCError({ code: "BAD_REQUEST", message: "Cette image ne permet pas d’identifier clairement un produit. Essayez une photo plus nette." });
+        if (code === "CJ_UNREACHABLE") throw new TRPCError({ code: "BAD_GATEWAY", message: "CJdropshipping est momentanément inaccessible. Réessayez plus tard." });
+        throw new TRPCError({ code: "BAD_GATEWAY", message: "Impossible d’analyser cette image pour le moment." });
+      }
+    }),
+    searchCj: adminProcedure.input(z.object({
+      keyword: z.string().trim().min(2, "Saisissez au moins 2 caractères.").max(120),
+      page: z.number().int().min(1).max(1000).default(1),
+      countryCode: z.string().trim().optional().transform(value => value || undefined).refine(value => value === undefined || /^[A-Z]{2}$/.test(value), "Utilisez un code pays à deux lettres."),
+      freeShippingOnly: z.boolean().default(false),
+    })).mutation(async ({ input }) => {
+      try {
+        return await searchCjCatalog(input);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === "CJ_API_KEY_NOT_CONFIGURED") throw new TRPCError({ code: "PRECONDITION_FAILED", message: "La clé CJ doit être configurée dans Vercel avant la recherche." });
+        if (code === "CJ_AUTHENTICATION_FAILED") throw new TRPCError({ code: "UNAUTHORIZED", message: "CJ a refusé l’autorisation. Vérifiez la clé API dans Vercel." });
+        if (code === "CJ_UNREACHABLE") throw new TRPCError({ code: "TIMEOUT", message: "CJdropshipping ne répond pas pour le moment. Réessayez plus tard." });
+        throw new TRPCError({ code: "BAD_GATEWAY", message: "Impossible de lire le catalogue CJ pour le moment." });
+      }
+    }),
+  }),
+
+  integrations: router({
+    make: router({
+      status: platformProcedure.query(() => getMakeIntegrationStatus()),
+      test: platformProcedure.mutation(() => sendMakeIntegrationTest()),
+    }),
+    odoo: router({
+      status: platformProcedure.query(() => getOdooCatalogSyncStatus()),
+      syncCatalog: platformProcedure.mutation(async ({ ctx }) => {
+        try {
+          const products = await db.getProductsForOdooSync(ctx.store?.id);
+          if (products.length === 0) {
+            return {
+              attempted: 0,
+              created: 0,
+              updated: 0,
+              failed: 0,
+              failures: [],
+              stockNote: "Aucun produit MAZIGHO n’est disponible à synchroniser.",
+            };
+          }
+          return await syncCatalogToOdoo(products);
+        } catch (error) {
+          const code = error instanceof Error ? error.message : "ODOO_UNKNOWN_ERROR";
+          if (code === "ODOO_NOT_CONFIGURED") {
+            throw new TRPCError({ code: "PRECONDITION_FAILED", message: "La connexion Odoo doit être configurée dans les variables d’environnement serveur." });
+          }
+          if (code === "ODOO_AUTHENTICATION_FAILED") {
+            throw new TRPCError({ code: "UNAUTHORIZED", message: "Odoo a refusé les identifiants configurés. Vérifiez les variables serveur, sans les afficher dans le panneau." });
+          }
+          if (code === "ODOO_UNREACHABLE") {
+            throw new TRPCError({ code: "TIMEOUT", message: "Odoo ne répond pas pour le moment. Réessayez plus tard." });
+          }
+          if (/external api|one app free|custom plan|access denied/i.test(code)) {
+            throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Odoo a refusé l’API externe. Une instance Odoo Online One App Free ne permet pas cette synchronisation directe ; utilisez une instance avec accès API externe." });
+          }
+          throw new TRPCError({ code: "BAD_GATEWAY", message: "Odoo a refusé la synchronisation du catalogue. Consultez l’état de connexion Odoo dans l’administration." });
+        }
+      }),
+    }),
+  }),
+
+  // Operator-wide visual identity. It is deliberately separate from design:
+  // storefront owners cannot alter Studio or the SaaS landing identity.
+  platformIdentity: router({
+    get: platformProcedure.query(async () => await db.getPlatformIdentity()),
+    save: platformProcedure.input(z.object({
+      studio: z.object({
+        logoUrl: z.union([z.literal(""), visualUrlSchema]).default(""),
+        faviconUrl: z.union([z.literal(""), visualUrlSchema]).default(""),
+      }),
+      saas: z.object({
+        logoUrl: z.union([z.literal(""), visualUrlSchema]).default(""),
+        faviconUrl: z.union([z.literal(""), visualUrlSchema]).default(""),
+      }),
+    })).mutation(async ({ ctx, input }) => {
+      const identity = await db.savePlatformIdentity(input);
+      logAudit(ctx, {
+        action: "platform_identity.update",
+        entityType: "platform_identity",
+        entityId: 1,
+        summary: "Identité visuelle Studio et Pro mise à jour.",
+        metadata: {
+          studioLogo: Boolean(identity.studio.logoUrl),
+          studioFavicon: Boolean(identity.studio.faviconUrl),
+          saasLogo: Boolean(identity.saas.logoUrl),
+          saasFavicon: Boolean(identity.saas.faviconUrl),
+        },
+      });
+      return identity;
+    }),
+    uploadImage: platformProcedure.input(z.object({
+      dataUrl: z.string().max(7_100_000),
+      fileName: z.string().trim().min(1).max(160),
+      surface: z.enum(["studio", "saas"]),
+    })).mutation(async ({ ctx, input }) => {
+      const image = decodeDesignImage(input.dataUrl);
+      const safeName = input.fileName.replace(/[^a-z0-9_-]/gi, "-").replace(/-+/g, "-").slice(0, 80) || "identite";
+      const key = `platform-identity/${input.surface}/${ctx.user.id}/${Date.now()}-${safeName}.${image.extension}`;
+      const { url } = await storagePut(key, image.buffer, image.contentType);
+      return { url };
+    }),
+  }),
+
+  // Visual customisation of the public storefront
+  design: router({
+    get: adminProcedure.query(async ({ ctx }) => {
+      return await db.getDesignProfile(ctx.store?.id);
+    }),
+    translateNavigation: adminProcedure.input(z.object({
+      locales: z.array(z.enum(["de", "it", "en", "es", "nl", "ar"])).min(1).max(6),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const { translateNavigationFromFrench } = await import("./navigationTranslation");
+        return await translateNavigationFromFrench(input.locales, ctx.store?.id);
+      } catch {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "La traduction des libellés est momentanément indisponible. Réessayez dans quelques instants." });
+      }
+    }),
+    update: adminProcedure.input(z.object({
+      paletteId: z.enum(["terracotta", "sage", "midnight", "rose", "violet"]),
+      typographyId: z.enum(["editorial", "modern", "classic"]),
+      brandName: z.string().trim().min(2).max(48),
+      brandMessage: z.string().trim().max(120).default(""),
+      brandLogoUrl: z.union([z.literal(""), visualUrlSchema]).default(""),
+      faviconUrl: z.union([z.literal(""), visualUrlSchema]).default(""),
+      highlightEyebrow: z.string().trim().min(2).max(120),
+      highlightTitle: z.string().trim().min(2).max(180),
+      highlightText: z.string().trim().min(2).max(600),
+      highlightImageUrl: visualUrlSchema,
+      storyTitle: z.string().trim().min(2).max(180),
+      storyText: z.string().trim().min(2).max(1000),
+      storyImageUrl: visualUrlSchema,
+      editorialEyebrow: z.string().trim().min(2).max(120),
+      editorialTitle: z.string().trim().min(2).max(180),
+      editorialImageUrl: visualUrlSchema,
+      navigationHome: z.string().trim().min(1).max(40),
+      navigationShop: z.string().trim().min(1).max(40),
+      navigationCategories: z.string().trim().min(1).max(40),
+      navigationCreations: z.string().trim().min(1).max(40),
+      navigationContact: z.string().trim().min(1).max(40),
+      navigationTranslations: z.object({
+        de: z.object({ navigationHome: z.string().trim().min(1).max(40), navigationShop: z.string().trim().min(1).max(40), navigationCategories: z.string().trim().min(1).max(40), navigationCreations: z.string().trim().min(1).max(40), navigationContact: z.string().trim().min(1).max(40) }).optional(),
+        it: z.object({ navigationHome: z.string().trim().min(1).max(40), navigationShop: z.string().trim().min(1).max(40), navigationCategories: z.string().trim().min(1).max(40), navigationCreations: z.string().trim().min(1).max(40), navigationContact: z.string().trim().min(1).max(40) }).optional(),
+        en: z.object({ navigationHome: z.string().trim().min(1).max(40), navigationShop: z.string().trim().min(1).max(40), navigationCategories: z.string().trim().min(1).max(40), navigationCreations: z.string().trim().min(1).max(40), navigationContact: z.string().trim().min(1).max(40) }).optional(),
+        es: z.object({ navigationHome: z.string().trim().min(1).max(40), navigationShop: z.string().trim().min(1).max(40), navigationCategories: z.string().trim().min(1).max(40), navigationCreations: z.string().trim().min(1).max(40), navigationContact: z.string().trim().min(1).max(40) }).optional(),
+        nl: z.object({ navigationHome: z.string().trim().min(1).max(40), navigationShop: z.string().trim().min(1).max(40), navigationCategories: z.string().trim().min(1).max(40), navigationCreations: z.string().trim().min(1).max(40), navigationContact: z.string().trim().min(1).max(40) }).optional(),
+        ar: z.object({ navigationHome: z.string().trim().min(1).max(40), navigationShop: z.string().trim().min(1).max(40), navigationCategories: z.string().trim().min(1).max(40), navigationCreations: z.string().trim().min(1).max(40), navigationContact: z.string().trim().min(1).max(40) }).optional(),
+      }).default({}),
+      showDiscovery: z.boolean(),
+      showStory: z.boolean(),
+      showTestimonials: z.boolean(),
+      showEditorial: z.boolean(),
+      showFeatured: z.boolean().default(true),
+      cataloguePageCopyCustomized: z.boolean().default(false),
+      promosTitle: z.string().trim().min(2).max(120).default("Promotions spéciales"),
+      promosLead: z.string().trim().min(2).max(420).default("Découvrez les réductions applicables aux produits dont la livraison est confirmée vers {country}."),
+      promosBannerTitle: z.string().trim().min(2).max(120).default("Réductions affichées dans le prix"),
+      promosBannerText: z.string().trim().min(2).max(420).default("Aucun code promotionnel supplémentaire n’est actif actuellement."),
+      promosEmptyText: z.string().trim().min(2).max(420).default("Aucune promotion n’est encore confirmée pour la livraison vers {country}."),
+      promosAllProductsLabel: z.string().trim().min(2).max(60).default("Voir tous les produits"),
+      newArrivalsTitle: z.string().trim().min(2).max(120).default("Nouveautés"),
+      newArrivalsLead: z.string().trim().min(2).max(420).default("Découvrez les dernières nouveautés dont la livraison est confirmée vers {country}."),
+      newArrivalsEmptyText: z.string().trim().min(2).max(420).default("Aucune nouveauté n’est encore confirmée pour la livraison vers {country}."),
+      bestSellersTitle: z.string().trim().min(2).max(120).default("Best-sellers"),
+      bestSellersLead: z.string().trim().min(2).max(420).default("Une sélection affichée uniquement lorsque la livraison est confirmée vers {country}."),
+      bestSellersTopLabel: z.string().trim().min(2).max(60).default("🏆 Top {rank}"),
+      bestSellersEmptyText: z.string().trim().min(2).max(420).default("Aucun best-seller n’est encore confirmé pour la livraison vers {country}."),
+      showAnnouncement: z.boolean().default(true),
+      announcementItems: z.array(z.string().trim().max(120)).length(3).default(["Une sélection pensée pour le quotidien", "Prix tout compris · livraison offerte", "Coût et délai confirmés avant achat"]),
+      shopPageCopyCustomized: z.boolean().default(false),
+      shopEyebrow: z.string().trim().max(120).default("La boutique"),
+      shopTitle: z.string().trim().min(2).max(180).default("Nos trouvailles du moment"),
+      shopIntro: z.string().trim().min(2).max(420).default("Découvrez une sélection de produits dont la livraison est confirmée vers {country}."),
+      shopProductsEyebrow: z.string().trim().max(120).default("Prêts à découvrir"),
+      shopProductsTitle: z.string().trim().min(2).max(180).default("Les produits disponibles"),
+      showShopEditorial: z.boolean().default(true),
+      shopEditorialEyebrow: z.string().trim().max(120).default("Notre sélection"),
+      shopEditorialTitle: z.string().trim().min(2).max(180).default("Des objets choisis pour accompagner votre quotidien."),
+      shopEditorialImageUrl: visualUrlSchema.default("/assets/shop-editorial-hero.webp"),
+      showShopReassurance: z.boolean().default(true),
+      showProductReassurance: z.boolean().default(true),
+      productReassuranceItems: z.array(z.object({
+        icon: z.enum(["shield", "truck"]),
+        title: z.string().trim().min(2).max(100),
+        text: z.string().trim().min(2).max(220),
+      })).length(2).default([
+        { icon: "shield", title: "Achat préparé avec soin", text: "Les modalités de paiement sont précisées avant toute validation." },
+        { icon: "truck", title: "Livraison et retours", text: "Les conditions propres à cette boutique sont affichées avant la commande." },
+      ]),
+      cartEyebrow: z.string().trim().max(120).default("Votre sélection"),
+      cartTitle: z.string().trim().min(2).max(120).default("Votre panier"),
+      cartIntro: z.string().trim().max(360).default("Vérifiez vos produits avant de poursuivre vers la commande pour {country}."),
+      checkoutEyebrow: z.string().trim().max(120).default("Commande vérifiée"),
+      checkoutTitle: z.string().trim().min(2).max(120).default("Préparez votre commande"),
+      checkoutIntro: z.string().trim().max(420).default("Vérifiez votre sélection et les conditions affichées avant toute demande de paiement."),
+      checkoutPaymentNotice: z.string().trim().min(2).max(420).default("Le paiement en ligne n’est pas activé pour cette boutique."),
+      customColorsEnabled: z.boolean().default(false),
+      customPrimary: z.string().trim().regex(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/).default("#c2410c"),
+      customAccent: z.string().trim().regex(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/).default("#0f766e"),
+      customSoft: z.string().trim().regex(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/).default("#fbf7f2"),
+      buttonRadius: z.enum(["flat", "rounded", "full"]).default("rounded"),
+      headerLayout: z.enum(["inline", "split", "searchFirst", "gallery", "market", "glamour"]).default("inline"),
+      navigationItems: z.array(navigationItem).min(1).max(16).default([]),
+      footerBackgroundColor: z.string().trim().regex(/^(|#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}))$/).default(""),
+      footerTextColor: z.string().trim().regex(/^(|#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}))$/).default(""),
+      footerDescription: z.string().trim().max(420).default(""),
+      footerNavigationTitle: z.string().trim().max(60).default("Navigation"),
+      footerCategoriesTitle: z.string().trim().max(60).default("Catégories"),
+      footerHelpTitle: z.string().trim().max(60).default("Besoin d’aide ?"),
+      footerContactText: z.string().trim().max(160).default(""),
+      footerContactUrl: z.string().trim().max(300).refine(value => value === "" || (value.startsWith("/") && !value.startsWith("//")) || /^https:\/\//i.test(value), "Utilisez une URL https:// ou un chemin interne.").default("/contact"),
+      footerDeliveryTitle: z.string().trim().max(80).default("Livraison"),
+      footerDeliveryText: z.string().trim().max(220).default(""),
+      footerSecureTitle: z.string().trim().max(80).default("Sécurité"),
+      footerSecureText: z.string().trim().max(220).default(""),
+      footerServiceTitle: z.string().trim().max(80).default("Service client"),
+      footerServiceText: z.string().trim().max(220).default(""),
+      footerCopyrightText: z.string().trim().max(160).default("Tous droits réservés."),
+      footerShowNavigation: z.boolean().default(true),
+      footerShowCategories: z.boolean().default(true),
+      footerShowHelp: z.boolean().default(true),
+      footerShowReassurance: z.boolean().default(true),
+      footerSocialLinks: z.array(z.object({
+        id: z.enum(["instagram", "facebook", "tiktok", "youtube", "pinterest", "linkedin"]),
+        url: z.string().trim().max(500).refine(value => value === "" || /^https:\/\//i.test(value), "Utilisez une URL https:// ou laissez le champ vide."),
+      })).length(6).default([]),
+      homeOrder: z.array(z.string().max(60)).max(40).default([]),
+      textBanners: z.array(z.object({
+        id: z.string().trim().min(1).max(60),
+        eyebrow: z.string().trim().max(120).default(""),
+        title: z.string().trim().min(1).max(180),
+        text: z.string().trim().max(600).default(""),
+        buttonLabel: z.string().trim().max(60).default(""),
+        buttonUrl: z.string().trim().max(300).default(""),
+        imageUrl: z.string().trim().max(1000).default(""),
+        imageAlt: z.string().trim().max(180).default(""),
+        layout: z.enum(["banner", "split", "framedSplit", "spotlight", "roundGallery"]).default("banner"),
+        theme: z.enum(["primary", "dark", "soft", "light"]).default("primary"),
+        galleryItems: z.array(z.object({
+          id: z.string().trim().min(4).max(60),
+          label: z.string().trim().min(2).max(80),
+          imageUrl: visualUrlSchema,
+          imageAlt: z.string().trim().min(2).max(180),
+          href: z.string().trim().max(300).default(""),
+        })).max(6).default([]),
+        enabled: z.boolean().default(true),
+      })).max(8).default([]),
+    })).mutation(async ({ ctx, input }) => {
+      const storeId = ctx.store?.id;
+      const previous = await db.getDesignProfile(storeId);
+      const shopPageFields = ["shopEyebrow", "shopTitle", "shopIntro", "shopProductsEyebrow", "shopProductsTitle", "showShopEditorial", "shopEditorialEyebrow", "shopEditorialTitle", "shopEditorialImageUrl", "showShopReassurance"] as const;
+      const shopPageCopyCustomized = input.shopPageCopyCustomized || shopPageFields.some(field => previous[field] !== input[field]);
+      const profile = await db.updateDesignProfile({ ...previous, ...input, shopPageCopyCustomized }, storeId);
+      const editorialFields = ["highlightEyebrow", "highlightTitle", "highlightText", "storyTitle", "storyText", "editorialEyebrow", "editorialTitle"] as const;
+      if (editorialFields.some(field => previous[field] !== profile[field])) {
+        await db.markPublicContentTranslationsStale("design", 1, storeId);
+        autoTranslateContent("design", 1, storeId);
+      }
+      logAudit(ctx, { action: "design.update", entityType: "design", entityId: 1, summary: `Personnalisation du site mise à jour (marque ${input.brandName}, palette ${input.paletteId}, typographie ${input.typographyId})`, metadata: { brandName: input.brandName, hasBrandLogo: Boolean(input.brandLogoUrl), hasBrandMessage: Boolean(input.brandMessage), paletteId: input.paletteId, typographyId: input.typographyId, buttonRadius: input.buttonRadius } });
+      return profile;
+    }),
+    uploadImage: adminProcedure.input(z.object({
+      dataUrl: z.string().max(7_100_000),
+      fileName: z.string().trim().min(1).max(160),
+    })).mutation(async ({ ctx, input }) => {
+      const image = decodeDesignImage(input.dataUrl);
+      const safeName = input.fileName.replace(/[^a-z0-9_-]/gi, "-").replace(/-+/g, "-").slice(0, 80) || "illustration";
+      const key = `design/${ctx.user.id}/${Date.now()}-${safeName}.${image.extension}`;
+      const { url } = await storagePut(key, image.buffer, image.contentType);
+      return { url };
+    }),
+  }),
+
+  // Public editorial content translations. French stays the single source; generated text is always reviewable before use.
+  publicContentTranslations: router({
+    getOverview: catalogEditorProcedure.query(async ({ ctx }) => await db.getPublicContentTranslationOverview(ctx.store?.id)),
+    getSource: catalogEditorProcedure.input(z.object({
+      contentType: z.enum(["design", "banner", "category"]),
+      contentId: z.number().int().positive(),
+    })).query(async ({ ctx, input }) => await db.getPublicContentTranslationSource(input.contentType, input.contentId, ctx.store?.id)),
+    get: catalogEditorProcedure.input(z.object({
+      contentType: z.enum(["design", "banner", "category"]),
+      contentId: z.number().int().positive(),
+      locale: z.enum(["de", "it", "en", "es", "nl", "ar"]),
+    })).query(async ({ ctx, input }) => await db.getPublicContentTranslation(input.contentType, input.contentId, input.locale, false, ctx.store?.id)),
+    generate: catalogEditorProcedure.input(z.object({
+      contentType: z.enum(["design", "banner", "category"]),
+      contentId: z.number().int().positive(),
+      locales: z.array(z.enum(["de", "it", "en", "es", "nl", "ar"])).min(1).max(6),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const { translatePublicContentFromFrench } = await import("./publicContentTranslation");
+        return await translatePublicContentFromFrench(input.contentType, input.contentId, input.locales, ctx.store?.id);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: message || "La traduction des contenus est momentanément indisponible. Réessayez dans quelques instants." });
+      }
+    }),
+    save: catalogEditorProcedure.input(z.object({
+      contentType: z.enum(["design", "banner", "category"]),
+      contentId: z.number().int().positive(),
+      locale: z.enum(["de", "it", "en", "es", "nl", "ar"]),
+      payload: z.record(z.string(), z.string().max(1200)),
+    })).mutation(async ({ ctx, input }) => await db.savePublicContentTranslation({ ...input, payload: input.payload, machineGenerated: false, storeId: ctx.store?.id })),
+  }),
+
+  // Administrative register: customer sales are read from paid orders; purchases, costs and evidence are added here.
+  accounting: router({
+    getOverview: adminProcedure.input(z.object({ year: z.number().int().min(2020).max(2100) })).query(async ({ ctx, input }) => {
+      return await db.getAccountingOverview(input.year, ctx.store?.id);
+    }),
+    create: adminProcedure.input(accountingEntrySchema).mutation(async ({ ctx, input }) => {
+      return await db.createAccountingEntry(input, ctx.store?.id);
+    }),
+    update: adminProcedure.input(accountingEntrySchema.extend({ id: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+      const { id, ...data } = input;
+      return await db.updateAccountingEntry(id, data, ctx.store?.id);
+    }),
+    delete: adminProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+      return await db.deleteAccountingEntry(input.id, ctx.store?.id);
+    }),
+    uploadReceipt: adminProcedure.input(z.object({
+      dataUrl: z.string().max(14_200_000),
+      fileName: z.string().trim().min(1).max(180),
+    })).mutation(async ({ ctx, input }) => {
+      const document = decodeAccountingDocument(input.dataUrl);
+      const safeName = input.fileName.replace(/[^a-z0-9_-]/gi, "-").replace(/-+/g, "-").slice(0, 90) || "justificatif";
+      const storeSegment = ctx.store?.slug || "primary-store";
+      const key = `accounting/${storeSegment}/${ctx.user.id}/${Date.now()}-${safeName}.${document.extension}`;
+      const { key: storedKey, url } = await storagePut(key, document.buffer, document.contentType);
+      return { key: storedKey, url, fileName: input.fileName };
+    }),
+    getVatConfig: adminProcedure.query(async () => db.getVatConfig()),
+    setVatConfig: adminProcedure.input(z.object({
+      enabled: z.boolean(),
+      rate: z.number().min(0).max(30),
+    })).mutation(async ({ input }) => db.setVatConfig(input)),
+    getVatReport: adminProcedure.input(z.object({
+      from: z.coerce.date(),
+      to: z.coerce.date(),
+    })).query(async ({ ctx, input }) => {
+      const [paidOrders, vat] = await Promise.all([
+        db.getPaidOrdersBetween(input.from, input.to, ctx.store?.id),
+        db.getVatConfig(),
+      ]);
+      const year = new Date().getUTCFullYear();
+      const ytdSales = await db.getYearToDatePaidSales(year, ctx.store?.id);
+      const rows = paidOrders.map(order => {
+        const gross = order.totalAmount;
+        const net = vat.enabled ? Math.round(gross / (1 + vat.rate / 100)) : gross;
+        const vatAmount = vat.enabled ? gross - net : 0;
+        return {
+          id: order.id,
+          date: order.createdAt,
+          reference: order.stripeSessionId || (order.paymentMethod ? `${order.paymentMethod}-${order.id}` : `MAZIGHO-${order.id}`),
+          gross,
+          vatAmount,
+          net,
+          country: detectDeliveryCountry(order.shippingAddress),
+        };
+      });
+      const totals = rows.reduce((acc, r) => ({ gross: acc.gross + r.gross, vat: acc.vat + r.vatAmount, net: acc.net + r.net }), { gross: 0, vat: 0, net: 0 });
+      const THRESHOLD = 100_000 * 100; // 100'000 CHF en centimes
+      const ALERT_AT = 80_000 * 100;
+      return {
+        rows,
+        totals,
+        vat,
+        threshold: {
+          year,
+          ytdSales,
+          target: THRESHOLD,
+          alertAt: ALERT_AT,
+          percent: Math.min(100, Math.round((ytdSales / THRESHOLD) * 100)),
+          alert: ytdSales >= ALERT_AT,
+          exceeded: ytdSales >= THRESHOLD,
+        },
+        exemptionNote: "Exonéré de TVA selon l'art. 10 LTVA",
+      };
+    }),
+  }),
+
+  // Public legal information managed from the admin panel
+  legal: router({
+    get: adminProcedure.query(async ({ ctx }) => {
+      return await db.getLegalProfile(ctx.store?.id);
+    }),
+    update: adminProcedure.input(z.object({
+      operatorName: z.string().trim().min(2).max(160),
+      addressLine: z.string().trim().min(4).max(240),
+      postalCodeCity: z.string().trim().min(3).max(160),
+      country: z.string().trim().min(2).max(80),
+      contactEmail: z.string().trim().email().max(254),
+      businessStatus: z.string().trim().min(2).max(500),
+      ideVatNumber: z.string().trim().min(2).max(500),
+      deliveryZones: z.string().trim().min(2).max(1000),
+      deliveryDetails: z.string().trim().min(2).max(3000),
+      returnsPolicy: z.string().trim().min(2).max(3000),
+    })).mutation(async ({ ctx, input }) => {
+      return await db.updateLegalProfile(input, ctx.store?.id);
+    }),
+  }),
+
+  // Homepage content / banners
+  content: router({
+    getAll: adminProcedure.query(async ({ ctx }) => {
+      return await db.getAllBanners(ctx.store?.id);
+    }),
+    create: adminProcedure.input(z.object({
+      title: z.string().min(1),
+      subtitle: z.string().optional(),
+      imageUrl: z.string().url(),
+      linkUrl: z.string().url().optional().or(z.literal("")),
+      active: z.number().int().min(0).max(1).default(1),
+      displayOrder: z.number().int().default(0),
+    })).mutation(async ({ ctx, input }) => {
+      const storeId = ctx.store?.id;
+      const createdBanner = await db.createBanner(input, storeId);
+      autoTranslateContent("banner", (createdBanner as any)?.id, storeId);
+      return createdBanner;
+    }),
+    update: adminProcedure.input(z.object({
+      id: z.number(),
+      title: z.string().min(1),
+      subtitle: z.string().optional(),
+      imageUrl: z.string().url(),
+      linkUrl: z.string().url().optional().or(z.literal("")),
+      active: z.number().int().min(0).max(1),
+      displayOrder: z.number().int(),
+    })).mutation(async ({ ctx, input }) => {
+      const storeId = ctx.store?.id;
+      const { id, ...data } = input;
+      const banner = await db.updateBanner(id, data, storeId);
+      autoTranslateContent("banner", id, storeId);
+      await db.markPublicContentTranslationsStale("banner", id, storeId);
+      return banner;
+    }),
+    delete: adminProcedure.input(z.number()).mutation(async ({ ctx, input }) => {
+      return await db.deleteBanner(input, ctx.store?.id);
+    }),
+    toggle: adminProcedure.input(z.object({
+      id: z.number(),
+      active: z.number().int().min(0).max(1),
+    })).mutation(async ({ ctx, input }) => {
+      const storeId = ctx.store?.id;
+      const { id, active } = input;
+      const banner = await db.getBannerById(id, storeId);
+      if (!banner) throw new Error("Bannière introuvable");
+      return await db.updateBanner(id, {
+        title: banner.title,
+        subtitle: banner.subtitle ?? undefined,
+        imageUrl: banner.imageUrl,
+        linkUrl: banner.linkUrl ?? undefined,
+        active,
+        displayOrder: banner.displayOrder,
+      }, storeId);
+    }),
+  }),
+});

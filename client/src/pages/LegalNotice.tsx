@@ -1,0 +1,59 @@
+import LegalLayout from "@/components/LegalLayout";
+import { useLegalProfile } from "@/hooks/useLegalProfile";
+import { useDesignProfile } from "@/hooks/useDesignProfile";
+
+const updatedAt = "25 septembre 2026";
+
+export default function LegalNotice() {
+  const { profile } = useLegalProfile();
+  const { profile: designProfile, palette } = useDesignProfile();
+  const brandName = designProfile.brandName?.trim() || "La boutique";
+
+  return (
+    <LegalLayout
+      eyebrow="Informations légales"
+      title="Mentions légales"
+      description={`Les informations ci-dessous permettent d’identifier l’exploitant de ${brandName} et de le contacter directement.`}
+      updatedAt={updatedAt}
+    >
+      <section>
+        <h2 className="text-xl font-semibold text-slate-950">1. Exploitant du site</h2>
+        <p className="mt-3">
+          Le site et la boutique <strong>{brandName}</strong> sont exploités par <strong>{profile.operatorName}</strong>. Statut déclaré : {profile.businessStatus}. Pays déclaré : {profile.country}.
+        </p>
+        <p className="mt-4">
+          <strong>Canal de contact public :</strong> <a className="underline underline-offset-4 hover:opacity-75" style={{ color: palette.primary }} href={`mailto:${profile.contactEmail}`}>{profile.contactEmail}</a>
+        </p>
+        <p className="mt-4">{profile.ideVatNumber}</p>
+      </section>
+
+      <section>
+        <h2 className="text-xl font-semibold text-slate-950">2. Objet de la boutique</h2>
+        <p className="mt-3">
+          {brandName} présente une sélection de produits destinés aux consommateurs. La disponibilité, les caractéristiques, le prix affiché, les conditions de livraison et les modalités de paiement applicables sont indiqués dans le parcours de commande lorsqu’ils sont activés.
+        </p>
+      </section>
+
+      <section>
+        <h2 className="text-xl font-semibold text-slate-950">3. Contact et assistance</h2>
+        <p className="mt-3">
+          Pour toute question concernant le site, une commande, les données personnelles ou les présentes informations, vous pouvez écrire à l’adresse e-mail ci-dessus ou utiliser le formulaire de contact. Le formulaire complète ce moyen de contact ; il ne le remplace pas.
+        </p>
+      </section>
+
+      <section>
+        <h2 className="text-xl font-semibold text-slate-950">4. Propriété intellectuelle</h2>
+        <p className="mt-3">
+          Les éléments propres à {brandName}, notamment la présentation du site, les textes, le logo et les créations graphiques, ne peuvent pas être reproduits ou exploités sans autorisation préalable, sauf lorsque la loi le permet. Les marques, images et contenus appartenant à des tiers restent la propriété de leurs titulaires respectifs.
+        </p>
+      </section>
+
+      <section>
+        <h2 className="text-xl font-semibold text-slate-950">5. Mise à jour</h2>
+        <p className="mt-3">
+          Ces mentions peuvent évoluer afin de refléter l’ouverture effective de l’activité, l’activation des paiements, les modalités de livraison définitives ou les obligations réglementaires applicables.
+        </p>
+      </section>
+    </LegalLayout>
+  );
+}

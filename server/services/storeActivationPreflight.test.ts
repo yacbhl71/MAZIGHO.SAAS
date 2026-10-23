@@ -1,0 +1,54 @@
+import { describe, expect, it } from "vitest";
+import { buildStoreActivationPreflight } from "./storeActivationPreflight";
+
+const readyAnimalGift = {
+  status: "setup" as const,
+  isGiftProvisioned: true,
+  businessType: "animalier" as const,
+  primaryDomain: "pattes-exemple.ch",
+  hasActiveOwner: true,
+  hasOwnDesignProfile: true,
+  brandName: "Pattes & Compagnie",
+  hasOwnLegalProfile: true,
+  categoryCount: 2,
+  activeProductCount: 4,
+  sellableProductCount: 4,
+  activeProductWithImageCount: 4,
+  productWithVariantsCount: 1,
+  hasCurrency: true,
+};
+
+describe("store activation preflight", () => {
+  it("is locally ready only when every local prerequisite is met", () => {
+    const result = buildStoreActivationPreflight(readyAnimalGift);
+    expect(result.blockedCount).toBe(0);
+    expect(result.locallyReadyForManualActivation).toBe(true);
+    expect(result.publicActivationExecuted).toBe(false);
+    expect(result.checks.filter(check => check.state === "manual").map(check => check.key)).toEqual(["domain_manual", "variants_manual", "shipping_returns_manual", "owner_responsibility_manual", "operator_confirmation"]);
+  });
+
+  it("blocks a setup boutique until owner, own branding and catalogue are complete", () => {
+    const result = buildStoreActivationPreflight({
+      ...readyAnimalGift,
+      hasActiveOwner: false,
+      hasOwnDesignProfile: false,
+      brandName: "MAZIGHO",
+      hasOwnLegalProfile: false,
+      categoryCount: 0,
+      activeProductCount: 0,
+      sellableProductCount: 0,
+      activeProductWithImageCount: 0,
+    });
+    expect(result.locallyReadyForManualActivation).toBe(false);
+    expect(result.checks.filter(check => check.state === "blocked").map(check => check.key)).toEqual(expect.arrayContaining(["owner", "brand", "catalogue", "sellable_catalogue", "product_images"]));
+    expect(result.checks.find(check => check.key === "owner_responsibility_manual")?.state).toBe("manual");
+  });
+
+  it("rejects a local or test domain while allowing every configured boutique universe", () => {
+    const result = buildStoreActivationPreflight({ ...readyAnimalGift, primaryDomain: "atelier.local", businessType: "autre" });
+    expect(result.locallyReadyForManualActivation).toBe(false);
+    expect(result.checks.find(check => check.key === "domain_format")?.state).toBe("blocked");
+    expect(result.checks.find(check => check.key === "catalogue")?.state).toBe("ready");
+    expect(result.checks.some(check => check.key === "animalier_scope")).toBe(false);
+  });
+});

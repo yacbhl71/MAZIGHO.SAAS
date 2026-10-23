@@ -1,0 +1,485 @@
+import type { OdooCatalogProduct } from "../db";
+
+/**
+ * Odoo integration (JSON-RPC).
+ *
+ * Synchronises paid customer orders and their customer record towards an Odoo
+ * instance. The integration is optional: when the ODOO_* environment variables
+ * are not configured, every function degrades gracefully (no-op) so the Stripe
+ * webhook and the rest of the app keep working.
+ *
+ * Reference: https://www.odoo.com/documentation/17.0/developer/reference/external_api.html
+ */
+
+const ODOO_REQUEST_TIMEOUT_MS = 15_000;
+
+type OdooConfig = {
+  url: string;
+  db: string;
+  username: string;
+  secret: string; // password or API key
+};
+
+export type OdooStatus = {
+  configured: boolean;
+  provider: "Odoo";
+  url: string | null;
+  db: string | null;
+  message: string;
+};
+
+export type OdooOrderLine = {
+  name: string;
+  quantity: number;
+  /** Unit price expressed in the store currency (e.g. CHF), not in cents. */
+  priceUnit: number;
+  /** Stable mapping key -> Odoo product default_code (e.g. "MAZIGHO-42"). */
+  reference?: string | null;
+};
+
+export type OdooCustomer = {
+  name: string;
+  email: string | null;
+};
+
+export type OdooSyncResult = {
+  synced: boolean;
+  skipped: boolean;
+  partnerId?: number;
+  saleOrderId?: number;
+  reason?: string;
+};
+
+function readOdooConfig(): OdooConfig | null {
+  const url = process.env.ODOO_URL?.trim().replace(/\/+$/, "");
+  const db = process.env.ODOO_DB?.trim();
+  const username = process.env.ODOO_USERNAME?.trim();
+  const secret = (process.env.ODOO_API_KEY?.trim() || process.env.ODOO_PASSWORD?.trim()) ?? "";
+  if (!url || !db || !username || !secret) return null;
+  return { url, db, username, secret };
+}
+
+export function isOdooConfigured(): boolean {
+  return readOdooConfig() !== null;
+}
+
+export function getOdooStatus(): OdooStatus {
+  const config = readOdooConfig();
+  return {
+    configured: Boolean(config),
+    provider: "Odoo",
+    url: config?.url ?? null,
+    db: config?.db ?? null,
+    message: config
+      ? "Odoo est configuré. Les commandes payées sont synchronisées automatiquement."
+      : "Odoo n'est pas configuré. Ajoutez ODOO_URL, ODOO_DB, ODOO_USERNAME et ODOO_API_KEY (ou ODOO_PASSWORD) dans Vercel.",
+  };
+}
+
+async function odooJsonRpc<T>(url: string, params: Record<string, unknown>): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetch(`${url}/jsonrpc`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", method: "call", params, id: Date.now() }),
+      signal: AbortSignal.timeout(ODOO_REQUEST_TIMEOUT_MS),
+    });
+  } catch {
+    throw new Error("ODOO_UNREACHABLE");
+  }
+
+  let payload: { result?: T; error?: { data?: { message?: string }; message?: string } } | null = null;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new Error("ODOO_INVALID_RESPONSE");
+  }
+
+  if (!response.ok || payload?.error) {
+    const detail = payload?.error?.data?.message || payload?.error?.message || `HTTP ${response.status}`;
+    throw new Error(`ODOO_RPC_ERROR: ${detail}`);
+  }
+  return payload!.result as T;
+}
+
+let uidCache: { config: string; uid: number; cachedAt: number } | null = null;
+
+async function authenticate(config: OdooConfig): Promise<number> {
+  const cacheKey = `${config.url}|${config.db}|${config.username}`;
+  if (uidCache && uidCache.config === cacheKey && Date.now() - uidCache.cachedAt < 30 * 60 * 1000) {
+    return uidCache.uid;
+  }
+  const uid = await odooJsonRpc<number | false>(config.url, {
+    service: "common",
+    method: "authenticate",
+    args: [config.db, config.username, config.secret, {}],
+  });
+  if (!uid || typeof uid !== "number") throw new Error("ODOO_AUTHENTICATION_FAILED");
+  uidCache = { config: cacheKey, uid, cachedAt: Date.now() };
+  return uid;
+}
+
+async function executeKw<T>(
+  config: OdooConfig,
+  uid: number,
+  model: string,
+  method: string,
+  args: unknown[],
+  kwargs: Record<string, unknown> = {},
+): Promise<T> {
+  return odooJsonRpc<T>(config.url, {
+    service: "object",
+    method: "execute_kw",
+    args: [config.db, uid, config.secret, model, method, args, kwargs],
+  });
+}
+
+/** Verifies the Odoo credentials without exposing them to the browser. */
+export async function verifyOdooConnection(): Promise<OdooStatus & { verified: boolean }> {
+  const config = readOdooConfig();
+  if (!config) return { ...getOdooStatus(), verified: false };
+  try {
+    await authenticate(config);
+    return { ...getOdooStatus(), verified: true, message: "Connexion Odoo vérifiée." };
+  } catch (error) {
+    return { ...getOdooStatus(), verified: false, message: `La connexion Odoo a échoué : ${error instanceof Error ? error.message : "inconnue"}.` };
+  }
+}
+
+async function findOrCreatePartner(config: OdooConfig, uid: number, customer: OdooCustomer): Promise<number> {
+  if (customer.email) {
+    const existing = await executeKw<number[]>(config, uid, "res.partner", "search", [[["email", "=", customer.email]]], { limit: 1 });
+    if (existing.length > 0) return existing[0];
+  }
+  return executeKw<number>(config, uid, "res.partner", "create", [{
+    name: customer.name || customer.email || "Client MAZIGHO",
+    email: customer.email || false,
+    customer_rank: 1,
+    comment: "Client créé automatiquement depuis la boutique MAZIGHO.",
+  }]);
+}
+
+/**
+ * Maps a MAZIGHO order line to an Odoo product.product id. Reuses an existing
+ * product matched on default_code (stable "MAZIGHO-<id>" reference) or exact
+ * name, otherwise creates a saleable consumable product. Returns null on error
+ * so the caller can fall back to ODOO_DEFAULT_PRODUCT_ID or the note summary.
+ */
+type SaleOrderTaxField = "tax_id" | "tax_ids";
+
+/**
+ * Odoo 19 renamed the sales-line taxes field from `tax_id` to `tax_ids`.
+ * Resolve the field from the connected instance rather than assuming a
+ * version, so an Odoo 18 or 19 deployment receives an actual empty M2M tax
+ * relation and the amounts recompute correctly.
+ */
+async function resolveSaleOrderTaxField(config: OdooConfig, uid: number): Promise<SaleOrderTaxField> {
+  const fields = await executeKw<Record<string, { type?: string }>>(
+    config,
+    uid,
+    "sale.order.line",
+    "fields_get",
+    [],
+    { attributes: ["type"] },
+  );
+  if (fields.tax_ids?.type === "many2many") return "tax_ids";
+  if (fields.tax_id?.type === "many2many") return "tax_id";
+  throw new Error("ODOO_SALE_ORDER_TAX_FIELD_UNAVAILABLE");
+}
+
+async function clearSaleOrderLineTaxes(
+  config: OdooConfig,
+  uid: number,
+  saleOrderId: number,
+  taxField?: SaleOrderTaxField,
+) {
+  // Odoo applies product defaults to sale.order.line. MAZIGHO is configured in
+  // franchise de TVA, so clear those defaults explicitly for every MAZIGHO
+  // sales order line. The Many2many command works for both newly-created and
+  // pre-existing idempotent orders.
+  const field = taxField ?? await resolveSaleOrderTaxField(config, uid);
+  const lineIds = await executeKw<number[]>(config, uid, "sale.order.line", "search", [[[
+    "order_id", "=", saleOrderId,
+  ]]]);
+  if (lineIds.length > 0) {
+    await executeKw<boolean>(config, uid, "sale.order.line", "write", [lineIds, {
+      [field]: [[6, 0, []]],
+    }]);
+  }
+}
+
+async function findOrCreateProduct(
+  config: OdooConfig,
+  uid: number,
+  line: OdooOrderLine,
+): Promise<number | null> {
+  try {
+    if (line.reference) {
+      const byCode = await executeKw<number[]>(config, uid, "product.product", "search", [[["default_code", "=", line.reference]]], { limit: 1 });
+      if (byCode.length > 0) return byCode[0];
+    }
+    const byName = await executeKw<number[]>(config, uid, "product.product", "search", [[["name", "=", line.name]]], { limit: 1 });
+    if (byName.length > 0) return byName[0];
+    return await executeKw<number>(config, uid, "product.product", "create", [{
+      name: line.name,
+      default_code: line.reference || false,
+      list_price: line.priceUnit,
+      type: "consu",
+      sale_ok: true,
+    }]);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Synchronises a paid order and its customer to Odoo as a draft sale order.
+ * It first looks up the immutable MAZIGHO reference to remain idempotent.
+ * Never throws to the caller: failures are reported in the returned result so
+ * the Stripe webhook stays resilient.
+ */
+async function findPricelistForCurrency(config: OdooConfig, uid: number, currencyCode: string): Promise<number | null> {
+  if (currencyCode === "CHF") return null;
+  const currencyIds = await executeKw<number[]>(config, uid, "res.currency", "search", [[[
+    "name", "=", currencyCode,
+  ]]], { limit: 1 });
+  const currencyId = currencyIds[0];
+  if (!currencyId) throw new Error(`ODOO_CURRENCY_NOT_CONFIGURED:${currencyCode}`);
+  const pricelistIds = await executeKw<number[]>(config, uid, "product.pricelist", "search", [[[
+    "currency_id", "=", currencyId,
+  ]]], { limit: 1 });
+  const pricelistId = pricelistIds[0];
+  if (!pricelistId) throw new Error(`ODOO_PRICELIST_NOT_CONFIGURED:${currencyCode}`);
+  return pricelistId;
+}
+
+export async function syncOrderToOdoo(input: {
+  orderReference: string;
+  customer: OdooCustomer;
+  lines: OdooOrderLine[];
+  currency?: string;
+  note?: string;
+}): Promise<OdooSyncResult> {
+  const config = readOdooConfig();
+  if (!config) return { synced: false, skipped: true, reason: "ODOO_NOT_CONFIGURED" };
+
+  try {
+    const uid = await authenticate(config);
+    const existingOrderIds = await executeKw<number[]>(config, uid, "sale.order", "search", [[[
+      "client_order_ref", "=", input.orderReference,
+    ]]], { limit: 1 });
+    const taxField = await resolveSaleOrderTaxField(config, uid);
+    if (existingOrderIds[0]) {
+      await clearSaleOrderLineTaxes(config, uid, existingOrderIds[0], taxField);
+      return { synced: true, skipped: false, saleOrderId: existingOrderIds[0] };
+    }
+
+    const partnerId = await findOrCreatePartner(config, uid, input.customer);
+    const currencyCode = input.currency || "CHF";
+    // Odoo derives an order currency from its pricelist. A foreign-currency order
+    // must therefore use a configured matching pricelist rather than defaulting
+    // to CHF with foreign numeric amounts.
+    const pricelistId = await findPricelistForCurrency(config, uid, currencyCode);
+
+    const summary = input.lines
+      .map(line => `- ${line.quantity} x ${line.name} @ ${line.priceUnit.toFixed(2)} ${input.currency || "CHF"}`)
+      .join("\n");
+    const note = [`Commande boutique MAZIGHO ${input.orderReference}`, input.note, summary]
+      .filter(Boolean)
+      .join("\n");
+
+    const saleOrderPayload: Record<string, unknown> = {
+      partner_id: partnerId,
+      client_order_ref: input.orderReference,
+      note,
+      ...(pricelistId ? { pricelist_id: pricelistId } : {}),
+    };
+
+    // Map each line to a real Odoo product so the sale order carries priced
+    // lines. If a line cannot be mapped, fall back to ODOO_DEFAULT_PRODUCT_ID;
+    // the itemised note above keeps the order readable in every case.
+    const defaultProductId = Number.parseInt(process.env.ODOO_DEFAULT_PRODUCT_ID ?? "", 10);
+    const fallbackProductId = Number.isInteger(defaultProductId) && defaultProductId > 0 ? defaultProductId : null;
+    const orderLines: Array<[number, number, Record<string, unknown>]> = [];
+    for (const line of input.lines) {
+      const productId = (await findOrCreateProduct(config, uid, line)) ?? fallbackProductId;
+      if (!productId) continue;
+      orderLines.push([0, 0, {
+        product_id: productId,
+        name: line.name,
+        product_uom_qty: line.quantity,
+        price_unit: line.priceUnit,
+        // Explicitly clear Odoo's default sale tax for MAZIGHO orders.
+        [taxField]: [[6, 0, []]],
+      }]);
+    }
+    if (orderLines.length > 0) {
+      saleOrderPayload.order_line = orderLines;
+    }
+
+    const saleOrderId = await executeKw<number>(config, uid, "sale.order", "create", [saleOrderPayload]);
+    // Re-apply the zero-tax command after Odoo has generated the lines, which
+    // also protects against product/fiscal-position defaults on the instance.
+    await clearSaleOrderLineTaxes(config, uid, saleOrderId, taxField);
+    return { synced: true, skipped: false, partnerId, saleOrderId };
+  } catch (error) {
+    return { synced: false, skipped: false, reason: error instanceof Error ? error.message : "ODOO_UNKNOWN_ERROR" };
+  }
+}
+
+export type OdooCatalogSyncFailure = {
+  productId: number;
+  name: string;
+  message: string;
+};
+
+export type OdooCatalogSyncResult = {
+  attempted: number;
+  created: number;
+  updated: number;
+  failed: number;
+  failures: OdooCatalogSyncFailure[];
+  stockNote: string;
+};
+
+export function getOdooCatalogSyncStatus(): { configured: boolean; mode: "json-rpc" } {
+  return { configured: isOdooConfigured(), mode: "json-rpc" };
+}
+
+async function findOrCreateOdooCategory(config: OdooConfig, uid: number, name: string, cache: Map<string, number>): Promise<number> {
+  const normalisedName = name.trim();
+  const cached = cache.get(normalisedName);
+  if (cached) return cached;
+
+  const ids = await executeKw<number[]>(config, uid, "product.category", "search", [[["name", "=", normalisedName]]], { limit: 1 });
+  const id = ids[0] ?? await executeKw<number>(config, uid, "product.category", "create", [{ name: normalisedName }]);
+  cache.set(normalisedName, id);
+  return id;
+}
+
+async function findOdooTemplateByReference(config: OdooConfig, uid: number, reference: string): Promise<number | null> {
+  const variants = await executeKw<Array<{ product_tmpl_id: [number, string] | false }>>(
+    config,
+    uid,
+    "product.product",
+    "search_read",
+    [[["default_code", "=", reference]]],
+    { fields: ["product_tmpl_id"], limit: 1 },
+  );
+  const relation = variants[0]?.product_tmpl_id;
+  return Array.isArray(relation) && typeof relation[0] === "number" ? relation[0] : null;
+}
+
+function catalogueValuesForOdoo(product: OdooCatalogProduct, categoryId: number | null): Record<string, unknown> {
+  const values: Record<string, unknown> = {
+    name: product.name,
+    default_code: `MAZIGHO-${product.id}`,
+    list_price: Number((product.price / 100).toFixed(2)),
+    description_sale: product.longDescription || product.description || "",
+    active: product.status !== "archived",
+    sale_ok: product.status === "active",
+    purchase_ok: false,
+  };
+  if (categoryId) values.categ_id = categoryId;
+  return values;
+}
+
+/**
+ * Creates or updates Odoo product templates using the immutable MAZIGHO-<id>
+ * reference. It never deletes Odoo products and intentionally excludes
+ * supplier costs, supplier URLs and delivery quotes from the transfer.
+ */
+export async function syncCatalogToOdoo(products: OdooCatalogProduct[]): Promise<OdooCatalogSyncResult> {
+  const config = readOdooConfig();
+  if (!config) throw new Error("ODOO_NOT_CONFIGURED");
+
+  const uid = await authenticate(config);
+  // Fail before the first write if this Odoo plan or user cannot access the external API.
+  await executeKw<number[]>(config, uid, "product.template", "search", [[]], { limit: 1 });
+  const categoryCache = new Map<string, number>();
+  const failures: OdooCatalogSyncFailure[] = [];
+  let created = 0;
+  let updated = 0;
+
+  for (const product of products) {
+    try {
+      const categoryId = product.categoryName
+        ? await findOrCreateOdooCategory(config, uid, product.categoryName, categoryCache)
+        : null;
+      const values = catalogueValuesForOdoo(product, categoryId);
+      const templateId = await findOdooTemplateByReference(config, uid, `MAZIGHO-${product.id}`);
+
+      if (templateId) {
+        await executeKw<boolean>(config, uid, "product.template", "write", [[templateId], values]);
+        updated += 1;
+      } else {
+        await executeKw<number>(config, uid, "product.template", "create", [values]);
+        created += 1;
+      }
+    } catch (error) {
+      failures.push({
+        productId: product.id,
+        name: product.name,
+        message: error instanceof Error ? error.message : "Odoo a refusé ce produit.",
+      });
+    }
+  }
+
+  return {
+    attempted: products.length,
+    created,
+    updated,
+    failed: failures.length,
+    failures: failures.slice(0, 10),
+    stockNote: "Le catalogue transmet les produits, prix et statut de vente. Les quantités physiques requièrent l’application Inventaire et une localisation Odoo dédiée.",
+  };
+}
+
+// ---- Admin "Suivi Odoo" panel: read + CRUD helpers (admin-only at the router) ----
+export type OdooPartnerRow = { id: number; name: string; email: string | false; phone: string | false; city: string | false; };
+export type OdooOrderRow = { id: number; name: string; partner_id: [number, string] | false; amount_total: number; state: string; client_order_ref: string | false; date_order: string | false; };
+
+export async function listOdooPartners(limit = 60): Promise<{ configured: boolean; partners: OdooPartnerRow[] }> {
+  const config = readOdooConfig();
+  if (!config) return { configured: false, partners: [] };
+  const uid = await authenticate(config);
+  const partners = await executeKw<OdooPartnerRow[]>(config, uid, "res.partner", "search_read", [[["customer_rank", ">", 0]]], { fields: ["id", "name", "email", "phone", "city"], limit, order: "id desc" });
+  return { configured: true, partners };
+}
+
+export async function listOdooSaleOrders(limit = 60): Promise<{ configured: boolean; orders: OdooOrderRow[] }> {
+  const config = readOdooConfig();
+  if (!config) return { configured: false, orders: [] };
+  const uid = await authenticate(config);
+  const orders = await executeKw<OdooOrderRow[]>(config, uid, "sale.order", "search_read", [[]], { fields: ["id", "name", "partner_id", "amount_total", "state", "client_order_ref", "date_order"], limit, order: "id desc" });
+  return { configured: true, orders };
+}
+
+export async function createOdooPartner(input: { name: string; email?: string; phone?: string }): Promise<{ id: number }> {
+  const config = readOdooConfig();
+  if (!config) throw new Error("ODOO_NOT_CONFIGURED");
+  const uid = await authenticate(config);
+  const id = await executeKw<number>(config, uid, "res.partner", "create", [{ name: input.name, email: input.email || false, phone: input.phone || false, customer_rank: 1 }]);
+  return { id };
+}
+
+export async function updateOdooPartner(id: number, patch: { name?: string; email?: string; phone?: string }): Promise<{ success: boolean }> {
+  const config = readOdooConfig();
+  if (!config) throw new Error("ODOO_NOT_CONFIGURED");
+  const uid = await authenticate(config);
+  const values: Record<string, unknown> = {};
+  if (patch.name !== undefined) values.name = patch.name;
+  if (patch.email !== undefined) values.email = patch.email || false;
+  if (patch.phone !== undefined) values.phone = patch.phone || false;
+  await executeKw(config, uid, "res.partner", "write", [[id], values]);
+  return { success: true };
+}
+
+export async function cancelOdooSaleOrder(id: number): Promise<{ success: boolean }> {
+  const config = readOdooConfig();
+  if (!config) throw new Error("ODOO_NOT_CONFIGURED");
+  const uid = await authenticate(config);
+  await executeKw(config, uid, "sale.order", "action_cancel", [[id]]);
+  return { success: true };
+}

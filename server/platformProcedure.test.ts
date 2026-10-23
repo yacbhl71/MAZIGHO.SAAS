@@ -1,0 +1,207 @@
+import { describe, expect, it } from "vitest";
+import { appRouter } from "./routers";
+import type { TrpcContext } from "./_core/context";
+import { DEFAULT_KEY_IN_HAND_LANDING_CONTENT, DEFAULT_PRO_LANDING_CONTENT } from "../shared/keyInHandLanding";
+
+type AuthenticatedUser = NonNullable<TrpcContext["user"]>;
+
+function createContext(input: { role: "admin" | "user"; isPlatformStore: number }): TrpcContext {
+  const user: AuthenticatedUser = {
+    id: 42,
+    openId: "platform-procedure-test",
+    email: "owner@example.test",
+    name: "Owner test",
+    loginMethod: "manus",
+    role: input.role,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    lastSignedIn: new Date(),
+  };
+
+  return {
+    user,
+    store: {
+      id: input.isPlatformStore ? 1 : 2,
+      slug: input.isPlatformStore ? "primary-store" : "client-store",
+      displayName: input.isPlatformStore ? "MAZIGHO" : "Boutique cliente",
+      primaryDomain: input.isPlatformStore ? "mazigho.test" : "client.test",
+      status: "active",
+      isPlatformStore: input.isPlatformStore,
+    },
+    req: { protocol: "https", headers: {} } as TrpcContext["req"],
+    res: {} as TrpcContext["res"],
+  };
+}
+
+describe("MAZIGHO Studio platform guard", () => {
+  it("refuses platform controls and the Studio inventory from a client storefront administrator", async () => {
+    const caller = appRouter.createCaller(createContext({ role: "admin", isPlatformStore: 0 }));
+    await expect(caller.admin.platformLanding.savePro(DEFAULT_PRO_LANDING_CONTENT)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.platformLanding.saveKeyInHand(DEFAULT_KEY_IN_HAND_LANDING_CONTENT)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.system.health()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.system.verifyTransactionalEmail()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.system.sendTransactionalEmailTest()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.getInventory()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.getStoreCopySources()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.getStoreCopySourcePreview({ sourceStoreId: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.assistant.getImageGenerationUsage()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.assistant.generateStorefrontImage({ subject: "Un atelier lumineux avec créations colorées et matières naturelles.", format: "hero", style: "editorial" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.getCatalogueImportTargets()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.getCustomDomainRegistry()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.getIntegrationRequestRegistry()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.checkOwnerCustomDomainDns({ storeId: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.linkOwnerCustomDomain({ storeId: 1, confirmationName: "Boutique cliente", domainVerifiedInVercel: true, linkAcknowledged: true })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.getTenantResourceSummary()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.updateStoreOperationalStatus({ storeId: 1, confirmationName: "Boutique cliente", nextStatus: "suspended", acknowledged: true })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.updateStoreCommercialOfferMode({ storeId: 1, confirmationName: "Boutique cliente", mode: "rental", acknowledged: true })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.getStoreMediaUsage({ storeId: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.getStoreCommercialSupervision({ storeId: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.getSaasBillingDashboard()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.getSaasBillingDashboard({ planId: "unassigned" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.getSaasPlanCatalog()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.saveSaasPlanCatalog({ catalog: { plans: [] } })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.assignStoreSaasPlanTemplate({ storeId: 1, confirmationName: "Boutique cliente", planId: "basic", acknowledged: true })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.setStoreDropshippingAccess({ storeId: 1, confirmationName: "Boutique cliente", enabled: true, acknowledged: true })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.setStoreCommissionOverride({ storeId: 1, confirmationName: "Boutique cliente", commissionRateBps: 0, acknowledged: true })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.clearStoreCommissionOverride({ storeId: 1, confirmationName: "Boutique cliente", acknowledged: true })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.setStoreQuotaOverride({ storeId: 1, confirmationName: "Boutique cliente", quotas: { maxActiveProducts: null, maxTeamMembers: 10, mediaQuotaBytes: 1024 * 1024 * 1024, monthlyAiRequests: 1000, maxWorkspaceDocuments: 100, maxWorkspaceTemplates: 50 }, acknowledged: true })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.clearStoreQuotaOverride({ storeId: 1, confirmationName: "Boutique cliente", acknowledged: true })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.clearStoreSaasPlanAssignment({ storeId: 1, confirmationName: "Boutique cliente", acknowledged: true })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.getStoreSupportTickets()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.updateStoreSupportTicket({ storeId: 1, ticketId: "supportticket123", status: "reviewing", operatorReply: "Nous regardons." })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.startStoreSupportImpersonation({ storeId: 1, ticketId: "supportticket123", confirmationName: "Boutique cliente", acknowledged: true })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.endStoreSupportImpersonation()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.saveStoreSaasBillingPlan({ storeId: 1, confirmationName: "Boutique cliente", plan: { kind: "rental", label: "SaaS BASIC", amountCents: 790, currency: "CHF", interval: "monthly" }, acknowledged: true })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.createStoreSaasInvoiceDraft({ storeId: 1, confirmationName: "Boutique cliente", reference: "BROUILLON-001", issueDate: "2026-10-01", dueDate: "2026-10-15", amountCents: 790, currency: "CHF", acknowledged: true })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.updateStoreSaasInvoiceDraft({ storeId: 1, confirmationName: "Boutique cliente", invoiceId: "draftinvoice0001", reference: "BROUILLON-001", issueDate: "2026-10-01", dueDate: "2026-10-15", amountCents: 790, currency: "CHF", acknowledged: true })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.deleteStoreSaasInvoiceDraft({ storeId: 1, confirmationName: "Boutique cliente", invoiceId: "draftinvoice0001", acknowledged: true })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.prepareOwnerCustomDomainGuide({ storeId: 1, records: [{ type: "A", host: "@", value: "76.76.21.21" }] })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.restoreStoreRecoveryDomain({ storeId: 1, confirmationName: "Boutique cliente", acknowledged: true })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.activateClientStore({ storeId: 1, confirmationName: "Boutique cliente", confirmationOwnerEmail: "client@example.test", domainVerified: true, readinessVerified: true, activationAcknowledged: true })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.createProvisioningDraft({
+      displayName: "Boutique cliente",
+      requestedDomain: "client.test",
+      ownerName: "Client Test",
+      ownerEmail: "client@example.test",
+      businessType: "vetements",
+      customBusinessTheme: "",
+      preferredCurrency: "DZD",
+    })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.createStoreCopyProvisioningDraft({
+      displayName: "Copie cliente",
+      requestedDomain: "copie-client.test",
+      ownerName: "Client Test",
+      ownerEmail: "client@example.test",
+      businessType: "autre",
+      customBusinessTheme: "Base copiée",
+      preferredCurrency: "CHF",
+      copySourceStoreId: 1,
+      copySelection: { storefrontStyle: true },
+    })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.updateProvisioningDraft({
+      id: 1,
+      displayName: "Boutique cliente",
+      requestedDomain: "client.test",
+      ownerName: "Client Test",
+      ownerEmail: "client@example.test",
+      businessType: "autre",
+      customBusinessTheme: "Décoration artisanale",
+      preferredCurrency: "CHF",
+    })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.deleteProvisioningDraft({ id: 1, confirmationName: "Boutique cliente" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.getLaunchPreflight({ draftId: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.provisionGiftStore({ draftId: 1, confirmationName: "Boutique cliente" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.getGiftStoreOwnerHandoff({ storeId: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.getGiftStoreActivationPreflight({ storeId: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.getPrivateStorefrontPreview({ storeId: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.getOwnerBuilderConfiguration({ storeId: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.saveOwnerBuilderConfiguration({ storeId: 1, brandName: "Boutique cliente", brandMessage: "Une boutique de démonstration.", niche: "Décoration artisanale", model: "commerce", pages: ["about", "faq"], paletteId: "terracotta", typographyId: "editorial" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.getOwnerCollectionDrafts({ storeId: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.saveOwnerCollectionDrafts({ storeId: 1, collections: [{ id: "collection-1", title: "Collection privée", description: "Une collection préparée sans produit ni prix.", featured: true }] })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.getOwnerProductDrafts({ storeId: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.saveOwnerProductDrafts({ storeId: 1, products: [{ id: "product-1", name: "Produit privé", description: "Une fiche privée de préparation sans vente ni stock.", collectionId: "collection-1", priceCents: 1990, featured: true }] })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.getOwnerProductOperationDrafts({ storeId: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.saveOwnerProductOperationDrafts({ storeId: 1, operations: [{ productId: "product-1", stockState: "to_confirm", stockQuantity: 0, supplierName: "", supplierReference: "" }] })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.getOwnerPrivateCartSimulation({ storeId: 1, lines: [{ productId: "product-1", quantity: 1 }] })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.getOwnerCommercialPublicationPreflight({ storeId: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.getOwnerSetupIsolationReview({ storeId: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.getOwnerManualCommercialPassageReview({ storeId: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.getOwnerCataloguePublicationPreview({ storeId: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.publishOwnerCatalogueFromPreview({ storeId: 1, planToken: "a".repeat(24), confirmationName: "Boutique cliente", previewAcknowledged: true, missingMediaVariantsAcknowledged: true, operationsLegalDomainAcknowledged: true })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.getOwnerPublicStorefrontContent({ storeId: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.saveOwnerPublicStorefrontProfile({ storeId: 1, profile: {} } as any)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.issueOwnerTemporaryPassword({ storeId: 1, confirmationEmail: "client@example.test", acknowledged: true })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.applyStorefrontTheme({ storeId: 1, themeId: "pet" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.applyStorefrontTheme({ storeId: 1, themeId: "beauty" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.applyVioletCraftStorefrontTemplate({ storeId: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.saveOwnerPublicStorefrontBanner({ storeId: 1, title: "Bannière privée", subtitle: "Texte privé", imageUrl: "/studio-assets/prive.webp", linkUrl: "/boutique", active: 1, displayOrder: 0 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.uploadOwnerPublicStorefrontImage({ storeId: 1, fileName: "visuel.png", dataUrl: "data:image/png;base64,aGVsbG8=" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.getOwnerExistingCatalogue({ storeId: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.importOwnerExistingCatalogueProducts({ storeId: 1, rows: [{ category: "Catégorie privée", name: "Produit privé", shortDescription: "Description privée.", longDescription: "Description détaillée privée.", priceCents: 1990, stock: 3, dimensions: ["30×40 cm"], imageUrl: "", featured: false }], acknowledged: true })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.saveOwnerExistingCatalogueCategory({ storeId: 1, categoryId: 1, name: "Catégorie privée", description: "Description privée." })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.createOwnerExistingCatalogueCategory({ storeId: 1, name: "Catégorie privée", description: "Description privée." })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.uploadOwnerExistingCatalogueCategoryImage({ storeId: 1, categoryId: 1, fileName: "categorie.png", dataUrl: "data:image/png;base64,aGVsbG8=" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.saveOwnerExistingCatalogueProduct({ storeId: 1, productId: 1, categoryId: 1, name: "Produit privé", description: "Description privée.", longDescription: "Description détaillée privée.", priceCents: 1990, stock: 3, featured: false, images: [], options: [] })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.createOwnerExistingCatalogueProduct({ storeId: 1, categoryId: 1, name: "Produit privé", description: "Description privée.", longDescription: "Description détaillée privée.", priceCents: 1990, stock: 3, featured: false, images: [], options: [] })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.getOwnerExistingCatalogueProductVariants({ storeId: 1, productId: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.createOwnerExistingCatalogueProductVariant({ storeId: 1, productId: 1, variant: { label: "Taille : S", sku: "TEST-S", priceAdjustmentCents: 0, stock: 2, status: "active" } })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.createOwnerExistingCatalogueProductVariantMatrix({ storeId: 1, productId: 1, variants: [{ label: "Couleur : Violet · Taille : S", sku: "TEST-VIOLET-S", priceAdjustmentCents: 0, stock: 2, status: "active" }] })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.updateOwnerExistingCatalogueProductVariant({ storeId: 1, productId: 1, variantId: 1, variant: { label: "Taille : S", sku: "TEST-S", priceAdjustmentCents: 0, stock: 2, status: "active" } })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.deleteOwnerExistingCatalogueProductVariant({ storeId: 1, productId: 1, variantId: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.uploadOwnerExistingCatalogueProductImage({ storeId: 1, productId: 1, fileName: "produit.png", dataUrl: "data:image/png;base64,aGVsbG8=" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.getOwnerFullPagePreview({ storeId: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.getOwnerNavigationDraft({ storeId: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.saveOwnerNavigationDraft({ storeId: 1, items: [{ pageId: "home", label: "Accueil", visible: true }, { pageId: "about", label: "À propos", visible: true }, { pageId: "faq", label: "FAQ", visible: true }, { pageId: "contact", label: "Contact", visible: true }, { pageId: "lookbook", label: "Inspiration", visible: false }] })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.getOwnerPageDrafts({ storeId: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.uploadOwnerPageImage({ storeId: 1, dataUrl: "data:image/png;base64,aGVsbG8=", fileName: "couverture.png" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.saveOwnerPageDraft({ storeId: 1, pageId: "about", enabled: true, coverImageUrl: "", blocks: [{ id: "intro", visible: true, title: "Bienvenue", body: "Un brouillon de page privé." }, { id: "detail", visible: true, title: "Notre histoire", body: "Un contenu préparatoire." }, { id: "reassurance", visible: true, title: "Notre promesse", body: "Une promesse préparatoire." }] })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.getGiftStoreSetupReadiness({ storeId: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.getGiftStoreLaunchCenter({ storeId: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.getGiftStorePreparationChecklist({ storeId: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.getGiftStoreActivityTimeline({ storeId: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.updateGiftStorePrimaryDomain({ storeId: 1, confirmationName: "Boutique cliente", primaryDomain: "animalerie.exemple.ch", acknowledged: true })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.getGiftDemoLibraryCandidates()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.installGiftDemoLibrarySetup({ storeId: 1, confirmationName: "Boutique cliente", acknowledged: true })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.installGiftPetDemoSetup({ storeId: 1, confirmationName: "Boutique cliente", acknowledged: true })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.copyPlatformLegalProfileToGiftStore({ storeId: 1, confirmationName: "Boutique cliente", acknowledged: true })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.openGiftStoreShowcase({ storeId: 1, confirmationName: "Boutique cliente", acknowledged: true })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.activateGiftStore({ storeId: 1, confirmationName: "Boutique cliente", confirmationOwnerEmail: "client@example.test", domainVerified: true, variantsReviewed: true, shippingReturnsReviewed: true, activationAcknowledged: true })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.prepareGiftStoreOwnerInvitation({ storeId: 1, confirmationEmail: "client@example.test" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.reissueGiftStoreOwnerInvitation({ storeId: 1, confirmationEmail: "client@example.test" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.transferStoreOwnership({ storeId: 1, confirmationName: "Boutique cliente", newOwnerName: "Nouveau propriétaire", newOwnerEmail: "nouveau@example.test", confirmationEmail: "nouveau@example.test", acknowledged: true })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.studio.restoreStoreOwnerMembership({ storeId: 1, confirmationName: "Boutique cliente", ownerEmail: "client@example.test", acknowledged: true })).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("refuses technical platform controls from a non-administrator", async () => {
+    const caller = appRouter.createCaller(createContext({ role: "user", isPlatformStore: 1 }));
+    await expect(caller.admin.system.health()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.system.verifyTransactionalEmail()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.system.sendTransactionalEmailTest()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.owner.getWorkspace()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.owner.getCommercialReadiness()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.owner.getPrivateCartSimulation({ countryCode: "CH", lines: [{ productId: 1, quantity: 1 }] })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.owner.getVariantStockOverview()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.owner.getCustomDomainRequest()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.owner.getSupportTickets()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.owner.createSupportTicket({ topic: "technical", subject: "Aide technique", message: "Une aide est nécessaire pour la boutique." })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.owner.saveCustomDomainRequest({ domain: "boutique-client.ch" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.owner.acknowledgeCustomDomainGuide()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.owner.getOrderItemSummaries({ orderId: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.owner.updateOrderTracking({ orderId: 1, status: "shipped" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("blocks all store mutations while a support session is active", async () => {
+    const context = createContext({ role: "user", isPlatformStore: 0 });
+    context.supportImpersonation = {
+      operatorUserId: 7,
+      operatorName: "Opérateur MAZIGHO",
+      storeId: context.store!.id,
+      expiresAt: "2026-09-26T10:00:00.000Z",
+    };
+    const caller = appRouter.createCaller(context);
+    await expect(caller.owner.createSupportTicket({ topic: "technical", subject: "Lecture seule", message: "La session support ne doit rien modifier." })).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: expect.stringContaining("lecture seule"),
+    });
+  });
+});

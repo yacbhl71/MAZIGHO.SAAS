@@ -1,0 +1,72 @@
+import { describe, expect, it } from "vitest";
+import { appRouter } from "./routers";
+import type { TrpcContext } from "./_core/context";
+
+function setupStoreContext(): TrpcContext {
+  return {
+    user: {
+      id: 7,
+      openId: "setup-store-test",
+      email: "owner@example.test",
+      name: "Owner",
+      loginMethod: "manus",
+      role: "user",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      lastSignedIn: new Date(),
+    },
+    store: {
+      id: 99,
+      slug: "cadeau-test",
+      displayName: "Boutique cadeau",
+      primaryDomain: "cadeau.example.test",
+      status: "setup",
+      isPlatformStore: 0,
+    },
+    req: { protocol: "https", headers: {} } as TrpcContext["req"],
+    res: {} as TrpcContext["res"],
+  };
+}
+
+describe("setup storefront guard", () => {
+  it("keeps the platform storefront available even if its legacy status is setup", async () => {
+    const context = setupStoreContext();
+    const caller = appRouter.createCaller({
+      ...context,
+      store: { ...context.store!, id: 1, slug: "primary-store", displayName: "MAZIGHO", primaryDomain: "mazigho.ch", isPlatformStore: 1 },
+    });
+    await expect(caller.storefront.getAvailability()).resolves.toEqual({ publicStorefront: true, commerceEnabled: true, hasResolvedStore: true, isPlatformStore: true });
+  });
+
+  it("signals the storefront as closed and refuses public catalogue reads and transactional actions before activation", async () => {
+    const caller = appRouter.createCaller(setupStoreContext());
+    await expect(caller.storefront.getAvailability()).resolves.toEqual({ publicStorefront: false, commerceEnabled: false, hasResolvedStore: true, isPlatformStore: false });
+    await expect(caller.products.getAll("fr")).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.products.getBundlesForProduct({ productId: 1, locale: "fr" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.shop.cart.get()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.checkout.createSession({ countryCode: "CH", legalAcceptanceVersion: "2026-09-28", legalAccepted: true, items: [{ productId: 1, quantity: 1 }] })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    const setupAdminCaller = appRouter.createCaller({ ...setupStoreContext(), user: { ...setupStoreContext().user!, role: "admin" } });
+    await expect(setupAdminCaller.admin.getStats()).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("fails closed before any catalogue, cart or checkout fallback when no store is resolved", async () => {
+    const context = setupStoreContext();
+    const caller = appRouter.createCaller({ ...context, store: null });
+
+    await expect(caller.storefront.getAvailability()).resolves.toEqual({ publicStorefront: false, commerceEnabled: false, hasResolvedStore: false, isPlatformStore: false });
+    await expect(caller.content.getStoreCurrency()).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(caller.products.getAll("fr")).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(caller.products.getBundlesForProduct({ productId: 1, locale: "fr" })).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(caller.shop.cart.get()).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(caller.checkout.createSession({ countryCode: "CH", legalAcceptanceVersion: "2026-09-28", legalAccepted: true, items: [{ productId: 1, quantity: 1 }] })).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("serves a limited public showcase but refuses cart and checkout", async () => {
+    const context = setupStoreContext();
+    const caller = appRouter.createCaller({ ...context, store: { ...context.store!, status: "limited" } });
+
+    await expect(caller.storefront.getAvailability()).resolves.toEqual({ publicStorefront: true, commerceEnabled: false, hasResolvedStore: true, isPlatformStore: false });
+    await expect(caller.shop.cart.get()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.checkout.createSession({ countryCode: "CH", legalAcceptanceVersion: "2026-09-28", legalAccepted: true, items: [{ productId: 1, quantity: 1 }] })).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+});

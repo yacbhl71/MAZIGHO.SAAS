@@ -1,0 +1,33 @@
+import { useMemo, useState } from "react";
+import { useLocation } from "wouter";
+import { Eye, EyeOff, ShieldCheck, UserRoundCheck } from "lucide-react";
+import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import Header from "@/components/Header";
+import Footer from "@/components/Footer";
+import { trpc } from "@/lib/trpc";
+import { useLocale } from "@/contexts/LocaleContext";
+import { getAccountSecurityCopy } from "@/lib/accountSecurityCopy";
+import { useDesignProfile } from "@/hooks/useDesignProfile";
+import { getStorefrontBrandName, withStorefrontBrand } from "@/lib/storefrontIdentity";
+import { getSetupOwnerPanelPath } from "@shared/setupStoreOwnerAccess";
+
+export default function ActivateAccount() {
+  const [, setLocation] = useLocation();
+  const utils = trpc.useUtils();
+  const { locale } = useLocale();
+  const { profile, palette } = useDesignProfile(locale);
+  const brandName = getStorefrontBrandName(profile);
+  const copy = withStorefrontBrand( getAccountSecurityCopy(locale), brandName);
+  const token = useMemo(() => new URLSearchParams(window.location.search).get("token") || "", []);
+  const [password, setPassword] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const acceptInvitation = trpc.auth.acceptInvitation.useMutation({ onSuccess: async result => { await utils.auth.me.invalidate(); await utils.workspace.getCurrent.invalidate(); toast.success(copy.activate.success); if (result.ownerStore?.status === "setup") { window.location.assign(getSetupOwnerPanelPath(result.ownerStore.id)); return; } if (result.ownerStore?.primaryDomain) { window.location.assign(`https://${result.ownerStore.primaryDomain}/gestion-boutique`); return; } const staffDestinations: Record<string, string> = { catalog_editor: "/admin/catalogue-brouillons", support_agent: "/admin/assistance", order_operator: "/admin/operations-commandes", admin: "/admin" }; setLocation(staffDestinations[result.user.role] || "/mon-compte"); }, onError: error => toast.error(error.message || copy.activate.expired) });
+  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => { event.preventDefault(); if (!token) { toast.error(copy.activate.invalid); return; } if (password !== confirmation) { toast.error(copy.activate.mismatch); return; } acceptInvitation.mutate({ token, password }); };
+
+  return <div className="flex min-h-screen flex-col bg-white"><Header /><main className="flex-1 py-12 md:py-20" style={{ background: `linear-gradient(135deg, ${palette.soft}, #ffffff)` }}><div className="container mx-auto max-w-md px-4"><Card><CardContent className="p-7 md:p-8"><div className="mx-auto mb-6 flex h-14 w-14 items-center justify-center rounded-full" style={{ backgroundColor: palette.soft, color: palette.primary }}><UserRoundCheck className="h-7 w-7" /></div><h1 className="text-center text-2xl font-semibold text-gray-800">{copy.activate.title}</h1><p className="mt-2 text-center text-sm text-gray-600">{copy.activate.lead}</p><form className="mt-7 space-y-5" onSubmit={handleSubmit}><div className="space-y-2"><Label htmlFor="activation-password">{copy.password}</Label><div className="relative"><Input id="activation-password" type={showPassword ? "text" : "password"} autoComplete="new-password" value={password} onChange={event => setPassword(event.target.value)} minLength={8} required className="pr-11" /><button type="button" onClick={() => setShowPassword(value => !value)} className="absolute inset-y-0 right-0 flex w-11 items-center justify-center text-gray-500 hover:text-gray-800" aria-label={showPassword ? copy.hide : copy.show}>{showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}</button></div></div><div className="space-y-2"><Label htmlFor="activation-confirmation">{copy.activate.confirm}</Label><Input id="activation-confirmation" type={showPassword ? "text" : "password"} autoComplete="new-password" value={confirmation} onChange={event => setConfirmation(event.target.value)} minLength={8} required /></div><Button type="submit" disabled={acceptInvitation.isPending || !token} className="w-full text-white" style={{ backgroundColor: palette.accent }}>{acceptInvitation.isPending ? copy.activate.activating : copy.activate.activate}</Button></form>{!token && <p className="mt-4 text-center text-sm text-destructive">{copy.activate.invalid}</p>}</CardContent></Card><div className="mt-7 flex items-start gap-3 rounded-xl border border-green-200 bg-green-50 p-4 text-sm text-green-900"><ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-green-700" /><p>{copy.activate.security}</p></div></div></main><Footer /></div>;
+}

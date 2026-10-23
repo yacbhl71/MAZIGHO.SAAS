@@ -1,0 +1,363 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+:root {
+  /* Premium e-commerce theme with warm elegance */
+  --radius: 0.75rem;
+  --background: oklch(0.98 0.01 40); /* Warm cream background */
+  --foreground: oklch(0.25 0.02 30); /* Rich dark brown text */
+  --card: oklch(1 0 0); /* Pure white cards */
+  --card-foreground: oklch(0.25 0.02 30);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.25 0.02 30);
+  --primary: oklch(0.55 0.15 35); /* Warm terracotta/coral */
+  --primary-foreground: oklch(0.98 0.01 40);
+  --secondary: oklch(0.92 0.02 50); /* Soft peach */
+  --secondary-foreground: oklch(0.25 0.02 30);
+  --muted: oklch(0.95 0.01 45);
+  --muted-foreground: oklch(0.5 0.01 30);
+  --accent: oklch(0.6 0.12 200); /* Elegant teal accent */
+  --accent-foreground: oklch(0.98 0.01 40);
+  --destructive: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.985 0 0);
+  --border: oklch(0.88 0.01 40);
+  --input: oklch(0.88 0.01 40);
+  --ring: oklch(0.55 0.15 35);
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.25 0.02 30);
+  --sidebar-accent: oklch(0.95 0.01 45);
+  --sidebar-accent-foreground: oklch(0.25 0.02 30);
+  --sidebar-border: oklch(0.88 0.01 40);
+  --sidebar-ring: oklch(0.55 0.15 35);
+  --sidebar-primary: oklch(0.55 0.15 35);
+  --sidebar-primary-foreground: oklch(0.98 0.01 40);
+  --chart-1: oklch(0.65 0.15 35);
+  --chart-2: oklch(0.6 0.12 200);
+  --chart-3: oklch(0.7 0.1 100);
+  --chart-4: oklch(0.55 0.15 280);
+  --chart-5: oklch(0.6 0.12 150);
+}
+
+/*
+ * Storefront palette bridge
+ * -------------------------
+ * The original MAZIGHO shop used Tailwind orange utilities directly in a
+ * number of public pages (prices, catalogue actions, cart and support
+ * details). A boutique palette must take precedence over this legacy brand
+ * colour. Header/useDesignProfile sets the three --mazigho variables per
+ * resolved boutique, so these overrides affect only a rendered storefront,
+ * never the Studio administration interface.
+ */
+:root[data-mazigho-theme] .text-orange-300,
+:root[data-mazigho-theme] .text-orange-400,
+:root[data-mazigho-theme] .text-orange-500,
+:root[data-mazigho-theme] .text-orange-600,
+:root[data-mazigho-theme] .text-orange-700,
+:root[data-mazigho-theme] .text-orange-800,
+:root[data-mazigho-theme] .text-orange-900 {
+  color: var(--mazigho-accent) !important;
+}
+
+:root[data-mazigho-theme] .bg-orange-50,
+:root[data-mazigho-theme] .bg-orange-50\/50,
+:root[data-mazigho-theme] .bg-orange-100 {
+  background-color: var(--mazigho-soft) !important;
+}
+
+:root[data-mazigho-theme] .bg-orange-300,
+:root[data-mazigho-theme] .bg-orange-400,
+:root[data-mazigho-theme] .bg-orange-500,
+:root[data-mazigho-theme] .bg-orange-600,
+:root[data-mazigho-theme] .bg-orange-700 {
+  background-color: var(--mazigho-accent) !important;
+}
+
+:root[data-mazigho-theme] .border-orange-100,
+:root[data-mazigho-theme] .border-orange-200,
+:root[data-mazigho-theme] .border-orange-300,
+:root[data-mazigho-theme] .border-orange-400,
+:root[data-mazigho-theme] .border-orange-500 {
+  border-color: var(--mazigho-primary) !important;
+}
+
+:root[data-mazigho-theme] .hover\:text-orange-300:hover,
+:root[data-mazigho-theme] .hover\:text-orange-400:hover,
+:root[data-mazigho-theme] .hover\:text-orange-500:hover,
+:root[data-mazigho-theme] .hover\:text-orange-600:hover,
+:root[data-mazigho-theme] .hover\:text-orange-700:hover,
+:root[data-mazigho-theme] .hover\:text-orange-800:hover,
+:root[data-mazigho-theme] .hover\:text-orange-900:hover {
+  color: var(--mazigho-primary) !important;
+}
+
+:root[data-mazigho-theme] .hover\:bg-orange-300:hover,
+:root[data-mazigho-theme] .hover\:bg-orange-400:hover,
+:root[data-mazigho-theme] .hover\:bg-orange-500:hover,
+:root[data-mazigho-theme] .hover\:bg-orange-600:hover,
+:root[data-mazigho-theme] .hover\:bg-orange-700:hover {
+  background-color: var(--mazigho-primary) !important;
+}
+
+:root[data-mazigho-theme] .hover\:border-orange-300:hover,
+:root[data-mazigho-theme] .hover\:border-orange-400:hover,
+:root[data-mazigho-theme] .hover\:border-orange-500:hover {
+  border-color: var(--mazigho-accent) !important;
+}
+
+:root[data-mazigho-theme] .focus\:ring-orange-300:focus,
+:root[data-mazigho-theme] .focus\:ring-orange-400:focus,
+:root[data-mazigho-theme] .focus\:ring-orange-500:focus,
+:root[data-mazigho-theme] .focus\:ring-orange-600:focus,
+:root[data-mazigho-theme] .focus-visible\:ring-orange-500:focus-visible {
+  --tw-ring-color: var(--mazigho-accent) !important;
+}
+
+:root[data-mazigho-theme] .from-orange-50 {
+  --tw-gradient-from: var(--mazigho-soft) var(--tw-gradient-from-position) !important;
+  --tw-gradient-to: color-mix(in srgb, var(--mazigho-soft), transparent 0%) var(--tw-gradient-to-position) !important;
+}
+
+:root[data-mazigho-theme] .to-orange-50 {
+  --tw-gradient-to: var(--mazigho-soft) var(--tw-gradient-to-position) !important;
+}
+
+.dark {
+  --primary: oklch(0.72 0.16 50);
+  --primary-foreground: oklch(0.19 0.015 45);
+  --sidebar-primary: oklch(0.72 0.16 50);
+  --sidebar-primary-foreground: oklch(0.19 0.015 45);
+  --background: oklch(0.18 0.015 45);
+  --foreground: oklch(0.93 0.015 70);
+  --card: oklch(0.23 0.018 45);
+  --card-foreground: oklch(0.93 0.015 70);
+  --popover: oklch(0.25 0.02 45);
+  --popover-foreground: oklch(0.93 0.015 70);
+  --secondary: oklch(0.3 0.03 50);
+  --secondary-foreground: oklch(0.91 0.02 70);
+  --muted: oklch(0.28 0.018 45);
+  --muted-foreground: oklch(0.76 0.018 70);
+  --accent: oklch(0.55 0.1 200);
+  --accent-foreground: oklch(0.97 0.01 70);
+  --destructive: oklch(0.68 0.19 28);
+  --destructive-foreground: oklch(0.985 0 0);
+  --border: oklch(0.42 0.02 50);
+  --input: oklch(0.42 0.02 50);
+  --ring: oklch(0.72 0.16 50);
+  --chart-1: oklch(0.72 0.16 50);
+  --chart-2: oklch(0.68 0.12 200);
+  --chart-3: oklch(0.75 0.11 120);
+  --chart-4: oklch(0.67 0.12 300);
+  --chart-5: oklch(0.7 0.12 160);
+  --sidebar: oklch(0.15 0.013 45);
+  --sidebar-foreground: oklch(0.9 0.015 70);
+  --sidebar-accent: oklch(0.25 0.02 45);
+  --sidebar-accent-foreground: oklch(0.95 0.015 70);
+  --sidebar-border: oklch(0.34 0.02 45);
+  --sidebar-ring: oklch(0.72 0.16 50);
+}
+
+/* Migration progressive des surfaces historiques : ces utilitaires restent lisibles en mode sombre. */
+.dark .bg-white,
+.dark .bg-gray-50,
+.dark .bg-slate-50 {
+  background-color: var(--card) !important;
+}
+
+.dark .bg-gray-100,
+.dark .bg-slate-100 {
+  background-color: var(--muted) !important;
+}
+
+.dark .bg-orange-50 {
+  background-color: oklch(0.25 0.035 55) !important;
+}
+
+.dark .bg-rose-50 {
+  background-color: oklch(0.25 0.03 15) !important;
+}
+
+.dark .border-slate-100,
+.dark .border-slate-200,
+.dark .border-gray-100,
+.dark .border-gray-200,
+.dark .border-orange-100,
+.dark .border-rose-100 {
+  border-color: var(--border) !important;
+}
+
+.dark .text-slate-900,
+.dark .text-slate-800,
+.dark .text-gray-900,
+.dark .text-gray-800 {
+  color: var(--foreground) !important;
+}
+
+.dark .text-slate-700,
+.dark .text-slate-600,
+.dark .text-slate-500,
+.dark .text-slate-400,
+.dark .text-gray-700,
+.dark .text-gray-600,
+.dark .text-gray-500 {
+  color: var(--muted-foreground) !important;
+}
+
+.dark .text-orange-950,
+.dark .text-orange-900 {
+  color: oklch(0.9 0.08 70) !important;
+}
+
+.dark .text-orange-700 {
+  color: oklch(0.78 0.16 50) !important;
+}
+
+.dark .hover\\:bg-gray-100:hover,
+.dark .hover\\:bg-white:hover {
+  background-color: var(--muted) !important;
+}
+
+.dark .hover\\:bg-orange-50:hover {
+  background-color: oklch(0.3 0.045 55) !important;
+}
+
+/* Dark mode : surfaces crème arbitraires -> surface sombre, pour garder un contraste lisible sur les cartes produit */
+.dark .bg-\[\#fbf7f2\],
+.dark .bg-\[\#fffaf7\],
+.dark .bg-\[\#fffaf5\],
+.dark .bg-\[\#f8f8f7\],
+.dark .bg-\[\#f5f0ea\],
+.dark .bg-\[\#f2eee9\],
+.dark .bg-\[\#f3ebe2\] {
+  background-color: var(--card) !important;
+}
+
+.dark .bg-\[\#f4f0eb\],
+.dark .bg-\[\#f1ebe4\] {
+  background-color: var(--muted) !important;
+}
+
+.dark .border-\[\#eadfd2\],
+.dark .border-\[\#e5d8cb\],
+.dark .border-\[\#e0d3c3\],
+.dark .border-\[\#d9cbbc\] {
+  border-color: var(--border) !important;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .theme-surface {
+    transition: background-color 180ms ease-out, color 180ms ease-out, border-color 180ms ease-out;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: var(--mazigho-body-font, 'Inter', sans-serif);
+  }
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--mazigho-heading-font, 'Playfair Display', serif);
+    font-weight: 600;
+  }
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  [type="button"]:not(:disabled),
+  [type="submit"]:not(:disabled),
+  [type="reset"]:not(:disabled),
+  a[href],
+  select:not(:disabled),
+  input[type="checkbox"]:not(:disabled),
+  input[type="radio"]:not(:disabled) {
+    @apply cursor-pointer;
+  }
+}
+
+@layer components {
+  /**
+   * Custom container utility that centers content and adds responsive padding.
+   *
+   * This overrides Tailwind's default container behavior to:
+   * - Auto-center content (mx-auto)
+   * - Add responsive horizontal padding
+   * - Set max-width for large screens
+   *
+   * Usage: <div className="container">...</div>
+   *
+   * For custom widths, use max-w-* utilities directly:
+   * <div className="max-w-6xl mx-auto px-4">...</div>
+   */
+  .container {
+    width: 100%;
+    margin-left: auto;
+    margin-right: auto;
+    padding-left: 1rem; /* 16px - mobile padding */
+    padding-right: 1rem;
+  }
+
+  .flex {
+    min-height: 0;
+    min-width: 0;
+  }
+
+  @media (min-width: 640px) {
+    .container {
+      padding-left: 1.5rem; /* 24px - tablet padding */
+      padding-right: 1.5rem;
+    }
+  }
+
+  @media (min-width: 1024px) {
+    .container {
+      padding-left: 2rem; /* 32px - desktop padding */
+      padding-right: 2rem;
+      max-width: 1280px; /* Standard content width */
+    }
+  }
+}
+/* Global button roundness driven by the customization studio (public store only). */
+html[data-mazigho-theme] [data-slot="button"] {
+  border-radius: var(--mazigho-button-radius, 0.5rem);
+}

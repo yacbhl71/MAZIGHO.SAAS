@@ -1,0 +1,94 @@
+import { describe, expect, it } from "vitest";
+import { renderOwnerPackingSlipHtml } from "../shared/orderPackingSlip";
+import { renderOwnerDeliveryHandoverHtml } from "../shared/orderDeliveryHandover";
+import { getOwnerOrderPreparationFilterCount, matchesOwnerOrderPreparationFilter } from "../shared/orderPreparationQueue";
+
+describe("owner order preparation queue", () => {
+  const rows = [
+    { id: 1, paymentStatus: "paid", status: "pending" },
+    { id: 2, paymentStatus: "paid", status: "processing" },
+    { id: 3, paymentStatus: "paid", status: "shipped" },
+    { id: 4, paymentStatus: "unpaid", status: "pending" },
+    { id: 5, paymentStatus: "paid", status: "delivered" },
+  ];
+
+  it("separates paid actions from unpaid and closed orders", () => {
+    expect(getOwnerOrderPreparationFilterCount(rows, "to_accept")).toBe(1);
+    expect(getOwnerOrderPreparationFilterCount(rows, "to_prepare")).toBe(1);
+    expect(getOwnerOrderPreparationFilterCount(rows, "shipped")).toBe(1);
+    expect(getOwnerOrderPreparationFilterCount(rows, "closed")).toBe(1);
+    expect(matchesOwnerOrderPreparationFilter(rows[3], "to_accept")).toBe(false);
+  });
+
+  it("routes Algeria payment-on-delivery orders through manual acceptance and preparation", () => {
+    expect(matchesOwnerOrderPreparationFilter({ id: 12, paymentStatus: "unpaid", paymentMethod: "cash_on_delivery_dz", status: "pending" }, "to_accept")).toBe(true);
+    expect(matchesOwnerOrderPreparationFilter({ id: 13, paymentStatus: "unpaid", paymentMethod: "cash_on_delivery_dz", status: "processing" }, "to_prepare")).toBe(true);
+    expect(matchesOwnerOrderPreparationFilter({ id: 14, paymentStatus: "unpaid", paymentMethod: "cash_on_delivery_dz", status: "cancelled" }, "closed")).toBe(true);
+  });
+});
+
+describe("owner packing slip renderer", () => {
+  it("renders only fulfillment essentials and safely escapes customer-controlled text", () => {
+    const html = renderOwnerPackingSlipHtml({
+      storeName: "Boutique test",
+      preparedAt: "28 sept. 2026, 01:00",
+      delivery: {
+        orderId: 71,
+        recipientName: "Cliente <test>",
+        addressLines: ["Rue & Exemple 4"],
+        postalCode: "1000",
+        city: "Lausanne",
+        state: null,
+        countryCode: "CH",
+        phone: null,
+        email: "cliente@example.test",
+        trackingNumber: null,
+        trackingCarrier: "Yalidine",
+      },
+      items: [{ productName: "Kit <violet>", quantity: 2, selectedOptions: [{ name: "Couleur", value: "Violet & fuchsia" }] }],
+    });
+
+    expect(html).toContain("Bon de préparation");
+    expect(html).toContain("Cliente &lt;test&gt;");
+    expect(html).toContain("Kit &lt;violet&gt;");
+    expect(html).toContain("Violet &amp; fuchsia");
+    expect(html).toContain("Yalidine");
+    expect(html).not.toContain("TVA");
+    expect(html).not.toContain("Carte bancaire");
+  });
+});
+
+describe("owner delivery handover renderer", () => {
+  it("renders a manual shipment sheet without financial or email data", () => {
+    const html = renderOwnerDeliveryHandoverHtml({
+      storeName: "Boutique test",
+      handedOverAt: "4 oct. 2026, 21:00",
+      delivery: {
+        orderId: 72,
+        recipientName: "Cliente <test>",
+        addressLines: ["Rue & Exemple 4"],
+        postalCode: "1000",
+        city: "Lausanne",
+        state: null,
+        countryCode: "CH",
+        phone: "+41 79 000 00 00",
+        email: "cliente@example.test",
+        trackingNumber: "CH-72",
+        trackingCarrier: "Yalidine <DZ>",
+        trackingUrl: "https://carrier.example/track/CH-72",
+      },
+      items: [{ productName: "Kit <violet>", quantity: 2, selectedOptions: [{ name: "Couleur", value: "Violet & fuchsia" }] }],
+    });
+
+    expect(html).toContain("Bordereau de remise");
+    expect(html).toContain("Cliente &lt;test&gt;");
+    expect(html).toContain("Kit &lt;violet&gt;");
+    expect(html).toContain("Violet &amp; fuchsia");
+    expect(html).toContain("Yalidine &lt;DZ&gt;");
+    expect(html).toContain("Remis au transporteur ou au point de dépôt");
+    expect(html).not.toContain("cliente@example.test");
+    expect(html).not.toContain("https://carrier.example/track/CH-72");
+    expect(html).not.toContain("TVA");
+    expect(html).not.toContain("Carte bancaire");
+  });
+});
