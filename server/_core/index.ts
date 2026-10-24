@@ -69,12 +69,7 @@ export async function startProductionServer() {
   configureApi(app);
   serveStatic(app);
 
-  const preferredPort = parseInt(process.env.PORT || "3000");
-  const port = await findAvailablePort(preferredPort);
-
-  if (port !== preferredPort) {
-    console.log(`Port ${preferredPort} is busy, using port ${port} instead`);
-  }
+  const port = parseInt(process.env.PORT || "8080", 10);
 
   server.listen(port, "0.0.0.0", () => {
     console.log(`Server running on http://0.0.0.0:${port}/`);
@@ -100,10 +95,9 @@ export async function startDevServer() {
 }
 
 if (!process.env.VERCEL && !process.env.VITEST) {
-  if (process.env.NODE_ENV === "production") {
-    startProductionServer().catch(console.error);
-  } else if (process.env.NODE_ENV === "development") {
+  if (process.env.NODE_ENV === "development") {
     startDevServer().catch(console.error);
+  } else {
+    startProductionServer().catch(console.error);
   }
 }
-
