@@ -5,8 +5,7 @@ WORKDIR /app
 
 # Install build dependencies
 COPY package.json ./
-# If bun.lock or package-lock exists
-RUN npm install
+RUN npm install --legacy-peer-deps
 
 COPY . .
 
@@ -22,7 +21,7 @@ ENV NODE_ENV=production
 ENV PORT=8080
 
 COPY package.json ./
-RUN npm install --omit=dev
+RUN npm install --omit=dev --legacy-peer-deps
 
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/server-dist ./server-dist
