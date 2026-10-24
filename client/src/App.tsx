@@ -389,9 +389,9 @@ function Router() {
   const storefrontMaintenanceQuery = trpc.storefront.getMaintenanceMode.useQuery(undefined, { refetchInterval: 60000, refetchOnWindowFocus: false });
   const path = location.split("?")[0];
   const currentHostname = typeof window !== "undefined" ? window.location.hostname.toLowerCase() : "";
-  const isStudioHost = currentHostname === "studio.mazigho.ch";
-  const isSaasLandingHost = currentHostname === "pro.mazigho.ch";
-  const isPrimaryMazighoHost = currentHostname === "mazigho.ch" || currentHostname === "www.mazigho.ch";
+  const isStudioHost = currentHostname === "studio.mazigho.ch" || currentHostname === "studio.mazigho.com";
+  const isSaasLandingHost = currentHostname === "pro.mazigho.ch" || currentHostname === "pro.mazigho.com";
+  const isPrimaryMazighoHost = currentHostname === "mazigho.ch" || currentHostname === "www.mazigho.ch" || currentHostname === "mazigho.com" || currentHostname === "www.mazigho.com";
   const isPublicSaasLanding = path === "/mazigho-saas" || path.startsWith("/creation-boutique") || isSaasLandingHost;
   const isPrivateSetupOwnerPanel = typeof window !== "undefined" && isPrivateSetupOwnerPanelPath(path, window.location.search);
   const STAFF_ROLES = ["admin", "catalog_editor", "order_operator", "support_agent"];

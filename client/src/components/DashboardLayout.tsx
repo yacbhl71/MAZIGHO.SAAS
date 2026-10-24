@@ -200,7 +200,7 @@ export default function DashboardLayout({
   });
   const { isLoading: loading, user } = useAuth() as any;
   const [location, setLocation] = useLocation();
-  const isStudioHost = typeof window !== "undefined" && window.location.hostname.toLowerCase() === "studio.mazigho.ch";
+  const isStudioHost = typeof window !== "undefined" && (window.location.hostname.toLowerCase() === "studio.mazigho.ch" || window.location.hostname.toLowerCase() === "studio.mazigho.com");
   const platformIdentityQuery = trpc.platformIdentity.get.useQuery(undefined, { staleTime: 60_000, refetchOnWindowFocus: false });
   const studioLogoUrl = isStudioHost ? (platformIdentityQuery.data?.studio.logoUrl || APP_LOGO) : APP_LOGO;
   const studioFaviconUrl = isStudioHost ? (platformIdentityQuery.data?.studio.faviconUrl || APP_LOGO) : "";

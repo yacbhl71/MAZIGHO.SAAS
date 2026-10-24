@@ -2,9 +2,13 @@ import type { CookieOptions, Request } from "express";
 
 function getMazighoSessionDomain(hostname: string | undefined) {
   const normalized = hostname?.trim().toLowerCase().replace(/:\d+$/, "") || "";
-  return normalized === "mazigho.ch" || normalized.endsWith(".mazigho.ch")
-    ? ".mazigho.ch"
-    : undefined;
+  if (normalized === "mazigho.com" || normalized.endsWith(".mazigho.com")) {
+    return ".mazigho.com";
+  }
+  if (normalized === "mazigho.ch" || normalized.endsWith(".mazigho.ch")) {
+    return ".mazigho.ch";
+  }
+  return undefined;
 }
 
 function isSecureRequest(req: Request) {

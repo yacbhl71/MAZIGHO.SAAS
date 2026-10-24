@@ -8,7 +8,8 @@ export function normalizeStoreHost(host?: string | null) {
 
 /** The operator console has a dedicated hostname, never a customer store. */
 export function isStudioHost(host?: string | null) {
-  return normalizeStoreHost(host) === "studio.mazigho.ch";
+  const h = normalizeStoreHost(host);
+  return h === "studio.mazigho.com" || h === "studio.mazigho.ch";
 }
 
 /**
@@ -19,15 +20,15 @@ export function isStudioHost(host?: string | null) {
 export function getStoreRecoveryHost(slug: string) {
   const normalizedSlug = slug.trim().toLowerCase();
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(normalizedSlug) || normalizedSlug === "studio" || normalizedSlug === "primary-store") return null;
-  return `${normalizedSlug}.mazigho.ch`;
+  return `${normalizedSlug}.mazigho.com`;
 }
 
 export function getStoreSlugForRecoveryHost(host?: string | null) {
   const normalizedHost = normalizeStoreHost(host);
-  const match = /^([a-z0-9]+(?:-[a-z0-9]+)*)\.mazigho\.ch$/.exec(normalizedHost);
+  const match = /^([a-z0-9]+(?:-[a-z0-9]+)*)\.mazigho\.(?:com|ch)$/.exec(normalizedHost);
   if (!match) return null;
   const slug = match[1];
-  return getStoreRecoveryHost(slug) === normalizedHost ? slug : null;
+  return (getStoreRecoveryHost(slug) === normalizedHost || `${slug}.mazigho.ch` === normalizedHost) ? slug : null;
 }
 
 /** A limited store may still serve its configured public status page; suspended and closed stores must not serve a checkout. */
@@ -57,12 +58,17 @@ export function mayUsePlatformStoreFallback(host: string, primaryDomain: string)
   const rootPrimary = normalizedPrimary.replace(/^www\./, "");
   const isPrimaryAlias = normalizedHost === normalizedPrimary
     || normalizedHost === rootPrimary
-    || normalizedHost === `www.${rootPrimary}`;
+    || normalizedHost === `www.${rootPrimary}`
+    || normalizedHost === "mazigho.com"
+    || normalizedHost === "www.mazigho.com"
+    || normalizedHost === "pro.mazigho.com"
+    || normalizedHost === "mazigho.ch"
+    || normalizedHost === "www.mazigho.ch"
+    || normalizedHost === "pro.mazigho.ch";
   const isLocalDevelopment = normalizedHost === "localhost" || normalizedHost === "127.0.0.1" || normalizedHost === "0.0.0.0";
   const isProjectVercelAlias = normalizedHost === "mazigho-shop.vercel.app"
     || /^mazigho-shop-[a-z0-9-]+\.vercel\.app$/.test(normalizedHost);
   const isCloudRunPreviewAlias = normalizedHost.endsWith(".run.app")
-    || normalizedHost.endsWith(".usercontent.goog")
-    || normalizedHost === "pro.mazigho.ch";
+    || normalizedHost.endsWith(".usercontent.goog");
   return !normalizedHost || isPrimaryAlias || isStudioHost(normalizedHost) || isLocalDevelopment || isProjectVercelAlias || isCloudRunPreviewAlias;
 }
