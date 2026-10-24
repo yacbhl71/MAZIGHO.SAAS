@@ -34,12 +34,28 @@ export default function Register() {
   const [googleLoading, setGoogleLoading] = useState(false);
 
   const register = trpc.auth.register.useMutation({
-    onSuccess: async () => { await utils.auth.me.invalidate(); toast.success(copy.register.success); setLocation(storeProjectIntent ? returnTo : "/mon-compte"); },
+    onSuccess: async data => {
+      if (typeof window !== "undefined" && data.sessionToken) {
+        window.localStorage.setItem("mazigho_session_token", data.sessionToken);
+      }
+      utils.auth.me.setData(undefined, data.user as any);
+      await utils.auth.me.invalidate();
+      toast.success(copy.register.success);
+      setLocation(storeProjectIntent ? returnTo : "/mon-compte");
+    },
     onError: error => toast.error(error.message || copy.register.error),
   });
 
   const firebaseLogin = trpc.auth.firebaseLogin.useMutation({
-    onSuccess: async () => { await utils.auth.me.invalidate(); toast.success(copy.register.success); setLocation(storeProjectIntent ? returnTo : "/mon-compte"); },
+    onSuccess: async data => {
+      if (typeof window !== "undefined" && data.sessionToken) {
+        window.localStorage.setItem("mazigho_session_token", data.sessionToken);
+      }
+      utils.auth.me.setData(undefined, data.user as any);
+      await utils.auth.me.invalidate();
+      toast.success(copy.register.success);
+      setLocation(storeProjectIntent ? returnTo : "/mon-compte");
+    },
     onError: error => toast.error(error.message || copy.register.error),
   });
 

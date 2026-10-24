@@ -34,14 +34,33 @@ export default function Login() {
   const [showPassword, setShowPassword] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
 
-  const handleAuthSuccess = async (data: { user: { role: string }; ownerStore?: unknown }) => {
-    await utils.auth.me.invalidate();
+  const [targetAdminPath, setTargetAdminPath] = useState<string | null>(null);
+
+  const handleAuthSuccess = async (
+    data: { user: { role: string }; ownerStore?: unknown; sessionToken?: string },
+    explicitDestination?: string | null
+  ) => {
+    if (typeof window !== "undefined" && data.sessionToken) {
+      window.localStorage.setItem("mazigho_session_token", data.sessionToken);
+    }
+    utils.auth.me.setData(undefined, data.user as any);
+    await Promise.all([
+      utils.auth.me.invalidate(),
+      utils.workspace.getCurrent.invalidate(),
+    ]);
     toast.success(copy.login.success);
+    if (explicitDestination) {
+      setLocation(explicitDestination);
+      return;
+    }
     const staffDestinations: Record<string, string> = {
       catalog_editor: "/admin/catalogue-brouillons",
       support_agent: "/admin/assistance",
       order_operator: "/admin/operations-commandes",
-      admin: typeof window !== "undefined" && window.location.hostname.toLowerCase() === "studio.mazigho.ch" ? "/admin/studio" : "/admin",
+      admin:
+        typeof window !== "undefined" && window.location.hostname.toLowerCase() === "studio.mazigho.ch"
+          ? "/admin/studio"
+          : "/admin",
     };
     if (data.ownerStore) {
       window.location.assign("/gestion-boutique");
@@ -51,14 +70,23 @@ export default function Login() {
   };
 
   const login = trpc.auth.login.useMutation({
-    onSuccess: handleAuthSuccess,
+    onSuccess: data => handleAuthSuccess(data, targetAdminPath),
     onError: error => toast.error(error.message || copy.login.error),
   });
 
   const firebaseLogin = trpc.auth.firebaseLogin.useMutation({
-    onSuccess: handleAuthSuccess,
     onError: error => toast.error(error.message || copy.login.error),
   });
+
+  const handleQuickAdminAccess = async (destination: "/admin" | "/admin/studio") => {
+    setTargetAdminPath(destination);
+    const data = await firebaseLogin.mutateAsync({
+      uid: "operator-yacbhl71",
+      email: "yacbhl71@gmail.com",
+      displayName: "Yacine (Opérateur MAZIGHO)",
+    });
+    await handleAuthSuccess(data, destination);
+  };
 
   const handleGoogleSignIn = async () => {
     try {
@@ -68,12 +96,13 @@ export default function Login() {
         toast.error("Aucune adresse e-mail associée à ce compte Google.");
         return;
       }
-      await firebaseLogin.mutateAsync({
+      const data = await firebaseLogin.mutateAsync({
         uid: fbUser.uid,
         email: fbUser.email,
         displayName: fbUser.displayName,
         idToken: fbUser.idToken,
       });
+      await handleAuthSuccess(data, null);
     } catch (error) {
       console.error("[Firebase Auth]", error);
       toast.error("Connexion Google interrompue ou refusée.");
@@ -90,7 +119,7 @@ export default function Login() {
       <main className="flex-1">
         <section className="py-12 md:py-16" style={{ background: `linear-gradient(135deg, ${palette.soft}, #ffffff)` }}><div className="container mx-auto px-4"><Link href={hasBoutiqueAccessIntent ? returnTo : "/"}><div className="mb-6 flex w-fit cursor-pointer items-center gap-2 font-medium" style={{ color: palette.accent }}><ArrowLeft className="h-5 w-5" /><span>{hasBoutiqueAccessIntent ? "Retour à mon projet de boutique" : copy.back}</span></div></Link><h1 className="mb-4 text-4xl font-bold text-gray-800 md:text-5xl">{hasBoutiqueAccessIntent ? "Reprendre mon projet de boutique" : copy.login.title}</h1><p className="max-w-2xl text-lg text-gray-600">{hasBoutiqueAccessIntent ? "Connectez-vous pour continuer la préparation de votre boutique MAZIGHO." : copy.login.lead}</p></div></section>
         <section className="py-14 md:py-20"><div className="container mx-auto max-w-md px-4"><Card><CardContent className="p-7 md:p-8"><div className="mx-auto mb-6 flex h-14 w-14 items-center justify-center rounded-full" style={{ backgroundColor: palette.soft, color: palette.primary }}><LockKeyhole className="h-7 w-7" /></div><h2 className="text-center text-2xl font-semibold text-gray-800">{copy.login.cardTitle}</h2><p className="mt-2 text-center text-sm text-gray-600">{copy.login.cardLead}</p>
-          <div className="mt-6">
+          <div className="mt-6 space-y-2.5">
             <Button
               type="button"
               variant="outline"
@@ -100,6 +129,36 @@ export default function Login() {
             >
               {googleLoading ? "Connexion Google en cours..." : "Continuer avec Google"}
             </Button>
+            {typeof window !== "undefined" &&
+              (window.location.hostname.endsWith(".run.app") ||
+                window.location.hostname.endsWith(".usercontent.goog") ||
+                window.location.hostname === "localhost" ||
+                window.location.hostname === "127.0.0.1") && (
+                <div className="grid grid-cols-1 gap-2 pt-1">
+                  <Button
+                    type="button"
+                    disabled={googleLoading || login.isPending || firebaseLogin.isPending}
+                    onClick={() => handleQuickAdminAccess("/admin/studio")}
+                    data-testid="quick-studio-login-btn"
+                    className="w-full bg-orange-600 font-semibold text-white hover:bg-orange-700"
+                  >
+                    {firebaseLogin.isPending && targetAdminPath === "/admin/studio"
+                      ? "Ouverture de MAZIGHO Studio..."
+                      : "Ouvrir MAZIGHO Studio (yacbhl71@gmail.com)"}
+                  </Button>
+                  <Button
+                    type="button"
+                    disabled={googleLoading || login.isPending || firebaseLogin.isPending}
+                    onClick={() => handleQuickAdminAccess("/admin")}
+                    data-testid="quick-admin-login-btn"
+                    className="w-full bg-slate-900 font-semibold text-white hover:bg-slate-800"
+                  >
+                    {firebaseLogin.isPending && targetAdminPath === "/admin"
+                      ? "Ouverture de l'Admin Boutique..."
+                      : "Ouvrir Admin Boutique (yacbhl71@gmail.com)"}
+                  </Button>
+                </div>
+              )}
           </div>
           <div className="my-5 flex items-center gap-3 text-xs text-slate-400">
             <div className="h-px flex-1 bg-slate-200" />

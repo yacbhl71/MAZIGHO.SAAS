@@ -37,6 +37,7 @@ const redirectToLoginIfUnauthorized = (error: unknown) => {
   const isUnauthorized = error.message === UNAUTHED_ERR_MSG;
 
   if (!isUnauthorized) return;
+  if (window.location.pathname === "/login") return;
 
   window.location.href = getLoginUrl();
 };
@@ -64,10 +65,16 @@ const trpcClient = trpc.createClient({
       transformer: superjson,
       fetch(input, init) {
         const headers = new Headers(init?.headers);
-        const setupStoreId = typeof window !== "undefined" && window.location.pathname === "/gestion-boutique"
-          ? getSetupStoreIdFromSearch(window.location.search)
-          : null;
-        if (setupStoreId) headers.set(setupStoreAccessHeader, String(setupStoreId));
+        if (typeof window !== "undefined") {
+          const sessionToken = window.localStorage.getItem("mazigho_session_token");
+          if (sessionToken) {
+            headers.set("x-mazigho-session", sessionToken);
+          }
+          const setupStoreId = window.location.pathname === "/gestion-boutique"
+            ? getSetupStoreIdFromSearch(window.location.search)
+            : null;
+          if (setupStoreId) headers.set(setupStoreAccessHeader, String(setupStoreId));
+        }
         return globalThis.fetch(input, {
           ...(init ?? {}),
           credentials: "include",

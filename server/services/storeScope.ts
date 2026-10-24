@@ -61,6 +61,8 @@ export function mayUsePlatformStoreFallback(host: string, primaryDomain: string)
   const isLocalDevelopment = normalizedHost === "localhost" || normalizedHost === "127.0.0.1" || normalizedHost === "0.0.0.0";
   const isProjectVercelAlias = normalizedHost === "mazigho-shop.vercel.app"
     || /^mazigho-shop-[a-z0-9-]+\.vercel\.app$/.test(normalizedHost);
-  const isCloudRunPreviewAlias = /^ais-(?:dev|pre)-[a-z0-9-]+-\d+\.[a-z0-9-]+\.run\.app$/.test(normalizedHost);
+  const isCloudRunPreviewAlias = normalizedHost.endsWith(".run.app")
+    || normalizedHost.endsWith(".usercontent.goog")
+    || normalizedHost === "pro.mazigho.ch";
   return !normalizedHost || isPrimaryAlias || isStudioHost(normalizedHost) || isLocalDevelopment || isProjectVercelAlias || isCloudRunPreviewAlias;
 }

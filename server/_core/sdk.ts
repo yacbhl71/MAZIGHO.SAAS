@@ -323,10 +323,23 @@ class SDKServer {
     } as GetUserInfoWithJwtResponse;
   }
 
-  async authenticateRequest(req: Request): Promise<User> {
-    // Regular authentication flow
+  extractSessionToken(req: Request): string | undefined {
+    const headerToken = req.headers["x-mazigho-session"];
+    if (typeof headerToken === "string" && headerToken.trim().length > 0) {
+      return headerToken.trim();
+    }
+    const authHeader = req.headers.authorization;
+    if (typeof authHeader === "string" && authHeader.startsWith("Bearer ")) {
+      const bearer = authHeader.slice(7).trim();
+      if (bearer.length > 0) return bearer;
+    }
     const cookies = this.parseCookies(req.headers.cookie);
-    const sessionCookie = cookies.get(COOKIE_NAME);
+    return cookies.get(COOKIE_NAME);
+  }
+
+  async authenticateRequest(req: Request): Promise<User> {
+    // Regular authentication flow (supports header token for cross-origin tablet iframes + cookies)
+    const sessionCookie = this.extractSessionToken(req);
     const session = await this.verifySession(sessionCookie);
 
     if (!session) {

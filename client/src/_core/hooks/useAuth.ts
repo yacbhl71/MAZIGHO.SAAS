@@ -28,6 +28,9 @@ export function useAuth(options?: UseAuthOptions) {
 
   const logout = useCallback(async () => {
     try {
+      if (typeof window !== "undefined") {
+        window.localStorage.removeItem("mazigho_session_token");
+      }
       await logoutMutation.mutateAsync();
     } catch (error: unknown) {
       if (
@@ -38,6 +41,9 @@ export function useAuth(options?: UseAuthOptions) {
       }
       throw error;
     } finally {
+      if (typeof window !== "undefined") {
+        window.localStorage.removeItem("mazigho_session_token");
+      }
       utils.auth.me.setData(undefined, null);
       await utils.auth.me.invalidate();
     }
@@ -66,6 +72,7 @@ export function useAuth(options?: UseAuthOptions) {
   return {
     user,
     loading,
+    isLoading: loading,
     error,
     isAuthenticated: Boolean(user),
     refresh: () => meQuery.refetch(),

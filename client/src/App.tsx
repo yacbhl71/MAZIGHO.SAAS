@@ -17,6 +17,7 @@ import { useDesignProfile } from "@/hooks/useDesignProfile";
 import { getStorefrontBrandName, withStorefrontBrand } from "@/lib/storefrontIdentity";
 import { MaintenancePage } from "./components/MaintenancePage";
 import { isPrivateSetupOwnerPanelPath } from "@shared/setupStoreOwnerAccess";
+import { MazighoSurfaceSwitcher } from "./components/MazighoSurfaceSwitcher";
 import Home from "./pages/Home";
 const MazighoSaasLanding = lazy(() => import("./pages/MazighoSaasLanding"));
 const BoutiqueKeyInHandLanding = lazy(() => import("./pages/BoutiqueKeyInHandLanding"));
@@ -572,6 +573,7 @@ function Router() {
         </Switch>
       </Suspense>
       <StorefrontMarketing />
+      <MazighoSurfaceSwitcher />
     </>
   );
 }

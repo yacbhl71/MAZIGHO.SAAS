@@ -33,7 +33,7 @@ export function getSessionCookieOptions(
     ...(domain ? { domain } : {}),
     httpOnly: true,
     path: "/",
-    sameSite: "lax",
+    sameSite: secure ? "none" : "lax",
     secure,
   };
 }

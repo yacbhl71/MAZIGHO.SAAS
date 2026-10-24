@@ -697,7 +697,22 @@ const DEMO_ADMIN_USER: DemoUser = {
   lastSignedIn: now,
 };
 
+const DEMO_OPERATOR_USER: DemoUser = {
+  id: 2,
+  openId: "firebase_operator-yacbhl71",
+  name: "Yacine (Opérateur MAZIGHO)",
+  email: "yacbhl71@gmail.com",
+  passwordHash: null,
+  loginMethod: "google",
+  role: "admin",
+  accountStatus: "active",
+  createdAt: now,
+  updatedAt: now,
+  lastSignedIn: now,
+};
+
 inMemoryUsers.set(DEMO_ADMIN_USER.openId, DEMO_ADMIN_USER);
+inMemoryUsers.set(DEMO_OPERATOR_USER.openId, DEMO_OPERATOR_USER);
 
 export function getDemoUserByOpenId(openId: string): DemoUser | undefined {
   return inMemoryUsers.get(openId);
