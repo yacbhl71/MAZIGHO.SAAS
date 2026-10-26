@@ -60,6 +60,11 @@ import {
   WandSparkles,
   Workflow,
   BarChart3,
+  Globe,
+  Headphones,
+  Zap,
+  Activity,
+  SlidersHorizontal,
 } from "lucide-react";
 
 type BoutiqueTheme = "animalier" | "bijoux" | "vetements";
@@ -292,6 +297,7 @@ function StudioRailItem({ icon: Icon, title, detail }: { icon: typeof Building2;
 }
 
 export type StudioTab = "pilotage" | "boutiques" | "mise-en-service" | "copilote" | "themes-kits";
+export type MiseEnServiceSubTab = "all" | "drafts" | "readiness" | "access" | "activation";
 
 export default function AdminStudio() {
   const [location] = useLocation();
@@ -305,6 +311,7 @@ export default function AdminStudio() {
     }
     return "pilotage";
   });
+  const [miseEnServiceSubTab, setMiseEnServiceSubTab] = useState<MiseEnServiceSubTab>("all");
   const [themeId, setThemeId] = useState<BoutiqueTheme>("animalier");
   const [draftForm, setDraftForm] = useState<ProvisioningDraftForm>(emptyProvisioningDraft);
   const [draftAcknowledged, setDraftAcknowledged] = useState(false);
@@ -718,6 +725,69 @@ export default function AdminStudio() {
     setRegistryPage(1);
   };
 
+  const studioServices = [
+    {
+      id: "production",
+      title: "Tableau de Production",
+      desc: "Workflow de passage en production, jalons techniques et contrôle qualité des livrables.",
+      href: "/admin/studio/production",
+      icon: Workflow,
+      badge: "Workflow",
+      badgeTone: "bg-slate-100 text-slate-800 border-slate-200",
+      bgSoft: "bg-slate-100 text-slate-800",
+    },
+    {
+      id: "domaines",
+      title: "Domaines & DNS",
+      desc: "Configuration des noms de domaine marchands, routage DNS et certificats SSL.",
+      href: "/admin/studio/domaines",
+      icon: Globe,
+      badge: "DNS & SSL",
+      badgeTone: "bg-sky-50 text-sky-800 border-sky-200",
+      bgSoft: "bg-sky-100 text-sky-800",
+    },
+    {
+      id: "facturation",
+      title: "Abonnements & Factures",
+      desc: "Suivi des formules SaaS, licences offertes ou payantes et repères comptables.",
+      href: "/admin/studio/facturation",
+      icon: ReceiptText,
+      badge: "SaaS & Tarifs",
+      badgeTone: "bg-amber-50 text-amber-800 border-amber-200",
+      bgSoft: "bg-amber-100 text-amber-800",
+    },
+    {
+      id: "support",
+      title: "Assistance Marchands",
+      desc: "Desk de support opérateur, gestion des questions des gérants et résolution d'incidents.",
+      href: "/admin/studio/support",
+      icon: Headphones,
+      badge: "Support Desk",
+      badgeTone: "bg-rose-50 text-rose-800 border-rose-200",
+      bgSoft: "bg-rose-100 text-rose-800",
+    },
+    {
+      id: "integrations",
+      title: "Demandes d’Intégrations",
+      desc: "Passerelles Stripe Connect, paiement livraison Algérie (58 Wilayas & COD) et ERP Odoo.",
+      href: "/admin/studio/integrations",
+      icon: Zap,
+      badge: "Passerelles",
+      badgeTone: "bg-emerald-50 text-emerald-800 border-emerald-200",
+      bgSoft: "bg-emerald-100 text-emerald-800",
+    },
+    {
+      id: "themes",
+      title: "Thèmes & Vitrines",
+      desc: "Bibliothèque de designs, palettes visuelles, typographies et vitrines prêtes à l’emploi.",
+      href: "/admin/studio/themes",
+      icon: Palette,
+      badge: "Design & UX",
+      badgeTone: "bg-violet-50 text-violet-800 border-violet-200",
+      bgSoft: "bg-violet-100 text-violet-800",
+    },
+  ];
+
   const studioTabs = [
     {
       id: "pilotage" as const,
@@ -870,6 +940,35 @@ export default function AdminStudio() {
 
         {activeTab === "pilotage" && (
           <div className="space-y-6 animate-in fade-in-50 duration-200">
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-gradient-to-r from-slate-900 to-slate-800 p-4 text-white shadow-sm md:p-5">
+              <div className="flex items-center gap-3">
+                <div className="grid h-10 w-10 place-items-center rounded-xl bg-white/10 text-emerald-400">
+                  <Activity className="h-5 w-5" />
+                </div>
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-wider text-slate-300">Surveillance Globale</p>
+                  <h3 className="text-sm font-semibold text-white">Pilotage & Santé Opérationnelle de la Plateforme</h3>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Link href="/admin/studio/system-health">
+                  <Button size="sm" variant="outline" className="border-white/20 bg-white/10 text-xs text-white hover:bg-white/20">
+                    <Activity className="mr-1.5 h-3.5 w-3.5 text-emerald-400" /> Santé Système
+                  </Button>
+                </Link>
+                <Link href="/admin/audit">
+                  <Button size="sm" variant="outline" className="border-white/20 bg-white/10 text-xs text-white hover:bg-white/20">
+                    <History className="mr-1.5 h-3.5 w-3.5 text-sky-400" /> Journal d’Audit
+                  </Button>
+                </Link>
+                <Link href="/admin/studio/branding">
+                  <Button size="sm" variant="outline" className="border-white/20 bg-white/10 text-xs text-white hover:bg-white/20">
+                    <Palette className="mr-1.5 h-3.5 w-3.5 text-violet-400" /> Identité Studio
+                  </Button>
+                </Link>
+              </div>
+            </div>
+
             <section id="studio-priorities" className="scroll-mt-6 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm md:p-5" aria-labelledby="studio-priority-board-title">
               <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
                 <div>
@@ -930,6 +1029,56 @@ export default function AdminStudio() {
                     <div className="rounded-2xl border border-emerald-100 bg-emerald-50/60 p-4"><p className="text-xs font-bold uppercase tracking-[0.14em] text-emerald-700">Boutiques actives</p><p className="mt-2 text-3xl font-bold text-emerald-950">{inventory?.summary.active ?? 0}</p><p className="mt-1 text-xs text-emerald-800">Aucun accès client n’est créé ici</p></div>
                     <div className="rounded-2xl border border-amber-100 bg-amber-50/70 p-4"><p className="text-xs font-bold uppercase tracking-[0.14em] text-amber-700">À préparer</p><p className="mt-2 text-3xl font-bold text-amber-950">{inventory?.summary.setup ?? 0}</p><p className="mt-1 text-xs text-amber-800">Identité, catalogue ou domaine à finaliser</p></div>
                     <div className="rounded-2xl border border-amber-100 bg-amber-50/70 p-4"><p className="text-xs font-bold uppercase tracking-[0.14em] text-amber-700">Stock à surveiller</p><p className="mt-2 text-3xl font-bold text-amber-950">{inventory?.summary.clientStoresWithStockAttention ?? 0}</p><p className="mt-1 text-xs text-amber-800">Boutiques avec seuil faible ou rupture</p></div>
+                  </div>
+
+                  {/* Hub des Services Boutiques */}
+                  <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50/70 p-4 md:p-5">
+                    <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <Zap className="h-4 w-4 text-orange-600" />
+                          <h3 className="text-sm font-bold uppercase tracking-wider text-slate-900">Hub des Services Boutiques SaaS</h3>
+                        </div>
+                        <p className="mt-0.5 text-xs text-slate-600">Accédez directement aux centres opérationnels pour chaque dimension de vos boutiques.</p>
+                      </div>
+                      <Badge variant="outline" className="w-fit border-orange-200 bg-orange-50 text-[11px] font-semibold text-orange-800">
+                        6 modules spécialisés
+                      </Badge>
+                    </div>
+
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                      {studioServices.map((service) => {
+                        const Icon = service.icon;
+                        return (
+                          <Link
+                            key={service.title}
+                            href={service.href}
+                            className="group flex flex-col justify-between rounded-xl border border-slate-200 bg-white p-3.5 shadow-xs transition-all hover:border-slate-400 hover:shadow-sm"
+                          >
+                            <div>
+                              <div className="flex items-start justify-between gap-2">
+                                <div className={`grid h-8 w-8 place-items-center rounded-lg ${service.soft} ${service.accent}`}>
+                                  <Icon className="h-4 w-4" />
+                                </div>
+                                <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${service.soft} ${service.accent}`}>
+                                  {service.badge}
+                                </span>
+                              </div>
+                              <h4 className="mt-2.5 text-xs font-bold text-slate-900 group-hover:text-orange-600">
+                                {service.title}
+                              </h4>
+                              <p className="mt-1 text-[11px] leading-4 text-slate-500">
+                                {service.desc}
+                              </p>
+                            </div>
+                            <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-2 text-[11px] font-semibold text-slate-600 group-hover:text-slate-950">
+                              <span>Ouvrir l'outil</span>
+                              <ArrowUpRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
+                            </div>
+                          </Link>
+                        );
+                      })}
+                    </div>
                   </div>
 
                   <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-3 md:p-4" data-testid="studio-inventory-filters">
@@ -1047,6 +1196,60 @@ export default function AdminStudio() {
 
         {activeTab === "mise-en-service" && (
           <div className="space-y-6 animate-in fade-in-50 duration-200">
+            {/* Barre de sous-onglets mise en service */}
+            <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-slate-200 bg-white p-2.5 shadow-xs">
+              <div className="flex items-center gap-2 px-2.5 text-xs font-bold uppercase tracking-wider text-slate-500">
+                <SlidersHorizontal className="h-4 w-4 text-orange-600" />
+                <span className="hidden sm:inline">Module :</span>
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                variant={miseEnServiceSubTab === "all" ? "default" : "outline"}
+                onClick={() => setMiseEnServiceSubTab("all")}
+                className={`min-h-9 rounded-xl text-xs ${miseEnServiceSubTab === "all" ? "bg-slate-900 text-white" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"}`}
+              >
+                Tous les modules (6)
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={miseEnServiceSubTab === "drafts" ? "default" : "outline"}
+                onClick={() => setMiseEnServiceSubTab("drafts")}
+                className={`min-h-9 rounded-xl text-xs ${miseEnServiceSubTab === "drafts" ? "bg-orange-600 text-white" : "border-orange-200 bg-orange-50/50 text-orange-900 hover:bg-orange-100"}`}
+              >
+                1. Fiche & Brouillons
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={miseEnServiceSubTab === "readiness" ? "default" : "outline"}
+                onClick={() => setMiseEnServiceSubTab("readiness")}
+                className={`min-h-9 rounded-xl text-xs ${miseEnServiceSubTab === "readiness" ? "bg-sky-600 text-white" : "border-sky-200 bg-sky-50/50 text-sky-900 hover:bg-sky-100"}`}
+              >
+                2. Suivi & Historique
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={miseEnServiceSubTab === "access" ? "default" : "outline"}
+                onClick={() => setMiseEnServiceSubTab("access")}
+                className={`min-h-9 rounded-xl text-xs ${miseEnServiceSubTab === "access" ? "bg-amber-600 text-white" : "border-amber-200 bg-amber-50/50 text-amber-900 hover:bg-amber-100"}`}
+              >
+                3. Accès Propriétaire
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={miseEnServiceSubTab === "activation" ? "default" : "outline"}
+                onClick={() => setMiseEnServiceSubTab("activation")}
+                className={`min-h-9 rounded-xl text-xs ${miseEnServiceSubTab === "activation" ? "bg-emerald-600 text-white" : "border-emerald-200 bg-emerald-50/50 text-emerald-900 hover:bg-emerald-100"}`}
+              >
+                4. Prévol & Activation
+              </Button>
+            </div>
+
+            {(miseEnServiceSubTab === "all" || miseEnServiceSubTab === "drafts") && (
             <section id="studio-provisioning" className="grid gap-5 xl:grid-cols-[1.15fr_.85fr] scroll-mt-6" data-testid="studio-provisioning">
               <div className="col-span-full space-y-3" aria-labelledby="studio-provisioning-pathways-title">
                 <div>
@@ -1136,8 +1339,11 @@ export default function AdminStudio() {
                 </CardContent>
               </Card>
             </section>
+            )}
 
-            <section className="rounded-2xl border border-sky-200 bg-sky-50/50 p-5 shadow-sm md:p-6" data-testid="studio-setup-readiness">
+            {(miseEnServiceSubTab === "all" || miseEnServiceSubTab === "readiness") && (
+              <>
+                <section className="rounded-2xl border border-sky-200 bg-sky-50/50 p-5 shadow-sm md:p-6" data-testid="studio-setup-readiness">
               <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between"><div><p className="text-xs font-bold uppercase tracking-[0.16em] text-sky-700">Pilotage opérateur</p><h2 className="mt-1 text-2xl font-bold tracking-tight text-slate-950">Suivi privé de préparation</h2><p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">Cette lecture synthétise, boutique par boutique, les bases nécessaires à un aperçu et à une préparation structurée. Elle ne vérifie pas le domaine, ne modifie aucun état et ne constitue pas une autorisation d’ouverture publique.</p></div><Badge className="w-fit border-0 bg-sky-800 text-white hover:bg-sky-800">Lecture seule</Badge></div>
               {giftSetupStores.length === 0 ? <div className="mt-5 rounded-2xl border border-dashed border-sky-200 bg-white/70 p-4 text-sm leading-6 text-sky-950">Une boutique offerte en état `setup` pourra être suivie ici.</div> : <div className="mt-5 grid gap-5 xl:grid-cols-[minmax(250px,.72fr)_minmax(0,1.28fr)]"><div className="space-y-2">{giftSetupStores.map(store => <button key={store.id} type="button" onClick={() => setSelectedSetupReadinessStoreId(store.id)} className={selectedSetupReadinessStoreId === store.id ? "w-full rounded-2xl border border-sky-400 bg-sky-100 p-4 text-left ring-2 ring-sky-100" : "w-full rounded-2xl border border-slate-200 bg-white p-4 text-left hover:border-sky-300 hover:bg-sky-50"}><div className="flex items-center justify-between gap-3"><div className="min-w-0"><p className="truncate font-semibold text-slate-950">{store.displayName}</p><p className="mt-1 text-xs text-slate-500">État `setup` · {store.activeProductCount} fiche{store.activeProductCount > 1 ? "s" : ""} active{store.activeProductCount > 1 ? "s" : ""}</p></div><ClipboardCheck className="h-5 w-5 shrink-0 text-sky-700" /></div></button>)}</div><div className="rounded-2xl border border-sky-200 bg-white p-4 md:p-5">{selectedSetupReadinessStoreId === null ? <div className="flex min-h-56 items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50 p-5 text-center text-sm leading-6 text-slate-600">Sélectionnez une boutique à gauche pour consulter son suivi privé de préparation.</div> : setupReadinessQuery.isLoading ? <div className="min-h-56 animate-pulse rounded-xl bg-slate-100" /> : setupReadinessQuery.isError ? <div className="flex min-h-56 items-center rounded-xl border border-rose-200 bg-rose-50 p-5 text-sm leading-6 text-rose-900">Ce suivi est indisponible pour cette boutique. Aucun changement n’a été effectué.</div> : setupReadinessQuery.data && <div><div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"><div><p className="text-lg font-bold tracking-tight text-slate-950">{setupReadinessQuery.data.store.displayName}</p><p className="mt-1 text-sm text-slate-600">Univers {formatBusinessType(setupReadinessQuery.data.store.businessType)} · devise {setupReadinessQuery.data.store.currency}</p></div><div className="flex flex-wrap gap-x-4 gap-y-2"><Link href={`/admin/studio/apercu/${setupReadinessQuery.data.store.id}`} className="inline-flex w-fit items-center text-sm font-semibold text-sky-800 hover:text-sky-950"><Eye className="mr-1.5 h-4 w-4" /> Voir l’aperçu privé</Link><Link href={`/admin/studio/espace-proprietaire/${setupReadinessQuery.data.store.id}`} className="inline-flex w-fit items-center text-sm font-semibold text-violet-800 hover:text-violet-950"><PanelTop className="mr-1.5 h-4 w-4" /> Voir le panneau propriétaire</Link></div></div><div className="mt-5 grid gap-3 sm:grid-cols-3"><div className="rounded-xl bg-emerald-50 p-3"><p className="text-[10px] font-bold uppercase tracking-[0.13em] text-emerald-700">Prêts</p><p className="mt-1 text-2xl font-bold text-emerald-950">{setupReadinessQuery.data.readiness.readyCount}</p></div><div className="rounded-xl bg-amber-50 p-3"><p className="text-[10px] font-bold uppercase tracking-[0.13em] text-amber-700">À vérifier</p><p className="mt-1 text-2xl font-bold text-amber-950">{setupReadinessQuery.data.readiness.manualCount}</p></div><div className="rounded-xl bg-rose-50 p-3"><p className="text-[10px] font-bold uppercase tracking-[0.13em] text-rose-700">À compléter</p><p className="mt-1 text-2xl font-bold text-rose-950">{setupReadinessQuery.data.readiness.blockedCount}</p></div></div><div className="mt-5 space-y-2">{setupReadinessQuery.data.readiness.checks.map(check => <div key={check.key} className={check.state === "ready" ? "flex gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-3" : check.state === "manual" ? "flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3" : "flex gap-3 rounded-xl border border-rose-200 bg-rose-50 p-3"}>{check.state === "ready" ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700" /> : check.state === "manual" ? <Clock3 className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" /> : <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-rose-700" />}<div><p className="text-sm font-semibold text-slate-950">{check.label}</p><p className="mt-0.5 text-xs leading-5 text-slate-600">{check.detail}</p></div></div>)}</div><div className="mt-5 rounded-xl border border-sky-200 bg-sky-50 p-3 text-xs leading-5 text-sky-950"><strong>Frontière conservée :</strong> le suivi ne consulte aucun domaine, DNS, client, commande, fournisseur, prix, livraison, panier ou paiement. La boutique demeure en `setup` et son storefront reste fermé.</div></div>}</div></div>}
             </section>
@@ -1145,9 +1351,13 @@ export default function AdminStudio() {
             <section className="rounded-2xl border border-violet-200 bg-violet-50/45 p-5 shadow-sm md:p-6" data-testid="studio-activity-timeline">
               <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between"><div><p className="text-xs font-bold uppercase tracking-[0.16em] text-violet-700">Traçabilité opérateur</p><h2 className="mt-1 text-2xl font-bold tracking-tight text-slate-950">Historique privé de préparation</h2><p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">Consultez les jalons Studio connus pour la boutique sélectionnée. Les libellés sont volontairement génériques : aucun acteur, e-mail, contenu légal, métadonnée, commande, paiement ou action fournisseur n’est affiché.</p></div><Badge className="w-fit border-0 bg-violet-800 text-white hover:bg-violet-800">Lecture seule</Badge></div>
               <div className="mt-5 rounded-2xl border border-violet-200 bg-white p-4 md:p-5">{selectedSetupReadinessStoreId === null ? <div className="flex min-h-36 items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50 p-5 text-center text-sm leading-6 text-slate-600">Sélectionnez d’abord une boutique dans le suivi privé de préparation pour consulter ses jalons Studio.</div> : activityTimelineQuery.isLoading ? <div className="min-h-36 animate-pulse rounded-xl bg-slate-100" /> : activityTimelineQuery.isError ? <div className="flex min-h-36 items-center rounded-xl border border-rose-200 bg-rose-50 p-5 text-sm leading-6 text-rose-900">L’historique privé est indisponible pour cette boutique. Aucun changement n’a été effectué.</div> : activityTimelineQuery.data && <div><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="font-semibold text-slate-950">{activityTimelineQuery.data.store.displayName}</p><p className="mt-1 text-xs text-slate-500">Historique réservé à MAZIGHO Studio · statut actuel `{activityTimelineQuery.data.store.status}`</p></div><History className="h-5 w-5 text-violet-700" /></div>{activityTimelineQuery.data.events.length === 0 ? <div className="mt-5 rounded-xl border border-dashed border-violet-200 bg-violet-50 p-4 text-sm leading-6 text-violet-950">Aucun jalon Studio non sensible n’est encore enregistré pour cette boutique.</div> : <ol className="mt-5 space-y-3 border-l-2 border-violet-100 pl-5">{activityTimelineQuery.data.events.map(event => <li key={`${event.action}-${String(event.occurredAt)}`} className="relative"><span className="absolute -left-[30px] top-1 h-3 w-3 rounded-full border-2 border-white bg-violet-600" /><div className="rounded-xl border border-slate-200 bg-slate-50 p-3"><div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between sm:gap-5"><p className="text-sm font-semibold text-slate-950">{event.title}</p><time className="shrink-0 text-xs text-slate-500">{new Date(event.occurredAt).toLocaleString("fr-CH", { dateStyle: "medium", timeStyle: "short" })}</time></div><p className="mt-1 text-xs leading-5 text-slate-600">{event.detail}</p></div></li>)}</ol>}</div>}</div>
-            </section>
+                </section>
+              </>
+            )}
 
-            <section className="rounded-2xl border border-amber-200 bg-amber-50/60 p-5 shadow-sm md:p-6" data-testid="studio-direct-owner-access"><div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between"><div><p className="text-xs font-bold uppercase tracking-[0.16em] text-amber-800">Accès direct opérateur</p><h2 className="mt-1 flex items-center gap-2 text-2xl font-bold tracking-tight text-amber-950"><LockKeyhole className="h-6 w-6" /> Créer un accès temporaire à une boutique offerte</h2><p className="mt-2 max-w-3xl text-sm leading-6 text-amber-950">Utilisez ce bloc pour une boutique offerte déjà créée, y compris si ses anciens ateliers de préparation ne sont plus accessibles. Le mot de passe est généré une seule fois, n’est jamais envoyé par e-mail et le client doit le remplacer après connexion.</p></div><Badge className="w-fit border-0 bg-amber-700 text-white hover:bg-amber-700">Studio uniquement</Badge></div>{(inventory?.stores ?? []).filter(store => !store.isPlatformStore).length === 0 ? <div className="mt-5 rounded-xl border border-dashed border-amber-300 bg-white/70 p-4 text-sm leading-6 text-amber-950">Aucune boutique offerte n’est disponible pour le moment.</div> : <div className="mt-5 space-y-4 rounded-2xl border border-amber-200 bg-white p-4 md:p-5"><div className="grid gap-4 md:grid-cols-2"><div className="space-y-2"><Label htmlFor="direct-owner-store">Boutique offerte</Label><Select value={directAccessStoreId} onValueChange={value => { setDirectAccessStoreId(value); setDirectAccessPassword(null); }}><SelectTrigger id="direct-owner-store"><SelectValue placeholder="Choisir une boutique" /></SelectTrigger><SelectContent>{(inventory?.stores ?? []).filter(store => !store.isPlatformStore).map(store => <SelectItem key={store.id} value={String(store.id)}>{store.displayName} · {store.status}</SelectItem>)}</SelectContent></Select></div><div className="space-y-2"><Label htmlFor="direct-owner-email">E-mail du propriétaire à confirmer</Label><Input id="direct-owner-email" type="email" value={directAccessEmail} onChange={event => setDirectAccessEmail(event.target.value)} placeholder="proprietaire@exemple.ch" autoCapitalize="none" /></div></div><label className="flex cursor-pointer items-start gap-3 rounded-xl border border-amber-100 bg-amber-50 p-3 text-sm leading-6 text-amber-950"><input type="checkbox" checked={directAccessAcknowledged} onChange={event => setDirectAccessAcknowledged(event.target.checked)} className="mt-1 h-4 w-4 rounded border-amber-300 text-amber-700 focus:ring-amber-600" /><span>Je confirme créer un mot de passe temporaire pour le propriétaire de cette boutique. Je le transmettrai manuellement et lui demanderai de le remplacer dès sa première connexion.</span></label>{directAccessPassword ? <div className="rounded-xl border border-amber-300 bg-amber-50 p-4"><p className="text-sm font-bold text-amber-950">Mot de passe temporaire — copiez-le maintenant</p><div className="mt-3 flex gap-2"><Input value={directAccessPassword} readOnly className="bg-white font-mono text-sm" aria-label="Mot de passe temporaire direct" /><Button type="button" variant="outline" size="icon" className="shrink-0" onClick={() => { navigator.clipboard.writeText(directAccessPassword); toast.success("Mot de passe copié dans le presse-papiers."); }} aria-label="Copier le mot de passe temporaire"><Copy className="h-4 w-4" /></Button></div></div> : <Button type="button" className="min-h-11 bg-amber-700 hover:bg-amber-800" disabled={!directAccessStoreId || !directAccessEmail.includes("@") || !directAccessAcknowledged || directOwnerTemporaryPasswordMutation.isPending} onClick={() => directOwnerTemporaryPasswordMutation.mutate({ storeId: Number(directAccessStoreId), confirmationEmail: directAccessEmail, acknowledged: true })}>{directOwnerTemporaryPasswordMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <LockKeyhole className="mr-2 h-4 w-4" />}Générer le mot de passe temporaire</Button>}</div>}</section>
+            {(miseEnServiceSubTab === "all" || miseEnServiceSubTab === "access") && (
+              <>
+                <section className="rounded-2xl border border-amber-200 bg-amber-50/60 p-5 shadow-sm md:p-6" data-testid="studio-direct-owner-access"><div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between"><div><p className="text-xs font-bold uppercase tracking-[0.16em] text-amber-800">Accès direct opérateur</p><h2 className="mt-1 flex items-center gap-2 text-2xl font-bold tracking-tight text-amber-950"><LockKeyhole className="h-6 w-6" /> Créer un accès temporaire à une boutique offerte</h2><p className="mt-2 max-w-3xl text-sm leading-6 text-amber-950">Utilisez ce bloc pour une boutique offerte déjà créée, y compris si ses anciens ateliers de préparation ne sont plus accessibles. Le mot de passe est généré une seule fois, n’est jamais envoyé par e-mail et le client doit le remplacer après connexion.</p></div><Badge className="w-fit border-0 bg-amber-700 text-white hover:bg-amber-700">Studio uniquement</Badge></div>{(inventory?.stores ?? []).filter(store => !store.isPlatformStore).length === 0 ? <div className="mt-5 rounded-xl border border-dashed border-amber-300 bg-white/70 p-4 text-sm leading-6 text-amber-950">Aucune boutique offerte n’est disponible pour le moment.</div> : <div className="mt-5 space-y-4 rounded-2xl border border-amber-200 bg-white p-4 md:p-5"><div className="grid gap-4 md:grid-cols-2"><div className="space-y-2"><Label htmlFor="direct-owner-store">Boutique offerte</Label><Select value={directAccessStoreId} onValueChange={value => { setDirectAccessStoreId(value); setDirectAccessPassword(null); }}><SelectTrigger id="direct-owner-store"><SelectValue placeholder="Choisir une boutique" /></SelectTrigger><SelectContent>{(inventory?.stores ?? []).filter(store => !store.isPlatformStore).map(store => <SelectItem key={store.id} value={String(store.id)}>{store.displayName} · {store.status}</SelectItem>)}</SelectContent></Select></div><div className="space-y-2"><Label htmlFor="direct-owner-email">E-mail du propriétaire à confirmer</Label><Input id="direct-owner-email" type="email" value={directAccessEmail} onChange={event => setDirectAccessEmail(event.target.value)} placeholder="proprietaire@exemple.ch" autoCapitalize="none" /></div></div><label className="flex cursor-pointer items-start gap-3 rounded-xl border border-amber-100 bg-amber-50 p-3 text-sm leading-6 text-amber-950"><input type="checkbox" checked={directAccessAcknowledged} onChange={event => setDirectAccessAcknowledged(event.target.checked)} className="mt-1 h-4 w-4 rounded border-amber-300 text-amber-700 focus:ring-amber-600" /><span>Je confirme créer un mot de passe temporaire pour le propriétaire de cette boutique. Je le transmettrai manuellement et lui demanderai de le remplacer dès sa première connexion.</span></label>{directAccessPassword ? <div className="rounded-xl border border-amber-300 bg-amber-50 p-4"><p className="text-sm font-bold text-amber-950">Mot de passe temporaire — copiez-le maintenant</p><div className="mt-3 flex gap-2"><Input value={directAccessPassword} readOnly className="bg-white font-mono text-sm" aria-label="Mot de passe temporaire direct" /><Button type="button" variant="outline" size="icon" className="shrink-0" onClick={() => { navigator.clipboard.writeText(directAccessPassword); toast.success("Mot de passe copié dans le presse-papiers."); }} aria-label="Copier le mot de passe temporaire"><Copy className="h-4 w-4" /></Button></div></div> : <Button type="button" className="min-h-11 bg-amber-700 hover:bg-amber-800" disabled={!directAccessStoreId || !directAccessEmail.includes("@") || !directAccessAcknowledged || directOwnerTemporaryPasswordMutation.isPending} onClick={() => directOwnerTemporaryPasswordMutation.mutate({ storeId: Number(directAccessStoreId), confirmationEmail: directAccessEmail, acknowledged: true })}>{directOwnerTemporaryPasswordMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <LockKeyhole className="mr-2 h-4 w-4" />}Générer le mot de passe temporaire</Button>}</div>}</section>
 
             <section className="grid gap-5 lg:grid-cols-[.9fr_1.1fr]" data-testid="studio-owner-handoff">
               <Card className="border-violet-200 shadow-sm">
@@ -1163,17 +1373,21 @@ export default function AdminStudio() {
                 </CardContent>
               </Card>
             </section>
+              </>
+            )}
 
-            <section className="grid gap-5 lg:grid-cols-[.9fr_1.1fr]" data-testid="studio-activation-preflight">
-              <Card className="border-emerald-200 shadow-sm">
-                <CardHeader><div className="flex items-start justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-[0.16em] text-emerald-700">Activation publique contrôlée</p><CardTitle className="mt-1 flex items-center gap-2 text-2xl"><ShieldCheck className="h-6 w-6 text-emerald-700" /> Revue finale — univers animalier</CardTitle><CardDescription className="mt-2 max-w-2xl">Cette revue sélectionne une boutique offerte en `setup` et affiche les critères qui devront être validés avant une future ouverture publique. Elle ne change aucun statut.</CardDescription></div><Badge className="border-0 bg-emerald-100 text-emerald-800 hover:bg-emerald-100">Aucune bascule active</Badge></div></CardHeader>
-                <CardContent className="space-y-3">{giftSetupStores.length === 0 ? <div className="rounded-2xl border border-dashed border-emerald-200 bg-emerald-50/50 p-5 text-sm leading-6 text-emerald-950"><p className="font-semibold">Aucune boutique offerte en préparation à examiner.</p><p className="mt-1">La revue apparaîtra ici après le provisionnement d’une boutique animalière en état `setup`.</p></div> : giftSetupStores.map(store => <button key={store.id} type="button" onClick={() => setSelectedActivationStoreId(store.id)} className={selectedActivationStoreId === store.id ? "w-full rounded-2xl border border-emerald-400 bg-emerald-50 p-4 text-left ring-2 ring-emerald-100" : "w-full rounded-2xl border border-slate-200 bg-white p-4 text-left hover:border-emerald-200 hover:bg-emerald-50/40"}><div className="flex items-center justify-between gap-3"><div className="min-w-0"><p className="truncate font-semibold text-slate-900">{store.displayName}</p><p className="mt-1 truncate text-xs text-slate-500">{store.primaryDomain}</p></div><Badge className="border-0 bg-amber-100 text-amber-800 hover:bg-amber-100">setup</Badge></div><p className="mt-3 text-xs leading-5 text-slate-600">{store.activeProductCount} produit{store.activeProductCount > 1 ? "s" : ""} actif{store.activeProductCount > 1 ? "s" : ""} · {store.activeOwners} propriétaire{store.activeOwners > 1 ? "s" : ""} actif{store.activeOwners > 1 ? "s" : ""}</p></button>)}</CardContent>
-              </Card>
-              <Card className="border-slate-200 shadow-sm">
-                <CardHeader><p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-600">Conditions avant ouverture</p><CardTitle className="mt-1 text-xl">Prévol local et vérifications manuelles</CardTitle></CardHeader>
-                <CardContent className="space-y-3">{selectedActivationStoreId === null ? <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-5 text-sm leading-6 text-slate-600">Choisissez une boutique offerte à gauche. Les critères locaux et les contrôles à effectuer manuellement seront alors affichés ici.</div> : activationPreflightQuery.isLoading ? <div className="h-52 animate-pulse rounded-2xl bg-slate-100" /> : activationPreflightQuery.isError ? <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm leading-6 text-rose-900">Cette boutique n’est pas éligible à la revue d’activation. Elle doit être offerte, en état `setup` et reliée à son brouillon Studio.</div> : activationPreflightQuery.data && <div className="space-y-3"><div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><div className="flex flex-wrap items-center justify-between gap-2"><p className="font-semibold text-slate-900">{activationPreflightQuery.data.store.displayName}</p><Badge className="border-0 bg-slate-200 text-slate-800 hover:bg-slate-200">{activationPreflightQuery.data.intendedBusinessType === "animalier" ? "Univers animalier" : "Univers à corriger"}</Badge></div><p className="mt-2 text-sm text-slate-600">{activationPreflightQuery.data.activation.readyCount} {activationPreflightQuery.data.activation.readyCount > 1 ? "contrôles locaux prêts" : "contrôle local prêt"} · {activationPreflightQuery.data.activation.blockedCount} blocage{activationPreflightQuery.data.activation.blockedCount > 1 ? "s" : ""} · {activationPreflightQuery.data.activation.manualCount} vérification{activationPreflightQuery.data.activation.manualCount > 1 ? "s" : ""} manuelle{activationPreflightQuery.data.activation.manualCount > 1 ? "s" : ""}</p></div>{activationPreflightQuery.data.activation.checks.map(check => <div key={check.key} className={check.state === "ready" ? "flex gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-3" : check.state === "manual" ? "flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3" : "flex gap-3 rounded-xl border border-rose-200 bg-rose-50 p-3"}>{check.state === "ready" ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700" /> : check.state === "manual" ? <Clock3 className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" /> : <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-rose-700" />}<div><p className="text-sm font-semibold text-slate-900">{check.label}</p><p className="mt-0.5 text-xs leading-5 text-slate-600">{check.detail}</p></div></div>)}<div className="rounded-2xl border border-slate-300 bg-slate-50 p-4 text-sm leading-6 text-slate-700"><p className="font-semibold text-slate-900">Statut d’ouverture</p><p className="mt-1">La boutique reste en <strong>`setup`</strong> tant que vous n’avez pas confirmé manuellement son domaine et l’activation finale.</p></div>{activationPreflightQuery.data.activation.checks.some(check => check.key === "domain_format" && check.state === "blocked") && <Button type="button" variant="outline" className="w-full border-sky-200 bg-sky-50 text-sky-900 hover:bg-sky-100" onClick={() => { setDomainUpdateConfirmationName(""); setDomainUpdateValue(""); setDomainUpdateAcknowledged(false); setDomainUpdateOpen(true); }}><LockKeyhole className="mr-2 h-4 w-4" /> Remplacer le domaine interne</Button>}{activationPreflightQuery.data.activation.checks.some(check => check.key === "legal" && check.state === "blocked") && <Button type="button" variant="outline" className="w-full border-slate-300 bg-slate-50 text-slate-800 hover:bg-slate-100" onClick={() => { setLegalCopyConfirmationName(""); setLegalCopyAcknowledged(false); setLegalCopyOpen(true); }}><ClipboardCheck className="mr-2 h-4 w-4" /> Réutiliser les coordonnées légales de MAZIGHO</Button>}{activationPreflightQuery.data.intendedBusinessType === "animalier" && <Button type="button" variant="outline" className="w-full border-teal-200 bg-teal-50 text-teal-800 hover:bg-teal-100" onClick={() => { setPetDemoSetupConfirmationName(""); setPetDemoSetupAcknowledged(false); setPetDemoSetupOpen(true); }}><PawPrint className="mr-2 h-4 w-4" /> Installer le kit de démonstration animalier</Button>}{activationPreflightQuery.data.activation.locallyReadyForManualActivation && <Button type="button" className="w-full bg-emerald-700 hover:bg-emerald-800" onClick={() => { setActivationConfirmationName(""); setActivationOwnerEmail(""); setActivationDomainVerified(false); setActivationVariantsReviewed(false); setActivationShippingReturnsReviewed(false); setActivationOwnerResponsibilityAcknowledged(false); setActivationAcknowledged(false); setActivationConfirmOpen(true); }}><ShieldCheck className="mr-2 h-4 w-4" /> Ouvrir la confirmation d’activation</Button>}</div>}</CardContent>
-              </Card>
-            </section>
+            {(miseEnServiceSubTab === "all" || miseEnServiceSubTab === "activation") && (
+              <section className="grid gap-5 lg:grid-cols-[.9fr_1.1fr]" data-testid="studio-activation-preflight">
+                <Card className="border-emerald-200 shadow-sm">
+                  <CardHeader><div className="flex items-start justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-[0.16em] text-emerald-700">Activation publique contrôlée</p><CardTitle className="mt-1 flex items-center gap-2 text-2xl"><ShieldCheck className="h-6 w-6 text-emerald-700" /> Revue finale — univers animalier</CardTitle><CardDescription className="mt-2 max-w-2xl">Cette revue sélectionne une boutique offerte en `setup` et affiche les critères qui devront être validés avant une future ouverture publique. Elle ne change aucun statut.</CardDescription></div><Badge className="border-0 bg-emerald-100 text-emerald-800 hover:bg-emerald-100">Aucune bascule active</Badge></div></CardHeader>
+                  <CardContent className="space-y-3">{giftSetupStores.length === 0 ? <div className="rounded-2xl border border-dashed border-emerald-200 bg-emerald-50/50 p-5 text-sm leading-6 text-emerald-950"><p className="font-semibold">Aucune boutique offerte en préparation à examiner.</p><p className="mt-1">La revue apparaîtra ici après le provisionnement d’une boutique animalière en état `setup`.</p></div> : giftSetupStores.map(store => <button key={store.id} type="button" onClick={() => setSelectedActivationStoreId(store.id)} className={selectedActivationStoreId === store.id ? "w-full rounded-2xl border border-emerald-400 bg-emerald-50 p-4 text-left ring-2 ring-emerald-100" : "w-full rounded-2xl border border-slate-200 bg-white p-4 text-left hover:border-emerald-200 hover:bg-emerald-50/40"}><div className="flex items-center justify-between gap-3"><div className="min-w-0"><p className="truncate font-semibold text-slate-900">{store.displayName}</p><p className="mt-1 truncate text-xs text-slate-500">{store.primaryDomain}</p></div><Badge className="border-0 bg-amber-100 text-amber-800 hover:bg-amber-100">setup</Badge></div><p className="mt-3 text-xs leading-5 text-slate-600">{store.activeProductCount} produit{store.activeProductCount > 1 ? "s" : ""} actif{store.activeProductCount > 1 ? "s" : ""} · {store.activeOwners} propriétaire{store.activeOwners > 1 ? "s" : ""} actif{store.activeOwners > 1 ? "s" : ""}</p></button>)}</CardContent>
+                </Card>
+                <Card className="border-slate-200 shadow-sm">
+                  <CardHeader><p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-600">Conditions avant ouverture</p><CardTitle className="mt-1 text-xl">Prévol local et vérifications manuelles</CardTitle></CardHeader>
+                  <CardContent className="space-y-3">{selectedActivationStoreId === null ? <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-5 text-sm leading-6 text-slate-600">Choisissez une boutique offerte à gauche. Les critères locaux et les contrôles à effectuer manuellement seront alors affichés ici.</div> : activationPreflightQuery.isLoading ? <div className="h-52 animate-pulse rounded-2xl bg-slate-100" /> : activationPreflightQuery.isError ? <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm leading-6 text-rose-900">Cette boutique n’est pas éligible à la revue d’activation. Elle doit être offerte, en état `setup` et reliée à son brouillon Studio.</div> : activationPreflightQuery.data && <div className="space-y-3"><div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><div className="flex flex-wrap items-center justify-between gap-2"><p className="font-semibold text-slate-900">{activationPreflightQuery.data.store.displayName}</p><Badge className="border-0 bg-slate-200 text-slate-800 hover:bg-slate-200">{activationPreflightQuery.data.intendedBusinessType === "animalier" ? "Univers animalier" : "Univers à corriger"}</Badge></div><p className="mt-2 text-sm text-slate-600">{activationPreflightQuery.data.activation.readyCount} {activationPreflightQuery.data.activation.readyCount > 1 ? "contrôles locaux prêts" : "contrôle local prêt"} · {activationPreflightQuery.data.activation.blockedCount} blocage{activationPreflightQuery.data.activation.blockedCount > 1 ? "s" : ""} · {activationPreflightQuery.data.activation.manualCount} vérification{activationPreflightQuery.data.activation.manualCount > 1 ? "s" : ""} manuelle{activationPreflightQuery.data.activation.manualCount > 1 ? "s" : ""}</p></div>{activationPreflightQuery.data.activation.checks.map(check => <div key={check.key} className={check.state === "ready" ? "flex gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-3" : check.state === "manual" ? "flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-3" : "flex gap-3 rounded-xl border border-rose-200 bg-rose-50 p-3"}>{check.state === "ready" ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700" /> : check.state === "manual" ? <Clock3 className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" /> : <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-rose-700" />}<div><p className="text-sm font-semibold text-slate-900">{check.label}</p><p className="mt-0.5 text-xs leading-5 text-slate-600">{check.detail}</p></div></div>)}<div className="rounded-2xl border border-slate-300 bg-slate-50 p-4 text-sm leading-6 text-slate-700"><p className="font-semibold text-slate-900">Statut d’ouverture</p><p className="mt-1">La boutique reste en <strong>`setup`</strong> tant que vous n’avez pas confirmé manuellement son domaine et l’activation finale.</p></div>{activationPreflightQuery.data.activation.checks.some(check => check.key === "domain_format" && check.state === "blocked") && <Button type="button" variant="outline" className="w-full border-sky-200 bg-sky-50 text-sky-900 hover:bg-sky-100" onClick={() => { setDomainUpdateConfirmationName(""); setDomainUpdateValue(""); setDomainUpdateAcknowledged(false); setDomainUpdateOpen(true); }}><LockKeyhole className="mr-2 h-4 w-4" /> Remplacer le domaine interne</Button>}{activationPreflightQuery.data.activation.checks.some(check => check.key === "legal" && check.state === "blocked") && <Button type="button" variant="outline" className="w-full border-slate-300 bg-slate-50 text-slate-800 hover:bg-slate-100" onClick={() => { setLegalCopyConfirmationName(""); setLegalCopyAcknowledged(false); setLegalCopyOpen(true); }}><ClipboardCheck className="mr-2 h-4 w-4" /> Réutiliser les coordonnées légales de MAZIGHO</Button>}{activationPreflightQuery.data.intendedBusinessType === "animalier" && <Button type="button" variant="outline" className="w-full border-teal-200 bg-teal-50 text-teal-800 hover:bg-teal-100" onClick={() => { setPetDemoSetupConfirmationName(""); setPetDemoSetupAcknowledged(false); setPetDemoSetupOpen(true); }}><PawPrint className="mr-2 h-4 w-4" /> Installer le kit de démonstration animalier</Button>}{activationPreflightQuery.data.activation.locallyReadyForManualActivation && <Button type="button" className="w-full bg-emerald-700 hover:bg-emerald-800" onClick={() => { setActivationConfirmationName(""); setActivationOwnerEmail(""); setActivationDomainVerified(false); setActivationVariantsReviewed(false); setActivationShippingReturnsReviewed(false); setActivationOwnerResponsibilityAcknowledged(false); setActivationAcknowledged(false); setActivationConfirmOpen(true); }}><ShieldCheck className="mr-2 h-4 w-4" /> Ouvrir la confirmation d’activation</Button>}</div>}</CardContent>
+                </Card>
+              </section>
+            )}
           </div>
         )}
 
