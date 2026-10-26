@@ -12,7 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { ArrowLeft, BadgeCheck, CalendarClock, ChevronLeft, ChevronRight, CircleDollarSign, FilePenLine, Loader2, ReceiptText, RefreshCw, RotateCcw, Search, ShieldCheck, Store } from "lucide-react";
+import { ArrowLeft, BadgeCheck, BarChart3, CalendarClock, ChevronLeft, ChevronRight, CircleDollarSign, FilePenLine, Layers, Loader2, ReceiptText, RefreshCw, RotateCcw, Search, ShieldCheck, Store } from "lucide-react";
 import { saasBillingIntervalLabel, type SaasBillingCurrency, type SaasBillingInterval } from "@shared/storeSaasBilling";
 import { storeCommercialOfferModeLabels, type StoreCommercialOfferMode } from "@shared/storeCommercialOffer";
 import { suggestStudioSaasBillingDraft, type StudioSaasPlanFilter } from "@shared/studioSaasPortfolio";
@@ -57,10 +57,13 @@ function storeIdFromLocation(location: string) {
   return value && /^\d+$/.test(value) ? value : "";
 }
 
+type BillingTab = "portefeuille" | "gestion" | "catalogue" | "indicateurs";
+
 export default function AdminStudioSaasBilling() {
   const utils = trpc.useUtils();
   const requestedStoreId = storeIdFromLocation(typeof window === "undefined" ? "" : window.location.search);
   const autoScrolledStoreId = useRef<string | null>(null);
+  const [activeTab, setActiveTab] = useState<BillingTab>(requestedStoreId ? "gestion" : "portefeuille");
   const [portfolioSearch, setPortfolioSearch] = useState("");
   const [portfolioStatus, setPortfolioStatus] = useState<BillingStatusFilter>("all");
   const [portfolioOffer, setPortfolioOffer] = useState<BillingOfferFilter>("all");
@@ -174,30 +177,628 @@ export default function AdminStudioSaasBilling() {
 
   return <DashboardLayout><main className="min-h-full bg-slate-50"><div className="mx-auto max-w-7xl space-y-6 px-4 py-6 md:px-6 lg:px-8"><div className="flex flex-col gap-4 border-b border-slate-200 pb-6 md:flex-row md:items-end md:justify-between"><div><Link href="/admin/studio" className="inline-flex items-center text-sm font-semibold text-slate-600 hover:text-slate-950"><ArrowLeft className="mr-2 h-4 w-4" /> Retour au Studio</Link><p className="mt-5 text-xs font-bold uppercase tracking-[0.16em] text-violet-700">Pilotage SaaS</p><h1 className="mt-1 text-3xl font-bold tracking-tight text-slate-950">Abonnements et factures — Test contrôlé</h1><p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">Le portefeuille sépare les brouillons internes des droits SaaS confirmés par Lemon Squeezy <strong>en Test</strong>. Aucun prélèvement Live, facture fiscale, e-mail ni changement automatique de boutique n’est déclenché.</p></div><Button variant="outline" className="min-h-11 border-slate-300 bg-white" onClick={() => dashboardQuery.refetch()} disabled={dashboardQuery.isFetching}>{dashboardQuery.isFetching ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />} Actualiser</Button></div>
 
+  {/* Ruban de boutons-onglets pour naviguer facilement sans scroll infini */}
+  <div className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between pb-2 border-b border-slate-100">
+      <p className="text-xs font-bold uppercase tracking-wider text-slate-500">Modules de gestion SaaS</p>
+      <div className="text-xs text-slate-600 flex items-center gap-1.5">
+        <span>Boutique en cours d'édition :</span>
+        <strong className="text-slate-900 bg-slate-100 px-2 py-0.5 rounded-md">{selectedStore ? selectedStore.displayName : "Aucune"}</strong>
+      </div>
+    </div>
+    <div className="mt-2.5 grid grid-cols-2 gap-2.5 md:grid-cols-4">
+      <button
+        type="button"
+        onClick={() => setActiveTab("portefeuille")}
+        className={`flex items-center gap-3 rounded-xl p-3 text-left transition-all ${
+          activeTab === "portefeuille"
+            ? "border-2 border-slate-950 bg-slate-950 text-white shadow-md shadow-slate-900/15"
+            : "border border-slate-200 bg-slate-50/70 text-slate-800 hover:bg-slate-100 hover:text-slate-950"
+        }`}
+      >
+        <Store className={`h-5 w-5 shrink-0 ${activeTab === "portefeuille" ? "text-violet-300" : "text-slate-600"}`} />
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-xs font-bold uppercase tracking-wider">1. Portefeuille</p>
+          <p className="truncate text-xs opacity-80">{portfolioPagination?.total ?? 0} boutique(s)</p>
+        </div>
+      </button>
+
+      <button
+        type="button"
+        onClick={() => setActiveTab("gestion")}
+        className={`flex items-center gap-3 rounded-xl p-3 text-left transition-all ${
+          activeTab === "gestion"
+            ? "border-2 border-violet-700 bg-violet-700 text-white shadow-md shadow-violet-700/20"
+            : "border border-violet-200 bg-violet-50/60 text-violet-900 hover:bg-violet-100/70"
+        }`}
+      >
+        <FilePenLine className={`h-5 w-5 shrink-0 ${activeTab === "gestion" ? "text-violet-200" : "text-violet-700"}`} />
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-xs font-bold uppercase tracking-wider">2. Brouillons & Fiche</p>
+          <p className="truncate text-xs opacity-80">{selectedStore ? selectedStore.displayName : "Sélectionner"}</p>
+        </div>
+      </button>
+
+      <button
+        type="button"
+        onClick={() => setActiveTab("catalogue")}
+        className={`flex items-center gap-3 rounded-xl p-3 text-left transition-all ${
+          activeTab === "catalogue"
+            ? "border-2 border-sky-800 bg-sky-800 text-white shadow-md shadow-sky-800/20"
+            : "border border-sky-200 bg-sky-50/60 text-sky-900 hover:bg-sky-100/70"
+        }`}
+      >
+        <Layers className={`h-5 w-5 shrink-0 ${activeTab === "catalogue" ? "text-sky-200" : "text-sky-700"}`} />
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-xs font-bold uppercase tracking-wider">3. Formules SaaS</p>
+          <p className="truncate text-xs opacity-80">FREE · BASIC · PRO · LIFE</p>
+        </div>
+      </button>
+
+      <button
+        type="button"
+        onClick={() => setActiveTab("indicateurs")}
+        className={`flex items-center gap-3 rounded-xl p-3 text-left transition-all ${
+          activeTab === "indicateurs"
+            ? "border-2 border-amber-700 bg-amber-700 text-white shadow-md shadow-amber-700/20"
+            : "border border-amber-200 bg-amber-50/60 text-amber-900 hover:bg-amber-100/70"
+        }`}
+      >
+        <BarChart3 className={`h-5 w-5 shrink-0 ${activeTab === "indicateurs" ? "text-amber-200" : "text-amber-700"}`} />
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-xs font-bold uppercase tracking-wider">4. Synthèse & KPIs</p>
+          <p className="truncate text-xs opacity-80">Indicateurs de pilotage</p>
+        </div>
+      </button>
+    </div>
+  </div>
+
   {dashboardQuery.isLoading ? <div className="grid gap-4 md:grid-cols-3"><div className="h-32 animate-pulse rounded-2xl bg-slate-200" /><div className="h-32 animate-pulse rounded-2xl bg-slate-200" /><div className="h-32 animate-pulse rounded-2xl bg-slate-200" /></div> : dashboardQuery.isError ? <Card className="border-rose-200 bg-rose-50"><CardContent className="p-5 text-sm leading-6 text-rose-950">Le centre SaaS est temporairement indisponible. Aucun abonnement, facture ou paiement n’a été modifié.</CardContent></Card> : <>
-    <section className="grid gap-4 md:grid-cols-3"><Card className="border-violet-200 bg-violet-50"><CardContent className="p-5"><div className="flex items-start justify-between"><div><p className="text-xs font-bold uppercase tracking-wide text-violet-800">Plans location</p><p className="mt-2 text-3xl font-bold text-violet-950">{dashboardQuery.data?.summary.plannedSubscriptions ?? 0}</p><p className="mt-1 text-xs leading-5 text-violet-900">Brouillons mensuels ou annuels, sans abonnement actif.</p></div><CalendarClock className="h-6 w-6 text-violet-700" /></div></CardContent></Card><Card className="border-sky-200 bg-sky-50"><CardContent className="p-5"><div className="flex items-start justify-between"><div><p className="text-xs font-bold uppercase tracking-wide text-sky-800">Ventes définitives</p><p className="mt-2 text-3xl font-bold text-sky-950">{dashboardQuery.data?.summary.perpetualSales ?? 0}</p><p className="mt-1 text-xs leading-5 text-sky-900">Repères ponctuels, sans transfert ni facture officielle.</p></div><CircleDollarSign className="h-6 w-6 text-sky-700" /></div></CardContent></Card><Card className="border-amber-200 bg-amber-50"><CardContent className="p-5"><div className="flex items-start justify-between"><div><p className="text-xs font-bold uppercase tracking-wide text-amber-800">Factures internes</p><p className="mt-2 text-3xl font-bold text-amber-950">{dashboardQuery.data?.summary.invoiceDrafts ?? 0}</p><p className="mt-1 text-xs leading-5 text-amber-900">Tous les documents restent au statut brouillon.</p></div><ReceiptText className="h-6 w-6 text-amber-700" /></div></CardContent></Card></section>
-    <section className="grid gap-4 md:grid-cols-3"><Card className="border-violet-200 bg-violet-50"><CardContent className="p-5"><p className="text-xs font-bold uppercase tracking-wide text-violet-800">Lemon Squeezy Test actifs</p><p className="mt-2 text-3xl font-bold text-violet-950">{dashboardQuery.data?.summary.lemonSqueezyTest.active ?? 0}</p><p className="mt-1 text-xs leading-5 text-violet-900">{dashboardQuery.data?.summary.lemonSqueezyTest.schemaReady === false ? "Migration 0029 à appliquer avant tout checkout." : "Confirmés par webhook signé, sans passage Live."}</p></CardContent></Card><Card className="border-sky-200 bg-sky-50"><CardContent className="p-5"><p className="text-xs font-bold uppercase tracking-wide text-sky-800">Checkout Test à finaliser</p><p className="mt-2 text-3xl font-bold text-sky-950">{dashboardQuery.data?.summary.lemonSqueezyTest.awaitingCheckout ?? 0}</p><p className="mt-1 text-xs leading-5 text-sky-900">Préparé uniquement sur décision du propriétaire.</p></CardContent></Card><Card className="border-amber-200 bg-amber-50"><CardContent className="p-5"><p className="text-xs font-bold uppercase tracking-wide text-amber-800">Signaux à examiner</p><p className="mt-2 text-3xl font-bold text-amber-950">{dashboardQuery.data?.summary.lemonSqueezyTest.attention ?? 0}</p><p className="mt-1 text-xs leading-5 text-amber-900">Aucune limitation de boutique n’est automatique.</p></CardContent></Card></section>
-    <section className="grid gap-4 md:grid-cols-2"><Card className="border-slate-200 bg-white"><CardContent className="p-5"><p className="text-xs font-bold uppercase tracking-wide text-slate-600">Repère mensuel indicatif</p><p className="mt-2 text-xl font-bold text-slate-950">{formatCurrencyTotals(dashboardQuery.data?.summary.monthlyEquivalentByCurrency ?? {})}</p><p className="mt-2 text-xs leading-5 text-slate-600">Équivalent mensuel calculé depuis les brouillons de location. Les ventes définitives sont volontairement exclues.</p></CardContent></Card><Card className="border-slate-200 bg-white"><CardContent className="p-5"><p className="text-xs font-bold uppercase tracking-wide text-slate-600">Total des brouillons de facture</p><p className="mt-2 text-xl font-bold text-slate-950">{formatCurrencyTotals(dashboardQuery.data?.summary.invoiceDraftTotalsByCurrency ?? {})}</p><p className="mt-2 text-xs leading-5 text-slate-600">Somme interne par devise, sans statut payé, relance, envoi ni écriture comptable.</p></CardContent></Card></section>
 
-    <section className="grid gap-4 md:grid-cols-2"><Card className="border-sky-200 bg-sky-50"><CardContent className="p-5"><p className="text-xs font-bold uppercase tracking-wide text-sky-800">Portefeuille et croissance</p><div className="mt-3 grid grid-cols-2 gap-3 text-sm"><div><p className="text-2xl font-bold text-sky-950">{dashboardQuery.data?.summary.clientStores ?? 0}</p><p className="mt-1 text-xs text-sky-900">boutique(s) cliente(s)</p></div><div><p className="text-2xl font-bold text-sky-950">{dashboardQuery.data?.summary.publicStorefronts ?? 0}</p><p className="mt-1 text-xs text-sky-900">vitrine(s) publiquement servies</p></div><div><p className="text-xl font-bold text-sky-950">{dashboardQuery.data?.summary.setupStores ?? 0}</p><p className="mt-1 text-xs text-sky-900">en préparation</p></div><div><p className="text-xl font-bold text-sky-950">{dashboardQuery.data?.summary.pausedStores ?? 0}</p><p className="mt-1 text-xs text-sky-900">suspendue(s) ou clôturée(s)</p></div></div></CardContent></Card><Card className="border-slate-200 bg-white"><CardContent className="p-5"><p className="text-xs font-bold uppercase tracking-wide text-slate-600">Churn et revenu réel</p><p className="mt-2 text-lg font-bold text-slate-950">Non mesurés volontairement</p><p className="mt-2 text-xs leading-5 text-slate-600">{dashboardQuery.data?.summary.churn.reason ?? "Aucune donnée d’abonnement actif disponible."} Les montants ci-dessus sont des brouillons indicatifs, jamais du MRR encaissé. Les statuts de boutique ne sont pas assimilés à des résiliations.</p></CardContent></Card></section>
+    {/* ONGLET 1: PORTEFEUILLE & BOUTIQUES */}
+    {activeTab === "portefeuille" && (
+      <Card id="studio-saas-portfolio" className="border-slate-200">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Store className="h-5 w-5 text-slate-700" /> Portefeuille des boutiques
+          </CardTitle>
+          <CardDescription>
+            Recherchez et gérez les plans des boutiques clientes. Cliquez sur « Configurer » sur une ligne pour ouvrir directement son espace de brouillons et d'assignation.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+            <div className="grid gap-3 lg:grid-cols-3 2xl:grid-cols-[minmax(220px,1fr)_150px_155px_170px_105px_auto]">
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-slate-400" />
+                <Input value={portfolioSearch} onChange={event => { setPortfolioSearch(event.target.value); setPortfolioPage(1); }} className="min-h-11 bg-white pl-9" placeholder="Nom, sous-domaine ou domaine…" aria-label="Rechercher une boutique du portefeuille" />
+              </div>
+              <Select value={portfolioStatus} onValueChange={value => { setPortfolioStatus(value as BillingStatusFilter); setPortfolioPage(1); }}>
+                <SelectTrigger className="min-h-11 bg-white"><SelectValue placeholder="État" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Tous les états</SelectItem>
+                  <SelectItem value="setup">À préparer</SelectItem>
+                  <SelectItem value="active">Actives</SelectItem>
+                  <SelectItem value="limited">Accès limité</SelectItem>
+                  <SelectItem value="suspended">Suspendues</SelectItem>
+                  <SelectItem value="closed">Clôturées</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select value={portfolioOffer} onValueChange={value => { setPortfolioOffer(value as BillingOfferFilter); setPortfolioPage(1); }}>
+                <SelectTrigger className="min-h-11 bg-white"><SelectValue placeholder="Offre" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Toutes les offres</SelectItem>
+                  <SelectItem value="rental">Location SaaS</SelectItem>
+                  <SelectItem value="perpetual_sale">Vente définitive</SelectItem>
+                  <SelectItem value="undecided">À définir</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select value={portfolioPlan} onValueChange={value => { setPortfolioPlan(value as StudioSaasPlanFilter); setPortfolioPage(1); }}>
+                <SelectTrigger className="min-h-11 bg-white" aria-label="Filtrer par plan SaaS officiel"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Tous les plans</SelectItem>
+                  <SelectItem value="unassigned">Sans plan officiel</SelectItem>
+                  <SelectItem value="free">FREE</SelectItem>
+                  <SelectItem value="basic">BASIC</SelectItem>
+                  <SelectItem value="pro">PRO</SelectItem>
+                  <SelectItem value="lifetime">LIFETIME</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select value={String(portfolioPageSize)} onValueChange={value => { setPortfolioPageSize(Number(value) as 20 | 50 | 100); setPortfolioPage(1); }}>
+                <SelectTrigger className="min-h-11 bg-white"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="20">20 / page</SelectItem>
+                  <SelectItem value="50">50 / page</SelectItem>
+                  <SelectItem value="100">100 / page</SelectItem>
+                </SelectContent>
+              </Select>
+              <Button type="button" variant="outline" className="min-h-11 bg-white" disabled={!portfolioFiltersActive} onClick={resetPortfolioFilters}>
+                <RotateCcw className="mr-2 h-4 w-4" /> Réinitialiser
+              </Button>
+            </div>
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-600">
+              <Badge variant="outline" className="border-slate-200 bg-white text-slate-700">{portfolioPagination?.total ?? 0} résultat(s)</Badge>
+              <span>Sélectionnez une boutique pour configurer son plan et ses brouillons de facture.</span>
+            </div>
+          </div>
 
-    <section className="rounded-2xl border border-violet-200 bg-white p-5 shadow-sm" aria-label="Couverture des plans SaaS officiels">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><p className="text-xs font-bold uppercase tracking-wide text-violet-700">Couverture des boutiques clientes</p><h2 className="mt-1 text-xl font-bold text-slate-950">Plans officiels attribués</h2><p className="mt-1 text-sm text-slate-600">Ces nombres couvrent tout le portefeuille, pas seulement la page affichée. Sans plan explicite, les plafonds FREE s’appliquent par défaut, mais aucun plan n’est enregistré.</p></div><Button type="button" variant="outline" className="min-h-11 shrink-0 border-violet-200 bg-violet-50 text-violet-900 hover:bg-violet-100" onClick={() => { setPortfolioPlan("unassigned"); setPortfolioPage(1); requestAnimationFrame(() => document.getElementById("studio-saas-portfolio")?.scrollIntoView({ behavior: "smooth", block: "start" })); }}>Voir les boutiques sans plan</Button></div>
-      <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">{([ ["free", "FREE"], ["basic", "BASIC"], ["pro", "PRO"], ["lifetime", "LIFETIME"], ["unassigned", "Sans plan officiel"] ] as const).map(([key, label]) => <div key={key} className={`rounded-xl border p-3 ${key === "unassigned" ? "border-amber-200 bg-amber-50 text-amber-950" : "border-violet-100 bg-violet-50/60 text-violet-950"}`}><p className="text-xs font-semibold">{label}</p><p className="mt-1 text-2xl font-bold">{dashboardQuery.data?.summary.planCoverage[key] ?? 0}</p></div>)}</div>
-    </section>
-    <StudioSaasPlanCatalog />
+          {(dashboardQuery.data?.stores ?? []).length === 0 ? (
+            <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-5 text-sm leading-6 text-slate-600">
+              <p className="font-semibold text-slate-900">Aucune boutique ne correspond à ce portefeuille.</p>
+              <p className="mt-1">Modifiez la recherche ou les filtres pour retrouver une boutique cliente.</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-[1280px] w-full text-left text-sm">
+                <thead className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500">
+                  <tr>
+                    <th className="px-3 py-3">Boutique</th>
+                    <th className="px-3 py-3">Mode commercial</th>
+                    <th className="px-3 py-3">Plan SaaS</th>
+                    <th className="px-3 py-3">Lemon Test</th>
+                    <th className="px-3 py-3">Brouillon interne</th>
+                    <th className="px-3 py-3">À traiter</th>
+                    <th className="px-3 py-3">Factures</th>
+                    <th className="px-3 py-3">État</th>
+                    <th className="px-3 py-3 text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {dashboardQuery.data?.stores.map(store => (
+                    <tr key={store.id} className={`border-b border-slate-100 last:border-0 hover:bg-slate-50/50 ${selectedStoreId === String(store.id) ? "bg-violet-50/30" : ""}`}>
+                      <td className="px-3 py-4">
+                        <p className="font-semibold text-slate-950">{store.displayName}</p>
+                        <p className="mt-1 text-xs text-slate-500">{store.primaryDomain}</p>
+                      </td>
+                      <td className="px-3 py-4">
+                        <Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-700">{storeCommercialOfferModeLabels[store.commercialOfferMode]}</Badge>
+                      </td>
+                      <td className="px-3 py-4">
+                        <Badge variant="outline" className={store.lemonSqueezy.plan ? "border-violet-200 bg-violet-50 text-violet-900" : "border-amber-200 bg-amber-50 text-amber-900"}>{store.lemonSqueezy.plan?.name ?? "Sans plan officiel"}</Badge>
+                      </td>
+                      <td className="px-3 py-4">
+                        <Badge variant="outline" className={lemonBillingPresentation(store.lemonSqueezy.billingAccess).className}>{store.lemonSqueezy.schemaReady ? lemonBillingPresentation(store.lemonSqueezy.billingAccess).label : "Migration requise"}</Badge>
+                      </td>
+                      <td className="px-3 py-4">
+                        {store.billing.plan ? (
+                          <div>
+                            <p className="font-semibold text-slate-900">{formatMoney(store.billing.plan.amountCents, store.billing.plan.currency)}</p>
+                            <p className="mt-1 text-xs text-slate-500">{store.billing.plan.label} · {saasBillingIntervalLabel(store.billing.plan.interval)}</p>
+                          </div>
+                        ) : <span className="text-slate-500">Aucun</span>}
+                      </td>
+                      <td className="px-3 py-4">
+                        <Badge variant="outline" className={billingDraftReadinessPresentation(store.operatorReadiness).className}>{billingDraftReadinessPresentation(store.operatorReadiness).label}</Badge>
+                      </td>
+                      <td className="px-3 py-4">
+                        <Badge variant="outline" className="border-amber-200 bg-amber-50 text-amber-900">{store.billing.invoices.length} brouillon{store.billing.invoices.length > 1 ? "s" : ""}</Badge>
+                      </td>
+                      <td className="px-3 py-4">
+                        <Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-700">{store.status}</Badge>
+                      </td>
+                      <td className="px-3 py-4 text-right">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="min-h-10 border-violet-200 bg-violet-50 text-violet-900 hover:bg-violet-100"
+                          onClick={() => {
+                            setSelectedStoreId(String(store.id));
+                            setActiveTab("gestion");
+                          }}
+                        >
+                          <FilePenLine className="mr-1.5 h-4 w-4" /> Configurer
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
 
-    <Card id="studio-saas-portfolio" className="scroll-mt-6 border-slate-200"><CardHeader><CardTitle className="flex items-center gap-2"><Store className="h-5 w-5 text-slate-700" /> Portefeuille boutiques</CardTitle><CardDescription>Lecture limitée à la boutique, son état, son plan officiel attribué et ses brouillons SaaS. Le mode « Vente définitive » ne constitue pas un plan LIFETIME. « À traiter » indique seulement s’il manque un repère d’offre ou de plan interne — jamais un abonnement actif, une facture fiscale ou un paiement. Aucune donnée client, moyen de paiement, coordonnées de facturation ou facture commerce n’est affiché.</CardDescription></CardHeader><CardContent className="space-y-4">
-      <div className="rounded-xl border border-slate-200 bg-slate-50 p-3"><div className="grid gap-3 lg:grid-cols-3 2xl:grid-cols-[minmax(220px,1fr)_150px_155px_170px_105px_auto]"><div className="relative"><Search className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-slate-400" /><Input value={portfolioSearch} onChange={event => { setPortfolioSearch(event.target.value); setPortfolioPage(1); }} className="min-h-11 bg-white pl-9" placeholder="Nom, sous-domaine ou domaine…" aria-label="Rechercher une boutique du portefeuille" /></div><Select value={portfolioStatus} onValueChange={value => { setPortfolioStatus(value as BillingStatusFilter); setPortfolioPage(1); }}><SelectTrigger className="min-h-11 bg-white"><SelectValue placeholder="État" /></SelectTrigger><SelectContent><SelectItem value="all">Tous les états</SelectItem><SelectItem value="setup">À préparer</SelectItem><SelectItem value="active">Actives</SelectItem><SelectItem value="limited">Accès limité</SelectItem><SelectItem value="suspended">Suspendues</SelectItem><SelectItem value="closed">Clôturées</SelectItem></SelectContent></Select><Select value={portfolioOffer} onValueChange={value => { setPortfolioOffer(value as BillingOfferFilter); setPortfolioPage(1); }}><SelectTrigger className="min-h-11 bg-white"><SelectValue placeholder="Offre" /></SelectTrigger><SelectContent><SelectItem value="all">Toutes les offres</SelectItem><SelectItem value="rental">Location SaaS</SelectItem><SelectItem value="perpetual_sale">Vente définitive</SelectItem><SelectItem value="undecided">À définir</SelectItem></SelectContent></Select><Select value={portfolioPlan} onValueChange={value => { setPortfolioPlan(value as StudioSaasPlanFilter); setPortfolioPage(1); }}><SelectTrigger className="min-h-11 bg-white" aria-label="Filtrer par plan SaaS officiel"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">Tous les plans</SelectItem><SelectItem value="unassigned">Sans plan officiel</SelectItem><SelectItem value="free">FREE</SelectItem><SelectItem value="basic">BASIC</SelectItem><SelectItem value="pro">PRO</SelectItem><SelectItem value="lifetime">LIFETIME</SelectItem></SelectContent></Select><Select value={String(portfolioPageSize)} onValueChange={value => { setPortfolioPageSize(Number(value) as 20 | 50 | 100); setPortfolioPage(1); }}><SelectTrigger className="min-h-11 bg-white"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="20">20 / page</SelectItem><SelectItem value="50">50 / page</SelectItem><SelectItem value="100">100 / page</SelectItem></SelectContent></Select><Button type="button" variant="outline" className="min-h-11 bg-white" disabled={!portfolioFiltersActive} onClick={resetPortfolioFilters}><RotateCcw className="mr-2 h-4 w-4" /> Réinitialiser</Button></div><div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-600"><Badge variant="outline" className="border-slate-200 bg-white text-slate-700">{portfolioPagination?.total ?? 0} résultat(s)</Badge><span>Les montants de synthèse restent globaux ; les filtres n’affichent que les boutiques à travailler.</span></div></div>
-      {(dashboardQuery.data?.stores ?? []).length === 0 ? <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-5 text-sm leading-6 text-slate-600"><p className="font-semibold text-slate-900">Aucune boutique ne correspond à ce portefeuille.</p><p className="mt-1">Modifiez la recherche ou les filtres pour retrouver une boutique cliente.</p></div> : <div className="overflow-x-auto"><table className="min-w-[1280px] w-full text-left text-sm"><thead className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500"><tr><th className="px-3 py-3">Boutique</th><th className="px-3 py-3">Mode commercial</th><th className="px-3 py-3">Plan SaaS</th><th className="px-3 py-3">Lemon Test</th><th className="px-3 py-3">Brouillon interne</th><th className="px-3 py-3">À traiter</th><th className="px-3 py-3">Factures internes</th><th className="px-3 py-3">État</th><th className="px-3 py-3 text-right">Action</th></tr></thead><tbody>{dashboardQuery.data?.stores.map(store => <tr key={store.id} className="border-b border-slate-100 last:border-0"><td className="px-3 py-4"><p className="font-semibold text-slate-950">{store.displayName}</p><p className="mt-1 text-xs text-slate-500">{store.primaryDomain}</p></td><td className="px-3 py-4"><Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-700">{storeCommercialOfferModeLabels[store.commercialOfferMode]}</Badge></td><td className="px-3 py-4"><Badge variant="outline" className={store.lemonSqueezy.plan ? "border-violet-200 bg-violet-50 text-violet-900" : "border-amber-200 bg-amber-50 text-amber-900"}>{store.lemonSqueezy.plan?.name ?? "Sans plan officiel"}</Badge></td><td className="px-3 py-4"><Badge variant="outline" className={lemonBillingPresentation(store.lemonSqueezy.billingAccess).className}>{store.lemonSqueezy.schemaReady ? lemonBillingPresentation(store.lemonSqueezy.billingAccess).label : "Migration requise"}</Badge></td><td className="px-3 py-4">{store.billing.plan ? <div><p className="font-semibold text-slate-900">{formatMoney(store.billing.plan.amountCents, store.billing.plan.currency)}</p><p className="mt-1 text-xs text-slate-500">{store.billing.plan.label} · {saasBillingIntervalLabel(store.billing.plan.interval)} · note interne, pas le tarif officiel</p></div> : <span className="text-slate-500">Aucun</span>}</td><td className="px-3 py-4"><Badge variant="outline" className={billingDraftReadinessPresentation(store.operatorReadiness).className}>{billingDraftReadinessPresentation(store.operatorReadiness).label}</Badge></td><td className="px-3 py-4"><Badge variant="outline" className="border-amber-200 bg-amber-50 text-amber-900">{store.billing.invoices.length} brouillon{store.billing.invoices.length > 1 ? "s" : ""}</Badge></td><td className="px-3 py-4"><Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-700">{store.status}</Badge></td><td className="px-3 py-4 text-right"><Button type="button" size="sm" variant="outline" className="min-h-10 border-violet-200 bg-violet-50 text-violet-900 hover:bg-violet-100" onClick={() => { setSelectedStoreId(String(store.id)); requestAnimationFrame(() => document.getElementById("studio-plan-assignment")?.scrollIntoView({ behavior: "smooth", block: "start" })); }}><FilePenLine className="mr-1.5 h-4 w-4" /> Configurer</Button></td></tr>)}</tbody></table></div>}
-      <div className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700 sm:flex-row sm:items-center sm:justify-between"><p>{portfolioPagination?.total ? <>Affichage {portfolioPagination.from}–{portfolioPagination.to} sur {portfolioPagination.total} boutique{portfolioPagination.total > 1 ? "s" : ""} · page {portfolioPagination.page} sur {portfolioPagination.totalPages}</> : "Aucune boutique affichée"}</p><div className="flex gap-2"><Button type="button" size="sm" variant="outline" className="min-h-10 bg-white" disabled={!portfolioPagination || portfolioPagination.page <= 1 || dashboardQuery.isFetching} onClick={() => setPortfolioPage(current => Math.max(1, current - 1))}><ChevronLeft className="mr-1 h-4 w-4" /> Précédent</Button><Button type="button" size="sm" variant="outline" className="min-h-10 bg-white" disabled={!portfolioPagination || portfolioPagination.page >= portfolioPagination.totalPages || dashboardQuery.isFetching} onClick={() => setPortfolioPage(current => Math.min(portfolioPagination?.totalPages ?? current, current + 1))}>Suivant <ChevronRight className="ml-1 h-4 w-4" /></Button></div></div>
-    </CardContent></Card>
+          <div className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700 sm:flex-row sm:items-center sm:justify-between">
+            <p>{portfolioPagination?.total ? <>Affichage {portfolioPagination.from}–{portfolioPagination.to} sur {portfolioPagination.total} boutique{portfolioPagination.total > 1 ? "s" : ""} · page {portfolioPagination.page} sur {portfolioPagination.totalPages}</> : "Aucune boutique affichée"}</p>
+            <div className="flex gap-2">
+              <Button type="button" size="sm" variant="outline" className="min-h-10 bg-white" disabled={!portfolioPagination || portfolioPagination.page <= 1 || dashboardQuery.isFetching} onClick={() => setPortfolioPage(current => Math.max(1, current - 1))}>
+                <ChevronLeft className="mr-1 h-4 w-4" /> Précédent
+              </Button>
+              <Button type="button" size="sm" variant="outline" className="min-h-10 bg-white" disabled={!portfolioPagination || portfolioPagination.page >= portfolioPagination.totalPages || dashboardQuery.isFetching} onClick={() => setPortfolioPage(current => Math.min(portfolioPagination?.totalPages ?? current, current + 1))}>
+                Suivant <ChevronRight className="ml-1 h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    )}
 
-    {selectedStore && <div id="studio-plan-assignment" className="scroll-mt-6"><StudioStorePlanAssignment store={selectedStore} onChanged={invalidate} /></div>}
-    {selectedStore && draftOutsideOfficialGrid && <div role="alert" className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm leading-6 text-amber-950"><strong>Brouillon historique hors grille officielle.</strong> Son prix ou sa périodicité ne correspond pas à l’offre attribuée. Il ne remplace pas le tarif officiel FREE (0 CHF), BASIC (7,90 CHF/mois), PRO (12,90 CHF/mois) ou LIFETIME (300 CHF une fois). La correction d’un brouillon est une action distincte ; aucune facture ni donnée existante n’est modifiée automatiquement.</div>}
-    {selectedStore && <section className="grid gap-5 xl:grid-cols-2"><Card className="border-violet-200"><CardHeader><CardTitle className="flex items-center gap-2"><CalendarClock className="h-5 w-5 text-violet-700" /> Brouillon administratif · hors plan officiel</CardTitle><CardDescription><strong>{selectedStore.displayName}</strong> · Ce montant est une note de préparation distincte du plan officiel affiché ci-dessus. Il ne modifie jamais le tarif public, les droits de la boutique ni la facturation Lemon Squeezy.</CardDescription></CardHeader><CardContent className="space-y-4"><div className="grid gap-3 sm:grid-cols-2"><div className="space-y-2"><Label htmlFor="saas-store">Boutique</Label><Select value={selectedStoreId} onValueChange={setSelectedStoreId}><SelectTrigger id="saas-store" className="min-h-11"><SelectValue /></SelectTrigger><SelectContent>{dashboardQuery.data?.stores.map(store => <SelectItem key={store.id} value={String(store.id)}>{store.displayName}</SelectItem>)}</SelectContent></Select></div><div className="space-y-2"><Label>Offre enregistrée</Label><div className="flex min-h-11 items-center rounded-md border border-slate-200 bg-slate-50 px-3 text-sm font-medium text-slate-800">{storeCommercialOfferModeLabels[selectedStore.commercialOfferMode]}</div></div></div>{selectedStore.commercialOfferMode === "undecided" ? <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-950"><p className="font-semibold">Offre à définir d’abord</p><p className="mt-1 text-xs">Retournez dans le registre Studio et choisissez « Location SaaS » ou « Vente définitive ». Aucun brouillon de plan ne peut contourner ce choix.</p></div> : <><div className="grid gap-3 sm:grid-cols-2"><div className="space-y-2"><Label htmlFor="saas-plan-kind">Modèle</Label><Select value={planKind} onValueChange={value => { const kind = value as PlanKind; setPlanKind(kind); setPlanInterval(kind === "rental" ? "monthly" : "one_time"); if (!planLabel || planLabel === "Abonnement SaaS" || planLabel === "Vente définitive") setPlanLabel(kind === "rental" ? "Abonnement SaaS" : "Vente définitive"); }}><SelectTrigger id="saas-plan-kind" className="min-h-11"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="rental">Location SaaS</SelectItem><SelectItem value="perpetual_sale">Vente définitive</SelectItem></SelectContent></Select></div><div className="space-y-2"><Label htmlFor="saas-plan-interval">Périodicité</Label><Select value={planInterval} onValueChange={value => setPlanInterval(value as SaasBillingInterval)} disabled={planKind === "perpetual_sale"}><SelectTrigger id="saas-plan-interval" className="min-h-11"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="monthly">Mensuel</SelectItem><SelectItem value="yearly">Annuel</SelectItem>{planKind === "perpetual_sale" && <SelectItem value="one_time">Ponctuel</SelectItem>}</SelectContent></Select></div></div><div className="space-y-2"><Label htmlFor="saas-plan-label">Libellé interne</Label><Input id="saas-plan-label" value={planLabel} onChange={event => setPlanLabel(event.target.value)} maxLength={90} /></div><div className="grid gap-3 sm:grid-cols-2"><div className="space-y-2"><Label htmlFor="saas-plan-amount">Montant indicatif</Label><Input id="saas-plan-amount" inputMode="decimal" value={planAmount} onChange={event => setPlanAmount(event.target.value)} placeholder="0.00" />{officialSuggestion && officialPricing && <Button type="button" variant="outline" className="mt-2 min-h-11 w-full border-violet-200 bg-violet-50 text-violet-950" onClick={() => { setPlanKind(officialSuggestion.kind); setPlanInterval(officialSuggestion.interval); setPlanAmount((officialSuggestion.amountCents / 100).toFixed(2)); setPlanCurrency(officialSuggestion.currency); setPlanLabel(officialSuggestion.label); setPlanConfirmation(""); setPlanAcknowledged(false); }}>Préremplir {officialPricing.name} · {formatMoney(officialSuggestion.amountCents, "CHF")}</Button>}</div><div className="space-y-2"><Label htmlFor="saas-plan-currency">Devise</Label><Select value={planCurrency} onValueChange={value => setPlanCurrency(value as SaasBillingCurrency)}><SelectTrigger id="saas-plan-currency" className="min-h-11"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="CHF">CHF</SelectItem><SelectItem value="EUR">EUR</SelectItem><SelectItem value="USD">USD</SelectItem><SelectItem value="GBP">GBP</SelectItem></SelectContent></Select></div></div>{!selectedOfferMatchesPlan && <p className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs leading-5 text-rose-950">Le modèle choisi ne correspond pas à l’offre enregistrée. Modifiez l’offre depuis le registre Studio avant l’enregistrement.</p>}<div className="space-y-2"><Label htmlFor="saas-plan-confirmation">Recopiez le nom de la boutique</Label><Input id="saas-plan-confirmation" value={planConfirmation} onChange={event => setPlanConfirmation(event.target.value)} placeholder={selectedStore.displayName} /></div><label className="flex cursor-pointer items-start gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm leading-6 text-slate-700"><Checkbox checked={planAcknowledged} onCheckedChange={value => setPlanAcknowledged(value === true)} className="mt-1" /><span>Je confirme enregistrer un <strong>brouillon interne</strong>. Il ne crée pas d’abonnement actif, prélèvement, facture officielle, e-mail ou accès client.</span></label><Button type="button" className="min-h-11 w-full bg-violet-700 hover:bg-violet-800" disabled={!planReady || savePlan.isPending} onClick={() => savePlan.mutate({ storeId: selectedStore.id, confirmationName: planConfirmation, plan: { kind: planKind, label: planLabel, amountCents: planAmountCents, currency: planCurrency, interval: planInterval }, acknowledged: true })}>{savePlan.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <BadgeCheck className="mr-2 h-4 w-4" />} Enregistrer le brouillon de plan</Button></>}</CardContent></Card>
+    {/* ONGLET 2: BROUILLONS & GESTION DE LA BOUTIQUE */}
+    {activeTab === "gestion" && (
+      <div className="space-y-6">
+        {/* Sélecteur rapide de boutique */}
+        <div className="flex flex-col gap-3 rounded-2xl border border-violet-200 bg-violet-50/60 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-violet-700 text-white">
+              <Store className="h-5 w-5" />
+            </div>
+            <div>
+              <p className="text-xs font-bold uppercase tracking-wider text-violet-700">Boutique en cours d’édition</p>
+              <p className="text-base font-bold text-slate-950">
+                {selectedStore ? selectedStore.displayName : "Aucune boutique sélectionnée"}
+                {selectedStore && <span className="ml-2 text-xs font-normal text-slate-500">({selectedStore.primaryDomain})</span>}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <Label htmlFor="saas-quick-store-switch" className="text-xs font-semibold text-slate-600 shrink-0">Boutique :</Label>
+            <Select value={selectedStoreId} onValueChange={setSelectedStoreId}>
+              <SelectTrigger id="saas-quick-store-switch" className="min-h-10 bg-white min-w-[200px] text-xs">
+                <SelectValue placeholder="Choisir une boutique" />
+              </SelectTrigger>
+              <SelectContent>
+                {dashboardQuery.data?.stores.map(store => (
+                  <SelectItem key={store.id} value={String(store.id)}>{store.displayName}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
 
-      <Card className="border-amber-200"><CardHeader><CardTitle className="flex items-center gap-2"><ReceiptText className="h-5 w-5 text-amber-700" /> Factures internes en brouillon</CardTitle><CardDescription>Ces documents servent à préparer le suivi interne. Ils ne sont ni fiscaux, ni finalisés, ni envoyés, ni encaissés.</CardDescription></CardHeader><CardContent className="space-y-4">{!selectedStore.billing.plan ? <div className="rounded-xl border border-dashed border-amber-300 bg-amber-50 p-4 text-sm leading-6 text-amber-950">Enregistrez d’abord un plan interne à gauche avant de créer une facture interne en brouillon.</div> : <>{editingInvoice && <div className="flex flex-col gap-3 rounded-xl border border-violet-200 bg-violet-50 p-4 sm:flex-row sm:items-center sm:justify-between"><div><p className="font-semibold text-violet-950">Modification du brouillon {editingInvoice.reference}</p><p className="mt-1 text-xs leading-5 text-violet-900">Le document reste interne, non fiscal, non envoyé et non encaissé.</p></div><Button type="button" variant="outline" size="sm" className="min-h-10 border-violet-200 bg-white text-violet-900 hover:bg-violet-100" onClick={() => { setEditingInvoiceId(null); setInvoiceReference(""); setInvoiceConfirmation(""); setInvoiceAcknowledged(false); }}>Annuler</Button></div>}<div className="grid gap-3 sm:grid-cols-2"><div className="space-y-2"><Label htmlFor="saas-invoice-reference">Référence interne</Label><Input id="saas-invoice-reference" value={invoiceReference} onChange={event => setInvoiceReference(event.target.value)} placeholder="BROUILLON-2026-001" maxLength={80} /></div><div className="space-y-2"><Label htmlFor="saas-invoice-amount">Montant indicatif</Label><Input id="saas-invoice-amount" inputMode="decimal" value={invoiceAmount} onChange={event => setInvoiceAmount(event.target.value)} /></div></div><div className="grid gap-3 sm:grid-cols-3"><div className="space-y-2"><Label htmlFor="saas-invoice-date">Date interne</Label><Input id="saas-invoice-date" type="date" value={invoiceIssueDate} onChange={event => setInvoiceIssueDate(event.target.value)} /></div><div className="space-y-2"><Label htmlFor="saas-invoice-due">Échéance indicative</Label><Input id="saas-invoice-due" type="date" value={invoiceDueDate} onChange={event => setInvoiceDueDate(event.target.value)} /></div><div className="space-y-2"><Label htmlFor="saas-invoice-currency">Devise</Label><Select value={invoiceCurrency} onValueChange={value => setInvoiceCurrency(value as SaasBillingCurrency)}><SelectTrigger id="saas-invoice-currency" className="min-h-11"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="CHF">CHF</SelectItem><SelectItem value="EUR">EUR</SelectItem><SelectItem value="USD">USD</SelectItem><SelectItem value="GBP">GBP</SelectItem></SelectContent></Select></div></div><div className="space-y-2"><Label htmlFor="saas-invoice-confirmation">Recopiez le nom de la boutique</Label><Input id="saas-invoice-confirmation" value={invoiceConfirmation} onChange={event => setInvoiceConfirmation(event.target.value)} placeholder={selectedStore.displayName} /></div><label className="flex cursor-pointer items-start gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm leading-6 text-slate-700"><Checkbox checked={invoiceAcknowledged} onCheckedChange={value => setInvoiceAcknowledged(value === true)} className="mt-1" /><span>Je confirme créer seulement un <strong>brouillon interne non fiscal</strong>, sans envoi, encaissement, lien de paiement, abonnement ou écriture comptable.</span></label><Button type="button" className="min-h-11 w-full bg-amber-700 hover:bg-amber-800" disabled={!invoiceReady || createInvoice.isPending || updateInvoice.isPending} onClick={() => editingInvoice ? updateInvoice.mutate({ storeId: selectedStore.id, confirmationName: invoiceConfirmation, invoiceId: editingInvoice.id, reference: invoiceReference, issueDate: invoiceIssueDate, dueDate: invoiceDueDate, amountCents: invoiceAmountCents, currency: invoiceCurrency, acknowledged: true }) : createInvoice.mutate({ storeId: selectedStore.id, confirmationName: invoiceConfirmation, reference: invoiceReference, issueDate: invoiceIssueDate, dueDate: invoiceDueDate, amountCents: invoiceAmountCents, currency: invoiceCurrency, acknowledged: true })}>{createInvoice.isPending || updateInvoice.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ReceiptText className="mr-2 h-4 w-4" />}{editingInvoice ? " Mettre à jour le brouillon" : " Créer le brouillon interne"}</Button></>}<div className="border-t border-slate-200 pt-4">{selectedStore.billing.invoices.length === 0 ? <p className="text-sm text-slate-600">Aucun brouillon pour cette boutique.</p> : <div className="space-y-2">{selectedStore.billing.invoices.map(invoice => <div key={invoice.id} className="flex flex-col gap-3 rounded-xl border border-amber-200 bg-amber-50/50 p-3 sm:flex-row sm:items-center sm:justify-between"><div><div className="flex flex-wrap items-center gap-2"><p className="font-semibold text-slate-950">{invoice.reference}</p><Badge variant="outline" className="border-amber-200 bg-white text-amber-900">Brouillon</Badge></div><p className="mt-1 text-xs leading-5 text-slate-600">{formatMoney(invoice.amountCents, invoice.currency)} · {invoice.issueDate} → {invoice.dueDate}</p></div><div className="flex flex-wrap gap-2"><Button type="button" variant="outline" size="sm" className="min-h-10 border-violet-200 bg-white text-violet-900 hover:bg-violet-50" disabled={deleteInvoice.isPending || updateInvoice.isPending} onClick={() => { setEditingInvoiceId(invoice.id); setInvoiceReference(invoice.reference); setInvoiceIssueDate(invoice.issueDate); setInvoiceDueDate(invoice.dueDate); setInvoiceAmount((invoice.amountCents / 100).toFixed(2)); setInvoiceCurrency(invoice.currency); setInvoiceConfirmation(""); setInvoiceAcknowledged(false); }}>Modifier</Button><Button type="button" variant="outline" size="sm" className="min-h-10 border-rose-200 bg-white text-rose-800 hover:bg-rose-50" disabled={deleteInvoice.isPending || updateInvoice.isPending} onClick={() => { if (window.confirm(`Supprimer le brouillon ${invoice.reference} ? Aucun document officiel ne sera affecté.`)) deleteInvoice.mutate({ storeId: selectedStore.id, confirmationName: selectedStore.displayName, invoiceId: invoice.id, acknowledged: true }); }}>Supprimer</Button></div></div>)}</div>}</div></CardContent></Card></section>}
+        {selectedStore ? (
+          <>
+            <div id="studio-plan-assignment" className="scroll-mt-6">
+              <StudioStorePlanAssignment store={selectedStore} onChanged={invalidate} />
+            </div>
+
+            {draftOutsideOfficialGrid && (
+              <div role="alert" className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm leading-6 text-amber-950">
+                <strong>Brouillon historique hors grille officielle.</strong> Son prix ou sa périodicité ne correspond pas à l’offre attribuée. Il ne remplace pas le tarif officiel FREE (0 CHF), BASIC (7,90 CHF/mois), PRO (12,90 CHF/mois) ou LIFETIME (300 CHF une fois). La correction d’un brouillon est une action distincte ; aucune facture ni donnée existante n’est modifiée automatiquement.
+              </div>
+            )}
+
+            <section className="grid gap-5 xl:grid-cols-2">
+              <Card className="border-violet-200">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <CalendarClock className="h-5 w-5 text-violet-700" /> Brouillon administratif · note interne
+                  </CardTitle>
+                  <CardDescription>
+                    <strong>{selectedStore.displayName}</strong> · Ce montant est une note de préparation distincte du plan officiel affiché ci-dessus. Il ne modifie jamais le tarif public, les droits de la boutique ni la facturation Lemon Squeezy.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label htmlFor="saas-store">Boutique</Label>
+                      <Select value={selectedStoreId} onValueChange={setSelectedStoreId}>
+                        <SelectTrigger id="saas-store" className="min-h-11"><SelectValue /></SelectTrigger>
+                        <SelectContent>{dashboardQuery.data?.stores.map(store => <SelectItem key={store.id} value={String(store.id)}>{store.displayName}</SelectItem>)}</SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Offre enregistrée</Label>
+                      <div className="flex min-h-11 items-center rounded-md border border-slate-200 bg-slate-50 px-3 text-sm font-medium text-slate-800">{storeCommercialOfferModeLabels[selectedStore.commercialOfferMode]}</div>
+                    </div>
+                  </div>
+
+                  {selectedStore.commercialOfferMode === "undecided" ? (
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-950">
+                      <p className="font-semibold">Offre à définir d’abord</p>
+                      <p className="mt-1 text-xs">Retournez dans le registre Studio et choisissez « Location SaaS » ou « Vente définitive ». Aucun brouillon de plan ne peut contourner ce choix.</p>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <div className="space-y-2">
+                          <Label htmlFor="saas-plan-kind">Modèle</Label>
+                          <Select value={planKind} onValueChange={value => { const kind = value as PlanKind; setPlanKind(kind); setPlanInterval(kind === "rental" ? "monthly" : "one_time"); if (!planLabel || planLabel === "Abonnement SaaS" || planLabel === "Vente définitive") setPlanLabel(kind === "rental" ? "Abonnement SaaS" : "Vente définitive"); }}>
+                            <SelectTrigger id="saas-plan-kind" className="min-h-11"><SelectValue /></SelectTrigger>
+                            <SelectContent><SelectItem value="rental">Location SaaS</SelectItem><SelectItem value="perpetual_sale">Vente définitive</SelectItem></SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="saas-plan-interval">Périodicité</Label>
+                          <Select value={planInterval} onValueChange={value => setPlanInterval(value as SaasBillingInterval)} disabled={planKind === "perpetual_sale"}>
+                            <SelectTrigger id="saas-plan-interval" className="min-h-11"><SelectValue /></SelectTrigger>
+                            <SelectContent><SelectItem value="monthly">Mensuel</SelectItem><SelectItem value="yearly">Annuel</SelectItem>{planKind === "perpetual_sale" && <SelectItem value="one_time">Ponctuel</SelectItem>}</SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="saas-plan-label">Libellé interne</Label>
+                        <Input id="saas-plan-label" value={planLabel} onChange={event => setPlanLabel(event.target.value)} maxLength={90} />
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <div className="space-y-2">
+                          <Label htmlFor="saas-plan-amount">Montant indicatif</Label>
+                          <Input id="saas-plan-amount" inputMode="decimal" value={planAmount} onChange={event => setPlanAmount(event.target.value)} placeholder="0.00" />
+                          {officialSuggestion && officialPricing && (
+                            <Button type="button" variant="outline" className="mt-2 min-h-11 w-full border-violet-200 bg-violet-50 text-violet-950" onClick={() => { setPlanKind(officialSuggestion.kind); setPlanInterval(officialSuggestion.interval); setPlanAmount((officialSuggestion.amountCents / 100).toFixed(2)); setPlanCurrency(officialSuggestion.currency); setPlanLabel(officialSuggestion.label); setPlanConfirmation(""); setPlanAcknowledged(false); }}>
+                              Préremplir {officialPricing.name} · {formatMoney(officialSuggestion.amountCents, "CHF")}
+                            </Button>
+                          )}
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="saas-plan-currency">Devise</Label>
+                          <Select value={planCurrency} onValueChange={value => setPlanCurrency(value as SaasBillingCurrency)}>
+                            <SelectTrigger id="saas-plan-currency" className="min-h-11"><SelectValue /></SelectTrigger>
+                            <SelectContent><SelectItem value="CHF">CHF</SelectItem><SelectItem value="EUR">EUR</SelectItem><SelectItem value="USD">USD</SelectItem><SelectItem value="GBP">GBP</SelectItem></SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+                      {!selectedOfferMatchesPlan && <p className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs leading-5 text-rose-950">Le modèle choisi ne correspond pas à l’offre enregistrée. Modifiez l’offre depuis le registre Studio avant l’enregistrement.</p>}
+                      <div className="space-y-2">
+                        <Label htmlFor="saas-plan-confirmation">Recopiez le nom de la boutique</Label>
+                        <Input id="saas-plan-confirmation" value={planConfirmation} onChange={event => setPlanConfirmation(event.target.value)} placeholder={selectedStore.displayName} />
+                      </div>
+                      <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm leading-6 text-slate-700">
+                        <Checkbox checked={planAcknowledged} onCheckedChange={value => setPlanAcknowledged(value === true)} className="mt-1" />
+                        <span>Je confirme enregistrer un <strong>brouillon interne</strong>. Il ne crée pas d’abonnement actif, prélèvement, facture officielle, e-mail ou accès client.</span>
+                      </label>
+                      <Button type="button" className="min-h-11 w-full bg-violet-700 hover:bg-violet-800" disabled={!planReady || savePlan.isPending} onClick={() => savePlan.mutate({ storeId: selectedStore.id, confirmationName: planConfirmation, plan: { kind: planKind, label: planLabel, amountCents: planAmountCents, currency: planCurrency, interval: planInterval }, acknowledged: true })}>
+                        {savePlan.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <BadgeCheck className="mr-2 h-4 w-4" />} Enregistrer le brouillon de plan
+                      </Button>
+                    </>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card className="border-amber-200">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <ReceiptText className="h-5 w-5 text-amber-700" /> Factures internes en brouillon
+                  </CardTitle>
+                  <CardDescription>Ces documents servent à préparer le suivi interne. Ils ne sont ni fiscaux, ni finalisés, ni envoyés, ni encaissés.</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {!selectedStore.billing.plan ? (
+                    <div className="rounded-xl border border-dashed border-amber-300 bg-amber-50 p-4 text-sm leading-6 text-amber-950">
+                      Enregistrez d’abord un plan interne à gauche avant de créer une facture interne en brouillon.
+                    </div>
+                  ) : (
+                    <>
+                      {editingInvoice && (
+                        <div className="flex flex-col gap-3 rounded-xl border border-violet-200 bg-violet-50 p-4 sm:flex-row sm:items-center sm:justify-between">
+                          <div>
+                            <p className="font-semibold text-violet-950">Modification du brouillon {editingInvoice.reference}</p>
+                            <p className="mt-1 text-xs leading-5 text-violet-900">Le document reste interne, non fiscal, non envoyé et non encaissé.</p>
+                          </div>
+                          <Button type="button" variant="outline" size="sm" className="min-h-10 border-violet-200 bg-white text-violet-900 hover:bg-violet-100" onClick={() => { setEditingInvoiceId(null); setInvoiceReference(""); setInvoiceConfirmation(""); setInvoiceAcknowledged(false); }}>Annuler</Button>
+                        </div>
+                      )}
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <div className="space-y-2">
+                          <Label htmlFor="saas-invoice-reference">Référence interne</Label>
+                          <Input id="saas-invoice-reference" value={invoiceReference} onChange={event => setInvoiceReference(event.target.value)} placeholder="BROUILLON-2026-001" maxLength={80} />
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="saas-invoice-amount">Montant indicatif</Label>
+                          <Input id="saas-invoice-amount" inputMode="decimal" value={invoiceAmount} onChange={event => setInvoiceAmount(event.target.value)} />
+                        </div>
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-3">
+                        <div className="space-y-2">
+                          <Label htmlFor="saas-invoice-date">Date interne</Label>
+                          <Input id="saas-invoice-date" type="date" value={invoiceIssueDate} onChange={event => setInvoiceIssueDate(event.target.value)} />
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="saas-invoice-due">Échéance indicative</Label>
+                          <Input id="saas-invoice-due" type="date" value={invoiceDueDate} onChange={event => setInvoiceDueDate(event.target.value)} />
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="saas-invoice-currency">Devise</Label>
+                          <Select value={invoiceCurrency} onValueChange={value => setInvoiceCurrency(value as SaasBillingCurrency)}>
+                            <SelectTrigger id="saas-invoice-currency" className="min-h-11"><SelectValue /></SelectTrigger>
+                            <SelectContent><SelectItem value="CHF">CHF</SelectItem><SelectItem value="EUR">EUR</SelectItem><SelectItem value="USD">USD</SelectItem><SelectItem value="GBP">GBP</SelectItem></SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="saas-invoice-confirmation">Recopiez le nom de la boutique</Label>
+                        <Input id="saas-invoice-confirmation" value={invoiceConfirmation} onChange={event => setInvoiceConfirmation(event.target.value)} placeholder={selectedStore.displayName} />
+                      </div>
+                      <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm leading-6 text-slate-700">
+                        <Checkbox checked={invoiceAcknowledged} onCheckedChange={value => setInvoiceAcknowledged(value === true)} className="mt-1" />
+                        <span>Je confirme créer seulement un <strong>brouillon interne non fiscal</strong>, sans envoi, encaissement, lien de paiement, abonnement ou écriture comptable.</span>
+                      </label>
+                      <Button type="button" className="min-h-11 w-full bg-amber-700 hover:bg-amber-800" disabled={!invoiceReady || createInvoice.isPending || updateInvoice.isPending} onClick={() => editingInvoice ? updateInvoice.mutate({ storeId: selectedStore.id, confirmationName: invoiceConfirmation, invoiceId: editingInvoice.id, reference: invoiceReference, issueDate: invoiceIssueDate, dueDate: invoiceDueDate, amountCents: invoiceAmountCents, currency: invoiceCurrency, acknowledged: true }) : createInvoice.mutate({ storeId: selectedStore.id, confirmationName: invoiceConfirmation, reference: invoiceReference, issueDate: invoiceIssueDate, dueDate: invoiceDueDate, amountCents: invoiceAmountCents, currency: invoiceCurrency, acknowledged: true })}>
+                        {createInvoice.isPending || updateInvoice.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ReceiptText className="mr-2 h-4 w-4" />}
+                        {editingInvoice ? " Mettre à jour le brouillon" : " Créer le brouillon interne"}
+                      </Button>
+                    </>
+                  )}
+                  <div className="border-t border-slate-200 pt-4">
+                    {selectedStore.billing.invoices.length === 0 ? <p className="text-sm text-slate-600">Aucun brouillon pour cette boutique.</p> : (
+                      <div className="space-y-2">
+                        {selectedStore.billing.invoices.map(invoice => (
+                          <div key={invoice.id} className="flex flex-col gap-3 rounded-xl border border-amber-200 bg-amber-50/50 p-3 sm:flex-row sm:items-center sm:justify-between">
+                            <div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <p className="font-semibold text-slate-950">{invoice.reference}</p>
+                                <Badge variant="outline" className="border-amber-200 bg-white text-amber-900">Brouillon</Badge>
+                              </div>
+                              <p className="mt-1 text-xs leading-5 text-slate-600">{formatMoney(invoice.amountCents, invoice.currency)} · {invoice.issueDate} → {invoice.dueDate}</p>
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                              <Button type="button" variant="outline" size="sm" className="min-h-10 border-violet-200 bg-white text-violet-900 hover:bg-violet-50" disabled={deleteInvoice.isPending || updateInvoice.isPending} onClick={() => { setEditingInvoiceId(invoice.id); setInvoiceReference(invoice.reference); setInvoiceIssueDate(invoice.issueDate); setInvoiceDueDate(invoice.dueDate); setInvoiceAmount((invoice.amountCents / 100).toFixed(2)); setInvoiceCurrency(invoice.currency); setInvoiceConfirmation(""); setInvoiceAcknowledged(false); }}>Modifier</Button>
+                              <Button type="button" variant="outline" size="sm" className="min-h-10 border-rose-200 bg-white text-rose-800 hover:bg-rose-50" disabled={deleteInvoice.isPending || updateInvoice.isPending} onClick={() => { if (window.confirm(`Supprimer le brouillon ${invoice.reference} ? Aucun document officiel ne sera affecté.`)) deleteInvoice.mutate({ storeId: selectedStore.id, confirmationName: selectedStore.displayName, invoiceId: invoice.id, acknowledged: true }); }}>Supprimer</Button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            </section>
+          </>
+        ) : (
+          <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center">
+            <Store className="mx-auto h-10 w-10 text-slate-400" />
+            <h3 className="mt-2 text-base font-bold text-slate-900">Aucune boutique sélectionnée</h3>
+            <p className="mt-1 text-sm text-slate-600">Choisissez une boutique dans le menu déroulant ci-dessus ou depuis l’onglet « 1. Portefeuille ».</p>
+            <Button type="button" variant="outline" className="mt-4 min-h-11" onClick={() => setActiveTab("portefeuille")}>
+              Voir le portefeuille des boutiques
+            </Button>
+          </div>
+        )}
+      </div>
+    )}
+
+    {/* ONGLET 3: CATALOGUE & FORMULES SAAS */}
+    {activeTab === "catalogue" && (
+      <div className="space-y-6">
+        <section className="rounded-2xl border border-violet-200 bg-white p-5 shadow-sm" aria-label="Couverture des plans SaaS officiels">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-wide text-violet-700">Couverture des boutiques clientes</p>
+              <h2 className="mt-1 text-xl font-bold text-slate-950">Plans officiels attribués</h2>
+              <p className="mt-1 text-sm text-slate-600">Ces nombres couvrent tout le portefeuille, pas seulement la page affichée. Sans plan explicite, les plafonds FREE s’appliquent par défaut, mais aucun plan n’est enregistré.</p>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              className="min-h-11 shrink-0 border-violet-200 bg-violet-50 text-violet-900 hover:bg-violet-100"
+              onClick={() => {
+                setPortfolioPlan("unassigned");
+                setPortfolioPage(1);
+                setActiveTab("portefeuille");
+              }}
+            >
+              Voir les boutiques sans plan
+            </Button>
+          </div>
+          <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+            {([ ["free", "FREE"], ["basic", "BASIC"], ["pro", "PRO"], ["lifetime", "LIFETIME"], ["unassigned", "Sans plan officiel"] ] as const).map(([key, label]) => (
+              <div key={key} className={`rounded-xl border p-3 ${key === "unassigned" ? "border-amber-200 bg-amber-50 text-amber-950" : "border-violet-100 bg-violet-50/60 text-violet-950"}`}>
+                <p className="text-xs font-semibold">{label}</p>
+                <p className="mt-1 text-2xl font-bold">{dashboardQuery.data?.summary.planCoverage[key] ?? 0}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <StudioSaasPlanCatalog />
+      </div>
+    )}
+
+    {/* ONGLET 4: SYNTHÈSE & KPIS */}
+    {activeTab === "indicateurs" && (
+      <div className="space-y-6">
+        <section className="grid gap-4 md:grid-cols-3">
+          <Card className="border-violet-200 bg-violet-50">
+            <CardContent className="p-5">
+              <div className="flex items-start justify-between">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-wide text-violet-800">Plans location</p>
+                  <p className="mt-2 text-3xl font-bold text-violet-950">{dashboardQuery.data?.summary.plannedSubscriptions ?? 0}</p>
+                  <p className="mt-1 text-xs leading-5 text-violet-900">Brouillons mensuels ou annuels, sans abonnement actif.</p>
+                </div>
+                <CalendarClock className="h-6 w-6 text-violet-700" />
+              </div>
+            </CardContent>
+          </Card>
+          <Card className="border-sky-200 bg-sky-50">
+            <CardContent className="p-5">
+              <div className="flex items-start justify-between">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-wide text-sky-800">Ventes définitives</p>
+                  <p className="mt-2 text-3xl font-bold text-sky-950">{dashboardQuery.data?.summary.perpetualSales ?? 0}</p>
+                  <p className="mt-1 text-xs leading-5 text-sky-900">Repères ponctuels, sans transfert ni facture officielle.</p>
+                </div>
+                <CircleDollarSign className="h-6 w-6 text-sky-700" />
+              </div>
+            </CardContent>
+          </Card>
+          <Card className="border-amber-200 bg-amber-50">
+            <CardContent className="p-5">
+              <div className="flex items-start justify-between">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-wide text-amber-800">Factures internes</p>
+                  <p className="mt-2 text-3xl font-bold text-amber-950">{dashboardQuery.data?.summary.invoiceDrafts ?? 0}</p>
+                  <p className="mt-1 text-xs leading-5 text-amber-900">Tous les documents restent au statut brouillon.</p>
+                </div>
+                <ReceiptText className="h-6 w-6 text-amber-700" />
+              </div>
+            </CardContent>
+          </Card>
+        </section>
+
+        <section className="grid gap-4 md:grid-cols-3">
+          <Card className="border-violet-200 bg-violet-50">
+            <CardContent className="p-5">
+              <p className="text-xs font-bold uppercase tracking-wide text-violet-800">Lemon Squeezy Test actifs</p>
+              <p className="mt-2 text-3xl font-bold text-violet-950">{dashboardQuery.data?.summary.lemonSqueezyTest.active ?? 0}</p>
+              <p className="mt-1 text-xs leading-5 text-violet-900">{dashboardQuery.data?.summary.lemonSqueezyTest.schemaReady === false ? "Migration 0029 à appliquer avant tout checkout." : "Confirmés par webhook signé, sans passage Live."}</p>
+            </CardContent>
+          </Card>
+          <Card className="border-sky-200 bg-sky-50">
+            <CardContent className="p-5">
+              <p className="text-xs font-bold uppercase tracking-wide text-sky-800">Checkout Test à finaliser</p>
+              <p className="mt-2 text-3xl font-bold text-sky-950">{dashboardQuery.data?.summary.lemonSqueezyTest.awaitingCheckout ?? 0}</p>
+              <p className="mt-1 text-xs leading-5 text-sky-900">Préparé uniquement sur décision du propriétaire.</p>
+            </CardContent>
+          </Card>
+          <Card className="border-amber-200 bg-amber-50">
+            <CardContent className="p-5">
+              <p className="text-xs font-bold uppercase tracking-wide text-amber-800">Signaux à examiner</p>
+              <p className="mt-2 text-3xl font-bold text-amber-950">{dashboardQuery.data?.summary.lemonSqueezyTest.attention ?? 0}</p>
+              <p className="mt-1 text-xs leading-5 text-amber-900">Aucune limitation de boutique n’est automatique.</p>
+            </CardContent>
+          </Card>
+        </section>
+
+        <section className="grid gap-4 md:grid-cols-2">
+          <Card className="border-slate-200 bg-white">
+            <CardContent className="p-5">
+              <p className="text-xs font-bold uppercase tracking-wide text-slate-600">Repère mensuel indicatif</p>
+              <p className="mt-2 text-xl font-bold text-slate-950">{formatCurrencyTotals(dashboardQuery.data?.summary.monthlyEquivalentByCurrency ?? {})}</p>
+              <p className="mt-2 text-xs leading-5 text-slate-600">Équivalent mensuel calculé depuis les brouillons de location. Les ventes définitives sont volontairement exclues.</p>
+            </CardContent>
+          </Card>
+          <Card className="border-slate-200 bg-white">
+            <CardContent className="p-5">
+              <p className="text-xs font-bold uppercase tracking-wide text-slate-600">Total des brouillons de facture</p>
+              <p className="mt-2 text-xl font-bold text-slate-950">{formatCurrencyTotals(dashboardQuery.data?.summary.invoiceDraftTotalsByCurrency ?? {})}</p>
+              <p className="mt-2 text-xs leading-5 text-slate-600">Somme interne par devise, sans statut payé, relance, envoi ni écriture comptable.</p>
+            </CardContent>
+          </Card>
+        </section>
+
+        <section className="grid gap-4 md:grid-cols-2">
+          <Card className="border-sky-200 bg-sky-50">
+            <CardContent className="p-5">
+              <p className="text-xs font-bold uppercase tracking-wide text-sky-800">Portefeuille et croissance</p>
+              <div className="mt-3 grid grid-cols-2 gap-3 text-sm">
+                <div>
+                  <p className="text-2xl font-bold text-sky-950">{dashboardQuery.data?.summary.clientStores ?? 0}</p>
+                  <p className="mt-1 text-xs text-sky-900">boutique(s) cliente(s)</p>
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-sky-950">{dashboardQuery.data?.summary.publicStorefronts ?? 0}</p>
+                  <p className="mt-1 text-xs text-sky-900">vitrine(s) publiquement servies</p>
+                </div>
+                <div>
+                  <p className="text-xl font-bold text-sky-950">{dashboardQuery.data?.summary.setupStores ?? 0}</p>
+                  <p className="mt-1 text-xs text-sky-900">en préparation</p>
+                </div>
+                <div>
+                  <p className="text-xl font-bold text-sky-950">{dashboardQuery.data?.summary.pausedStores ?? 0}</p>
+                  <p className="mt-1 text-xs text-sky-900">suspendue(s) ou clôturée(s)</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+          <Card className="border-slate-200 bg-white">
+            <CardContent className="p-5">
+              <p className="text-xs font-bold uppercase tracking-wide text-slate-600">Churn et revenu réel</p>
+              <p className="mt-2 text-lg font-bold text-slate-950">Non mesurés volontairement</p>
+              <p className="mt-2 text-xs leading-5 text-slate-600">{dashboardQuery.data?.summary.churn.reason ?? "Aucune donnée d’abonnement actif disponible."} Les montants ci-dessus sont des brouillons indicatifs, jamais du MRR encaissé. Les statuts de boutique ne sont pas assimilés à des résiliations.</p>
+            </CardContent>
+          </Card>
+        </section>
+      </div>
+    )}
 
     <Card className="border-dashed border-slate-300 bg-white"><CardContent className="flex gap-3 p-5 text-sm leading-6 text-slate-600"><ShieldCheck className="mt-0.5 h-5 w-5 shrink-0 text-slate-700" /><p><strong className="text-slate-900">Frontière de sécurité maintenue.</strong> Ce tableau ne déclenche pas Stripe, Brevo, un prélèvement, une facture légale, un avoir, une relance, un e-mail, une exportation comptable ou une automatisation. Une brique ultérieure dédiée devra être contractualisée et validée avant l’encaissement réel.</p></CardContent></Card>
   </>}</div></main></DashboardLayout>;

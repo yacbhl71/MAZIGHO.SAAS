@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { trpc } from "@/lib/trpc";
 import { studioStoreProjectStageLabels, studioStoreProjectStages, type StudioStoreProjectStage } from "@shared/studioStoreProjectDesk";
 import { studioProductionBoardPageSizes, type StudioProductionBoardPageSize } from "@shared/studioProductionBoard";
-import { ArrowRight, CalendarClock, CheckCircle2, ChevronLeft, ChevronRight, CircleAlert, ClipboardCheck, Clock3, ListChecks, Loader2, RefreshCw, Search, Store, TriangleAlert } from "lucide-react";
+import { ArrowRight, CalendarClock, CheckCircle2, ChevronLeft, ChevronRight, CircleAlert, ClipboardCheck, Clock3, LayoutGrid, ListChecks, Loader2, RefreshCw, Search, Store, Table, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 
 const stageTone: Record<StudioStoreProjectStage, { column: string; badge: string; marker: string }> = {
@@ -33,6 +33,7 @@ export default function AdminStudioProductionBoard() {
   const [selectedStage, setSelectedStage] = useState<StudioStoreProjectStage | "all">("all");
   const [priorityOnly, setPriorityOnly] = useState(false);
   const [reminderOnly, setReminderOnly] = useState(false);
+  const [viewMode, setViewMode] = useState<"kanban" | "table">("kanban");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<StudioProductionBoardPageSize>(10);
   const boardInput = useMemo(() => ({
@@ -72,18 +73,281 @@ export default function AdminStudioProductionBoard() {
     </header>
 
     <Card className="border-slate-200">
-      <CardHeader className="pb-4"><div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between"><div><CardTitle className="flex items-center gap-2"><ListChecks className="h-5 w-5 text-orange-700" /> File de production</CardTitle><CardDescription className="mt-1.5 max-w-3xl">Les notes internes et les intitulés de rappels restent protégés dans chaque dossier. Ici, seules les dates, l’avancement et les indicateurs agrégés sont visibles.</CardDescription></div><Button type="button" variant="outline" className="min-h-11 border-slate-300 bg-white" onClick={() => void boardQuery.refetch()} disabled={boardQuery.isFetching}>{boardQuery.isFetching ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}Actualiser</Button></div></CardHeader>
+      <CardHeader className="pb-4">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <CardTitle className="flex items-center gap-2"><ListChecks className="h-5 w-5 text-orange-700" /> File de production</CardTitle>
+            <CardDescription className="mt-1.5 max-w-3xl">Les notes internes et les intitulés de rappels restent protégés dans chaque dossier. Ici, seules les dates, l’avancement et les indicateurs agrégés sont visibles.</CardDescription>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Toggle de vue Kanban vs Table */}
+            <div className="flex items-center rounded-xl border border-slate-200 bg-slate-100 p-1">
+              <button
+                type="button"
+                onClick={() => setViewMode("kanban")}
+                className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
+                  viewMode === "kanban"
+                    ? "bg-white text-slate-950 shadow-sm"
+                    : "text-slate-600 hover:text-slate-950"
+                }`}
+              >
+                <LayoutGrid className="h-3.5 w-3.5" /> Kanban
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode("table")}
+                className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
+                  viewMode === "table"
+                    ? "bg-white text-slate-950 shadow-sm"
+                    : "text-slate-600 hover:text-slate-950"
+                }`}
+              >
+                <Table className="h-3.5 w-3.5" /> Tableau compact
+              </button>
+            </div>
+            <Button type="button" variant="outline" className="min-h-11 border-slate-300 bg-white" onClick={() => void boardQuery.refetch()} disabled={boardQuery.isFetching}>
+              {boardQuery.isFetching ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}Actualiser
+            </Button>
+          </div>
+        </div>
+      </CardHeader>
       <CardContent className="space-y-4">
-        <div className="grid gap-3 xl:grid-cols-[minmax(240px,1fr)_auto]"><div className="relative"><Search className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-slate-400" /><Input value={query} onChange={event => { setQuery(event.target.value); setPage(1); }} className="min-h-11 bg-white pl-9" placeholder="Nom ou domaine de la boutique…" aria-label="Rechercher dans la production" /></div><div className="flex flex-wrap gap-2"><Button type="button" size="sm" variant={selectedStage === "all" && !priorityOnly && !reminderOnly ? "default" : "outline"} className={selectedStage === "all" && !priorityOnly && !reminderOnly ? "min-h-11 bg-slate-950 hover:bg-slate-800" : "min-h-11 bg-white"} onClick={() => { setSelectedStage("all"); setPriorityOnly(false); setReminderOnly(false); setPage(1); }}>Toutes <Badge className="ml-2 border-0 bg-white/15 text-current hover:bg-white/15">{board?.summary.total ?? 0}</Badge></Button><Button type="button" size="sm" variant="outline" className={`min-h-11 ${priorityOnly ? "border-amber-300 bg-amber-50 text-amber-950" : "border-slate-200 bg-white text-slate-700"}`} onClick={() => { setPriorityOnly(current => !current); setPage(1); }}><CircleAlert className="mr-1.5 h-4 w-4" />À traiter <Badge variant="outline" className={`ml-1.5 ${priorityOnly ? "border-amber-300 bg-white text-amber-950" : "border-amber-200 bg-amber-50 text-amber-800"}`}>{board?.summary.needsAttention ?? 0}</Badge></Button><Button type="button" size="sm" variant="outline" className={`min-h-11 ${reminderOnly ? "border-sky-300 bg-sky-50 text-sky-950" : "border-slate-200 bg-white text-slate-700"}`} onClick={() => { setReminderOnly(current => !current); setPage(1); }}><CalendarClock className="mr-1.5 h-4 w-4" />Rappels <Badge variant="outline" className={`ml-1.5 ${reminderOnly ? "border-sky-300 bg-white text-sky-950" : "border-sky-200 bg-sky-50 text-sky-800"}`}>{board?.summary.withUpcomingReminder ?? 0}</Badge></Button>{studioStoreProjectStages.map(stage => <Button key={stage} type="button" size="sm" variant="outline" className={`min-h-11 ${selectedStage === stage ? stageTone[stage].badge : "border-slate-200 bg-white text-slate-700"}`} onClick={() => { setSelectedStage(stage); setPage(1); }}>{studioStoreProjectStageLabels[stage]} <Badge variant="outline" className={`ml-2 ${stageTone[stage].badge}`}>{board?.summary.byStage[stage] ?? 0}</Badge></Button>)}</div></div>
-        {boardQuery.isLoading ? <div className="grid gap-4 md:grid-cols-3 xl:grid-cols-5">{studioStoreProjectStages.map(stage => <div key={stage} className="h-72 animate-pulse rounded-2xl bg-slate-100" />)}</div> : boardQuery.isError ? <div className="flex items-start gap-3 rounded-2xl border border-rose-200 bg-rose-50 p-5 text-sm leading-6 text-rose-950"><TriangleAlert className="mt-0.5 h-5 w-5 shrink-0" /><div><p className="font-semibold">Le tableau de production est momentanément indisponible.</p><p className="mt-1">Aucune donnée de boutique n’a été modifiée. Vous pouvez actualiser ou revenir au registre Studio.</p></div></div> : <>
-          <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600"><Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-700">{board ? `${board.pagination.from}–${board.pagination.to} sur ${board.pagination.total}` : "Chargement…"}</Badge>{board?.summary.withUpcomingReminder ? <Badge variant="outline" className="border-sky-200 bg-sky-50 text-sky-800"><CalendarClock className="mr-1 h-3.5 w-3.5" />{board.summary.withUpcomingReminder} rappel{board.summary.withUpcomingReminder > 1 ? "s" : ""} à suivre</Badge> : null}<span>Vous pouvez déplacer une boutique entre les étapes : cette organisation reste réversible et n’ouvre rien automatiquement.</span></div>
-          <div className="grid gap-4 xl:grid-cols-5">{studioStoreProjectStages.filter(stage => selectedStage === "all" || selectedStage === stage).map(stage => {
-            const stageStores = stores.filter(store => store.stage === stage);
-            const tone = stageTone[stage];
-            return <section key={stage} className={`min-w-0 rounded-2xl border p-3 ${tone.column}`} aria-labelledby={`production-stage-${stage}`}><div className="flex items-start justify-between gap-2 border-b border-black/5 pb-3"><div className="flex items-center gap-2"><span className={`h-2.5 w-2.5 rounded-full ${tone.marker}`} /><h2 id={`production-stage-${stage}`} className="text-sm font-bold text-slate-950">{studioStoreProjectStageLabels[stage]}</h2></div><Badge variant="outline" className={tone.badge}>{stageStores.length}</Badge></div><div className="mt-3 space-y-3">{stageStores.length === 0 ? <p className="rounded-xl border border-dashed border-slate-300 bg-white/60 p-3 text-xs leading-5 text-slate-600">Aucune boutique à cette étape.</p> : stageStores.map(store => <article key={store.id} className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm"><div className="flex items-start justify-between gap-2"><div className="min-w-0"><div className="flex items-center gap-2"><Store className="h-4 w-4 shrink-0 text-slate-500" /><p className="truncate text-sm font-bold text-slate-950">{store.displayName}</p></div><p className="mt-1 truncate text-xs text-slate-500">{store.primaryDomain}</p></div><Badge variant="outline" className={tone.badge}>{store.handoverComplete}/{store.handoverTotal}</Badge></div>{store.attention.length > 0 ? <div className="mt-3 space-y-1.5">{store.attention.map(item => <p key={item} className="flex gap-1.5 text-xs leading-5 text-amber-950"><CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600" />{item}</p>)}</div> : <p className="mt-3 flex items-center gap-1.5 text-xs leading-5 text-emerald-800"><CheckCircle2 className="h-3.5 w-3.5" />Aucun point d’attention signalé.</p>}<div className="mt-3 border-t border-slate-100 pt-3"><label className="block text-[11px] font-semibold uppercase tracking-[0.1em] text-slate-500" htmlFor={`production-stage-select-${store.id}`}>Étape de production</label><Select value={store.stage} onValueChange={nextStage => updateStageMutation.mutate({ storeId: store.id, stage: nextStage as StudioStoreProjectStage })} disabled={updateStageMutation.isPending}><SelectTrigger id={`production-stage-select-${store.id}`} className="mt-1 min-h-10 bg-white text-xs"><SelectValue /></SelectTrigger><SelectContent>{studioStoreProjectStages.map(nextStage => <SelectItem key={nextStage} value={nextStage}>{studioStoreProjectStageLabels[nextStage]}</SelectItem>)}</SelectContent></Select><p className="mt-1.5 text-[11px] leading-4 text-slate-500">Réversible · uniquement le suivi Studio.</p></div><div className="mt-3 flex items-center justify-between gap-2 border-t border-slate-100 pt-3"><span className="flex min-w-0 items-center gap-1.5 text-xs text-slate-600">{store.nextReminderDueDate ? <><Clock3 className="h-3.5 w-3.5 shrink-0 text-sky-700" />Rappel {formatDate(store.nextReminderDueDate)}</> : <><ClipboardCheck className="h-3.5 w-3.5 shrink-0 text-slate-500" />Aucun rappel</>}</span><Link href={store.action.href} className="inline-flex min-h-9 shrink-0 items-center text-xs font-semibold text-slate-900 hover:text-orange-700">{store.action.label}<ArrowRight className="ml-1 h-3.5 w-3.5" /></Link></div></article>)}</div></section>;
-          })}</div>
-          {board ? <nav className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3 sm:flex-row sm:items-center sm:justify-between" aria-label="Pagination des boutiques de production"><div className="flex flex-wrap items-center gap-2"><p className="text-xs text-slate-600">Page <strong className="text-slate-950">{board.pagination.page}</strong> sur <strong className="text-slate-950">{board.pagination.totalPages}</strong></p><Select value={String(pageSize)} onValueChange={value => { setPageSize(Number(value) as StudioProductionBoardPageSize); setPage(1); }}><SelectTrigger className="h-9 w-40 bg-white text-xs" aria-label="Boutiques par page"><SelectValue /></SelectTrigger><SelectContent>{studioProductionBoardPageSizes.map(size => <SelectItem key={size} value={String(size)}>{size} boutiques / page</SelectItem>)}</SelectContent></Select></div><div className="flex items-center gap-2"><Button type="button" size="sm" variant="outline" className="min-h-10 bg-white" disabled={board.pagination.page <= 1 || boardQuery.isFetching} onClick={() => setPage(current => Math.max(1, current - 1))}><ChevronLeft className="mr-1 h-4 w-4" />Précédente</Button><Button type="button" size="sm" variant="outline" className="min-h-10 bg-white" disabled={board.pagination.page >= board.pagination.totalPages || boardQuery.isFetching} onClick={() => setPage(current => Math.min(board.pagination.totalPages, current + 1))}>Suivante<ChevronRight className="ml-1 h-4 w-4" /></Button></div></nav> : null}
-        </>}
+        <div className="grid gap-3 xl:grid-cols-[minmax(240px,1fr)_auto]">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-slate-400" />
+            <Input value={query} onChange={event => { setQuery(event.target.value); setPage(1); }} className="min-h-11 bg-white pl-9" placeholder="Nom ou domaine de la boutique…" aria-label="Rechercher dans la production" />
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" size="sm" variant={selectedStage === "all" && !priorityOnly && !reminderOnly ? "default" : "outline"} className={selectedStage === "all" && !priorityOnly && !reminderOnly ? "min-h-11 bg-slate-950 hover:bg-slate-800" : "min-h-11 bg-white"} onClick={() => { setSelectedStage("all"); setPriorityOnly(false); setReminderOnly(false); setPage(1); }}>
+              Toutes <Badge className="ml-2 border-0 bg-white/15 text-current hover:bg-white/15">{board?.summary.total ?? 0}</Badge>
+            </Button>
+            <Button type="button" size="sm" variant="outline" className={`min-h-11 ${priorityOnly ? "border-amber-300 bg-amber-50 text-amber-950" : "border-slate-200 bg-white text-slate-700"}`} onClick={() => { setPriorityOnly(current => !current); setPage(1); }}>
+              <CircleAlert className="mr-1.5 h-4 w-4" />À traiter <Badge variant="outline" className={`ml-1.5 ${priorityOnly ? "border-amber-300 bg-white text-amber-950" : "border-amber-200 bg-amber-50 text-amber-800"}`}>{board?.summary.needsAttention ?? 0}</Badge>
+            </Button>
+            <Button type="button" size="sm" variant="outline" className={`min-h-11 ${reminderOnly ? "border-sky-300 bg-sky-50 text-sky-950" : "border-slate-200 bg-white text-slate-700"}`} onClick={() => { setReminderOnly(current => !current); setPage(1); }}>
+              <CalendarClock className="mr-1.5 h-4 w-4" />Rappels <Badge variant="outline" className={`ml-1.5 ${reminderOnly ? "border-sky-300 bg-white text-sky-950" : "border-sky-200 bg-sky-50 text-sky-800"}`}>{board?.summary.withUpcomingReminder ?? 0}</Badge>
+            </Button>
+            {studioStoreProjectStages.map(stage => (
+              <Button key={stage} type="button" size="sm" variant="outline" className={`min-h-11 ${selectedStage === stage ? stageTone[stage].badge : "border-slate-200 bg-white text-slate-700"}`} onClick={() => { setSelectedStage(stage); setPage(1); }}>
+                {studioStoreProjectStageLabels[stage]} <Badge variant="outline" className={`ml-2 ${stageTone[stage].badge}`}>{board?.summary.byStage[stage] ?? 0}</Badge>
+              </Button>
+            ))}
+          </div>
+        </div>
+
+        {boardQuery.isLoading ? (
+          <div className="grid gap-4 md:grid-cols-3 xl:grid-cols-5">{studioStoreProjectStages.map(stage => <div key={stage} className="h-72 animate-pulse rounded-2xl bg-slate-100" />)}</div>
+        ) : boardQuery.isError ? (
+          <div className="flex items-start gap-3 rounded-2xl border border-rose-200 bg-rose-50 p-5 text-sm leading-6 text-rose-950">
+            <TriangleAlert className="mt-0.5 h-5 w-5 shrink-0" />
+            <div>
+              <p className="font-semibold">Le tableau de production est momentanément indisponible.</p>
+              <p className="mt-1">Aucune donnée de boutique n’a été modifiée. Vous pouvez actualiser ou revenir au registre Studio.</p>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+              <Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-700">{board ? `${board.pagination.from}–${board.pagination.to} sur ${board.pagination.total}` : "Chargement…"}</Badge>
+              {board?.summary.withUpcomingReminder ? <Badge variant="outline" className="border-sky-200 bg-sky-50 text-sky-800"><CalendarClock className="mr-1 h-3.5 w-3.5" />{board.summary.withUpcomingReminder} rappel{board.summary.withUpcomingReminder > 1 ? "s" : ""} à suivre</Badge> : null}
+              <span>Déplacez l’étape d’une boutique sans affecter ses accès, son domaine ou ses données.</span>
+            </div>
+
+            {/* VUE TABLEAU COMPACT (Très fluide et rapide à scanner) */}
+            {viewMode === "table" ? (
+              <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
+                <table className="min-w-[980px] w-full text-left text-sm">
+                  <thead className="border-b border-slate-200 bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+                    <tr>
+                      <th className="px-4 py-3">Boutique</th>
+                      <th className="px-4 py-3">Étape de production</th>
+                      <th className="px-4 py-3">Checklist remise</th>
+                      <th className="px-4 py-3">Points d’attention</th>
+                      <th className="px-4 py-3">Prochain rappel</th>
+                      <th className="px-4 py-3 text-right">Dossier</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {stores.length === 0 ? (
+                      <tr>
+                        <td colSpan={6} className="px-4 py-8 text-center text-sm text-slate-500">
+                          Aucune boutique ne correspond aux filtres sélectionnés.
+                        </td>
+                      </tr>
+                    ) : (
+                      stores.map(store => {
+                        const tone = stageTone[store.stage];
+                        return (
+                          <tr key={store.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50/70 transition-colors">
+                            <td className="px-4 py-3.5">
+                              <div className="flex items-center gap-2">
+                                <Store className="h-4 w-4 shrink-0 text-slate-400" />
+                                <div>
+                                  <p className="font-semibold text-slate-950">{store.displayName}</p>
+                                  <p className="text-xs text-slate-500">{store.primaryDomain}</p>
+                                </div>
+                              </div>
+                            </td>
+                            <td className="px-4 py-3.5">
+                              <Select
+                                value={store.stage}
+                                onValueChange={nextStage => updateStageMutation.mutate({ storeId: store.id, stage: nextStage as StudioStoreProjectStage })}
+                                disabled={updateStageMutation.isPending}
+                              >
+                                <SelectTrigger className={`h-9 w-44 text-xs font-medium border ${tone.badge}`}>
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {studioStoreProjectStages.map(nextStage => (
+                                    <SelectItem key={nextStage} value={nextStage}>
+                                      {studioStoreProjectStageLabels[nextStage]}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </td>
+                            <td className="px-4 py-3.5">
+                              <Badge variant="outline" className={tone.badge}>
+                                {store.handoverComplete} / {store.handoverTotal} validés
+                              </Badge>
+                            </td>
+                            <td className="px-4 py-3.5">
+                              {store.attention.length > 0 ? (
+                                <div className="space-y-1">
+                                  {store.attention.slice(0, 2).map(item => (
+                                    <p key={item} className="flex items-center gap-1.5 text-xs text-amber-900">
+                                      <CircleAlert className="h-3.5 w-3.5 shrink-0 text-amber-600" />
+                                      <span className="truncate max-w-[200px]">{item}</span>
+                                    </p>
+                                  ))}
+                                  {store.attention.length > 2 && (
+                                    <span className="text-[11px] text-amber-700 font-semibold">+{store.attention.length - 2} autre(s)</span>
+                                  )}
+                                </div>
+                              ) : (
+                                <span className="flex items-center gap-1 text-xs text-emerald-700">
+                                  <CheckCircle2 className="h-3.5 w-3.5" /> RAS
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-4 py-3.5 text-xs text-slate-600">
+                              {store.nextReminderDueDate ? (
+                                <span className="flex items-center gap-1 text-sky-800 font-medium">
+                                  <Clock3 className="h-3.5 w-3.5 text-sky-600" />
+                                  {formatDate(store.nextReminderDueDate)}
+                                </span>
+                              ) : (
+                                <span className="text-slate-400">Aucun</span>
+                              )}
+                            </td>
+                            <td className="px-4 py-3.5 text-right">
+                              <Link
+                                href={store.action.href}
+                                className="inline-flex min-h-9 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-900 shadow-sm hover:border-orange-300 hover:text-orange-700 transition-colors"
+                              >
+                                {store.action.label}
+                                <ArrowRight className="ml-1 h-3.5 w-3.5" />
+                              </Link>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              /* VUE KANBAN (Colonnes visuelles par étape) */
+              <div className="grid gap-4 xl:grid-cols-5">
+                {studioStoreProjectStages.filter(stage => selectedStage === "all" || selectedStage === stage).map(stage => {
+                  const stageStores = stores.filter(store => store.stage === stage);
+                  const tone = stageTone[stage];
+                  return (
+                    <section key={stage} className={`min-w-0 rounded-2xl border p-3 ${tone.column}`} aria-labelledby={`production-stage-${stage}`}>
+                      <div className="flex items-start justify-between gap-2 border-b border-black/5 pb-3">
+                        <div className="flex items-center gap-2">
+                          <span className={`h-2.5 w-2.5 rounded-full ${tone.marker}`} />
+                          <h2 id={`production-stage-${stage}`} className="text-sm font-bold text-slate-950">{studioStoreProjectStageLabels[stage]}</h2>
+                        </div>
+                        <Badge variant="outline" className={tone.badge}>{stageStores.length}</Badge>
+                      </div>
+                      <div className="mt-3 space-y-3">
+                        {stageStores.length === 0 ? (
+                          <p className="rounded-xl border border-dashed border-slate-300 bg-white/60 p-3 text-xs leading-5 text-slate-600">Aucune boutique à cette étape.</p>
+                        ) : (
+                          stageStores.map(store => (
+                            <article key={store.id} className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-2">
+                                    <Store className="h-4 w-4 shrink-0 text-slate-500" />
+                                    <p className="truncate text-sm font-bold text-slate-950">{store.displayName}</p>
+                                  </div>
+                                  <p className="mt-1 truncate text-xs text-slate-500">{store.primaryDomain}</p>
+                                </div>
+                                <Badge variant="outline" className={tone.badge}>{store.handoverComplete}/{store.handoverTotal}</Badge>
+                              </div>
+                              {store.attention.length > 0 ? (
+                                <div className="mt-3 space-y-1.5">
+                                  {store.attention.map(item => (
+                                    <p key={item} className="flex gap-1.5 text-xs leading-5 text-amber-950">
+                                      <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600" />
+                                      {item}
+                                    </p>
+                                  ))}
+                                </div>
+                              ) : (
+                                <p className="mt-3 flex items-center gap-1.5 text-xs leading-5 text-emerald-800">
+                                  <CheckCircle2 className="h-3.5 w-3.5" />Aucun point d’attention signalé.
+                                </p>
+                              )}
+                              <div className="mt-3 border-t border-slate-100 pt-3">
+                                <label className="block text-[11px] font-semibold uppercase tracking-[0.1em] text-slate-500" htmlFor={`production-stage-select-${store.id}`}>Étape de production</label>
+                                <Select value={store.stage} onValueChange={nextStage => updateStageMutation.mutate({ storeId: store.id, stage: nextStage as StudioStoreProjectStage })} disabled={updateStageMutation.isPending}>
+                                  <SelectTrigger id={`production-stage-select-${store.id}`} className="mt-1 min-h-10 bg-white text-xs"><SelectValue /></SelectTrigger>
+                                  <SelectContent>{studioStoreProjectStages.map(nextStage => <SelectItem key={nextStage} value={nextStage}>{studioStoreProjectStageLabels[nextStage]}</SelectItem>)}</SelectContent>
+                                </Select>
+                                <p className="mt-1.5 text-[11px] leading-4 text-slate-500">Réversible · uniquement le suivi Studio.</p>
+                              </div>
+                              <div className="mt-3 flex items-center justify-between gap-2 border-t border-slate-100 pt-3">
+                                <span className="flex min-w-0 items-center gap-1.5 text-xs text-slate-600">
+                                  {store.nextReminderDueDate ? (
+                                    <><Clock3 className="h-3.5 w-3.5 shrink-0 text-sky-700" />Rappel {formatDate(store.nextReminderDueDate)}</>
+                                  ) : (
+                                    <><ClipboardCheck className="h-3.5 w-3.5 shrink-0 text-slate-500" />Aucun rappel</>
+                                  )}
+                                </span>
+                                <Link href={store.action.href} className="inline-flex min-h-9 shrink-0 items-center text-xs font-semibold text-slate-900 hover:text-orange-700">
+                                  {store.action.label}<ArrowRight className="ml-1 h-3.5 w-3.5" />
+                                </Link>
+                              </div>
+                            </article>
+                          ))
+                        )}
+                      </div>
+                    </section>
+                  );
+                })}
+              </div>
+            )}
+
+            {board ? (
+              <nav className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3 sm:flex-row sm:items-center sm:justify-between" aria-label="Pagination des boutiques de production">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-xs text-slate-600">Page <strong className="text-slate-950">{board.pagination.page}</strong> sur <strong className="text-slate-950">{board.pagination.totalPages}</strong></p>
+                  <Select value={String(pageSize)} onValueChange={value => { setPageSize(Number(value) as StudioProductionBoardPageSize); setPage(1); }}>
+                    <SelectTrigger className="h-9 w-40 bg-white text-xs" aria-label="Boutiques par page"><SelectValue /></SelectTrigger>
+                    <SelectContent>{studioProductionBoardPageSizes.map(size => <SelectItem key={size} value={String(size)}>{size} boutiques / page</SelectItem>)}</SelectContent>
+                  </Select>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button type="button" size="sm" variant="outline" className="min-h-10 bg-white" disabled={board.pagination.page <= 1 || boardQuery.isFetching} onClick={() => setPage(current => Math.max(1, current - 1))}><ChevronLeft className="mr-1 h-4 w-4" />Précédente</Button>
+                  <Button type="button" size="sm" variant="outline" className="min-h-10 bg-white" disabled={board.pagination.page >= board.pagination.totalPages || boardQuery.isFetching} onClick={() => setPage(current => Math.min(board.pagination.totalPages, current + 1))}>Suivante<ChevronRight className="ml-1 h-4 w-4" /></Button>
+                </div>
+              </nav>
+            ) : null}
+          </>
+        )}
       </CardContent>
     </Card>
 

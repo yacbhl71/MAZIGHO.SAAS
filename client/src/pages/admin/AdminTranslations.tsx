@@ -32,11 +32,14 @@ function productState(product: OverviewProduct) {
   return { ready, stale, complete: ready.length === locales.length };
 }
 
+type TranslationTab = "catalogue" | "navigation" | "vitrine";
+
 export default function AdminTranslations() {
   const overviewQuery = trpc.admin.products.getTranslationOverview.useQuery();
   const designQuery = trpc.admin.design.get.useQuery();
   const updateDesign = trpc.admin.design.update.useMutation();
   const autoTranslateNavigation = trpc.admin.design.translateNavigation.useMutation();
+  const [activeTab, setActiveTab] = useState<TranslationTab>("catalogue");
   const [targetLocale, setTargetLocale] = useState<TranslationLocale>("de");
   const [navigation, setNavigation] = useState<NavigationLabels>(emptyNavigation);
   const products = (overviewQuery.data || []) as OverviewProduct[];
@@ -71,17 +74,238 @@ export default function AdminTranslations() {
   };
 
   return <DashboardLayout><div className="space-y-6 pb-8">
-    <section className="overflow-hidden rounded-2xl border border-sky-100 bg-gradient-to-r from-sky-50 via-white to-violet-50"><div className="flex flex-col gap-5 p-6 md:flex-row md:items-center md:justify-between md:p-8"><div><div className="mb-3 flex items-center gap-2 text-sm font-semibold text-sky-700"><Languages className="h-4 w-4" /> Langues & traductions</div><h1 className="text-3xl font-bold tracking-tight text-slate-900 md:text-4xl">Produits et contenus publics dans toutes les langues</h1><p className="mt-2 max-w-3xl text-sm text-slate-600 md:text-base">Le français reste la source. Le hub permet de produire, vérifier et corriger toutes les versions clients sans modifier les règles commerciales.</p></div><Button asChild className="bg-sky-700 text-white hover:bg-sky-800"><Link href="/admin/produits"><Package className="mr-2 h-4 w-4" /> Ouvrir les produits</Link></Button></div></section>
+    <section className="overflow-hidden rounded-2xl border border-sky-100 bg-gradient-to-r from-sky-50 via-white to-violet-50">
+      <div className="flex flex-col gap-5 p-6 md:flex-row md:items-center md:justify-between md:p-8">
+        <div>
+          <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-sky-700"><Languages className="h-4 w-4" /> Langues & Marchés internationaux</div>
+          <h1 className="text-3xl font-bold tracking-tight text-slate-900 md:text-4xl">Traductions et adaptation multilingue</h1>
+          <p className="mt-2 max-w-3xl text-sm text-slate-600 md:text-base">Le français reste la source unique. Ce centre vous permet d’administrer, traduire et valider les catalogues, menus et pages publiques sans aucun conflit.</p>
+        </div>
+        <Button asChild className="bg-sky-700 text-white hover:bg-sky-800"><Link href="/admin/produits"><Package className="mr-2 h-4 w-4" /> Ouvrir les produits</Link></Button>
+      </div>
+    </section>
 
-    <Card className="border-violet-100 shadow-sm"><CardHeader><CardTitle className="flex items-center gap-2 text-xl"><WandSparkles className="h-5 w-5 text-violet-700" /> Traduction des libellés de navigation</CardTitle><CardDescription>Choisissez une langue, générez une version depuis le français, puis corrigez-la. Le Header public utilise cette version dans la langue concernée.</CardDescription></CardHeader><CardContent>{designQuery.isLoading ? <Skeleton className="h-44 w-full" /> : <><div className="flex flex-wrap gap-2">{locales.map(locale => <Button key={locale} type="button" variant={targetLocale === locale ? "default" : "outline"} onClick={() => setTargetLocale(locale)} className={targetLocale === locale ? "bg-violet-700 hover:bg-violet-800" : "border-violet-200 text-violet-800 hover:bg-violet-50"}>{localeLabels[locale]}</Button>)}</div><div className="mt-5 grid gap-4 md:grid-cols-2 lg:grid-cols-3">{([ ["navigationHome", "Accueil"], ["navigationShop", "Boutique"], ["navigationCategories", "Catégories"], ["navigationCreations", "Créations"], ["navigationContact", "Contact"] ] as Array<[keyof NavigationLabels, string]>).map(([field, label]) => <div key={field} className="space-y-2"><Label htmlFor={`navigation-${field}`}>{label}</Label><Input id={`navigation-${field}`} maxLength={40} value={navigation[field]} onChange={event => setNavigation(current => ({ ...current, [field]: event.target.value }))} /></div>)}</div><div className="mt-5 flex flex-col gap-3 rounded-xl bg-violet-50 p-4 sm:flex-row sm:items-center sm:justify-between"><p className="text-sm leading-6 text-violet-950">Les modifications de menu ne rendent pas les textes d’accueil obsolètes.</p><div className="flex flex-wrap gap-2"><Button onClick={translateNavigation} disabled={autoTranslateNavigation.isPending} variant="outline" className="border-violet-300 bg-white text-violet-800 hover:bg-violet-100">{autoTranslateNavigation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <WandSparkles className="mr-2 h-4 w-4" />}Traduire</Button><Button onClick={saveNavigation} disabled={updateDesign.isPending} className="bg-violet-700 hover:bg-violet-800">{updateDesign.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}Enregistrer</Button></div></div></>}</CardContent></Card>
+    {/* Ruban de boutons-onglets ergonomiques */}
+    <div className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between pb-2 border-b border-slate-100">
+        <p className="text-xs font-bold uppercase tracking-wider text-slate-500">Espaces de traduction</p>
+        <span className="text-xs text-slate-500">Source : <strong className="text-slate-900">Français (FR)</strong> · 6 langues cibles</span>
+      </div>
+      <div className="mt-2.5 grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+        <button
+          type="button"
+          onClick={() => setActiveTab("catalogue")}
+          className={`flex items-center gap-3 rounded-xl p-3 text-left transition-all ${
+            activeTab === "catalogue"
+              ? "border-2 border-sky-700 bg-sky-700 text-white shadow-md shadow-sky-700/20"
+              : "border border-slate-200 bg-slate-50/70 text-slate-800 hover:bg-slate-100 hover:text-slate-950"
+          }`}
+        >
+          <Package className={`h-5 w-5 shrink-0 ${activeTab === "catalogue" ? "text-sky-200" : "text-sky-700"}`} />
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-xs font-bold uppercase tracking-wider">1. Fiches Produits</p>
+            <p className="truncate text-xs opacity-80">{products.length} produits · {complete} prêts</p>
+          </div>
+        </button>
 
-    <PublicContentTranslationWorkbench />
+        <button
+          type="button"
+          onClick={() => setActiveTab("navigation")}
+          className={`flex items-center gap-3 rounded-xl p-3 text-left transition-all ${
+            activeTab === "navigation"
+              ? "border-2 border-violet-700 bg-violet-700 text-white shadow-md shadow-violet-700/20"
+              : "border border-violet-200 bg-violet-50/60 text-violet-900 hover:bg-violet-100/70"
+          }`}
+        >
+          <LayoutPanelTop className={`h-5 w-5 shrink-0 ${activeTab === "navigation" ? "text-violet-200" : "text-violet-700"}`} />
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-xs font-bold uppercase tracking-wider">2. Menus & En-tête</p>
+            <p className="truncate text-xs opacity-80">Libellés du Header public</p>
+          </div>
+        </button>
 
-    <section><div className="mb-5"><p className="text-xs font-bold uppercase tracking-[0.16em] text-sky-700">Sources françaises sûres</p><h2 className="mt-2 text-2xl font-bold text-slate-900">Modifier le texte avant de le traduire</h2><p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">Après une modification, la version étrangère est marquée à régénérer. La boutique conserve alors la source française jusqu’à la prochaine version prête.</p></div><div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">{publicBlocks.map(block => <Card key={block.href} className="border-sky-100 shadow-sm"><CardHeader><div className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-50 text-sky-700"><block.icon className="h-5 w-5" /></div><CardTitle className="pt-3 text-lg">{block.title}</CardTitle><CardDescription className="leading-6">{block.description}</CardDescription></CardHeader><CardContent><Link href={block.href}><Button variant="outline" className="w-full border-sky-200 text-sky-800 hover:bg-sky-50">Modifier la source <ArrowUpRight className="ml-2 h-4 w-4" /></Button></Link></CardContent></Card>)}</div></section>
+        <button
+          type="button"
+          onClick={() => setActiveTab("vitrine")}
+          className={`flex items-center gap-3 rounded-xl p-3 text-left transition-all ${
+            activeTab === "vitrine"
+              ? "border-2 border-amber-700 bg-amber-700 text-white shadow-md shadow-amber-700/20"
+              : "border border-amber-200 bg-amber-50/60 text-amber-900 hover:bg-amber-100/70"
+          }`}
+        >
+          <Languages className={`h-5 w-5 shrink-0 ${activeTab === "vitrine" ? "text-amber-200" : "text-amber-700"}`} />
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-xs font-bold uppercase tracking-wider">3. Textes & Vitrine</p>
+            <p className="truncate text-xs opacity-80">Accueil, histoires, sections</p>
+          </div>
+        </button>
+      </div>
+    </div>
 
-    <section className="grid gap-4 md:grid-cols-3"><Card className="border-sky-100 shadow-sm"><CardContent className="p-5"><p className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">Fiches françaises</p>{overviewQuery.isLoading ? <Skeleton className="mt-3 h-8 w-16" /> : <p className="mt-2 text-3xl font-bold text-slate-900">{products.length}</p>}<p className="mt-1 text-xs text-muted-foreground">Source unique à administrer</p></CardContent></Card><Card className="border-emerald-100 shadow-sm"><CardContent className="p-5"><p className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">Prêtes dans 6 langues</p>{overviewQuery.isLoading ? <Skeleton className="mt-3 h-8 w-16" /> : <p className="mt-2 text-3xl font-bold text-emerald-700">{complete}</p>}<p className="mt-1 text-xs text-muted-foreground">Versions clients complètes</p></CardContent></Card><Card className="border-amber-100 shadow-sm"><CardContent className="p-5"><p className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">À vérifier</p>{overviewQuery.isLoading ? <Skeleton className="mt-3 h-8 w-16" /> : <p className="mt-2 text-3xl font-bold text-amber-700">{attention}</p>}<p className="mt-1 text-xs text-muted-foreground">{stale > 0 ? `${stale} fiche(s) à régénérer` : "Génération en attente ou absente"}</p></CardContent></Card></section>
+    {/* ONGLET 1: CATALOGUE ET FICHES PRODUITS */}
+    {activeTab === "catalogue" && (
+      <div className="space-y-6">
+        <section className="grid gap-4 md:grid-cols-3">
+          <Card className="border-sky-100 shadow-sm">
+            <CardContent className="p-5">
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">Fiches françaises</p>
+              {overviewQuery.isLoading ? <Skeleton className="mt-3 h-8 w-16" /> : <p className="mt-2 text-3xl font-bold text-slate-900">{products.length}</p>}
+              <p className="mt-1 text-xs text-muted-foreground">Source unique à administrer</p>
+            </CardContent>
+          </Card>
+          <Card className="border-emerald-100 shadow-sm">
+            <CardContent className="p-5">
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">Prêtes dans 6 langues</p>
+              {overviewQuery.isLoading ? <Skeleton className="mt-3 h-8 w-16" /> : <p className="mt-2 text-3xl font-bold text-emerald-700">{complete}</p>}
+              <p className="mt-1 text-xs text-muted-foreground">Versions clients complètes</p>
+            </CardContent>
+          </Card>
+          <Card className="border-amber-100 shadow-sm">
+            <CardContent className="p-5">
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">À vérifier</p>
+              {overviewQuery.isLoading ? <Skeleton className="mt-3 h-8 w-16" /> : <p className="mt-2 text-3xl font-bold text-amber-700">{attention}</p>}
+              <p className="mt-1 text-xs text-muted-foreground">{stale > 0 ? `${stale} fiche(s) à régénérer` : "Génération en attente ou absente"}</p>
+            </CardContent>
+          </Card>
+        </section>
 
-    <Card className="border-sky-100 shadow-sm"><CardHeader className="flex flex-row items-start justify-between gap-4 border-b border-border/70 pb-5"><div><CardTitle className="flex items-center gap-2 text-xl"><Sparkles className="h-5 w-5 text-sky-700" /> État des traductions par fiche</CardTitle><CardDescription className="mt-1">Vert : version actualisée. Orange : texte français modifié, version à régénérer.</CardDescription></div><Button onClick={() => overviewQuery.refetch()} disabled={overviewQuery.isFetching} variant="outline" className="border-sky-200 text-sky-800 hover:bg-sky-50"><RefreshCw className={`mr-2 h-4 w-4 ${overviewQuery.isFetching ? "animate-spin" : ""}`} />Actualiser</Button></CardHeader><CardContent className="p-0">{overviewQuery.isLoading ? <div className="space-y-3 p-5">{Array.from({ length: 4 }).map((_, index) => <Skeleton key={index} className="h-16 w-full" />)}</div> : products.length === 0 ? <div className="flex min-h-64 flex-col items-center justify-center px-6 text-center"><div className="rounded-full bg-sky-50 p-4 text-sky-700"><Languages className="h-8 w-8" /></div><p className="mt-4 font-semibold text-slate-800">Aucune fiche à traduire pour le moment</p><p className="mt-1 max-w-md text-sm text-muted-foreground">Dès votre premier produit français enregistré, ses six versions clients apparaîtront ici automatiquement.</p><Button asChild className="mt-5 bg-sky-700 hover:bg-sky-800"><Link href="/admin/produits">Créer un produit</Link></Button></div> : <div className="divide-y divide-border/70">{products.map(product => { const state = productState(product); return <div key={product.id} className="flex flex-col gap-4 px-5 py-5 lg:flex-row lg:items-center"><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><p className="truncate font-semibold text-slate-900">{product.name}</p><Badge className={state.complete ? "border-0 bg-emerald-100 text-emerald-800" : state.stale.length ? "border-0 bg-amber-100 text-amber-800" : "border-0 bg-slate-100 text-slate-700"}>{state.complete ? "Prête dans 6 langues" : state.stale.length ? "À régénérer" : "À générer"}</Badge>{product.status === "draft" && <Badge variant="outline">Brouillon</Badge>}</div><div className="mt-3 flex flex-wrap gap-1.5">{locales.map(locale => { const status = product.translations.find(item => item.locale === locale)?.status; return <span key={locale} className={`rounded-full border px-2 py-0.5 text-[11px] font-bold ${status === "ready" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : status === "stale" ? "border-amber-200 bg-amber-50 text-amber-700" : "border-slate-200 bg-slate-50 text-slate-500"}`}>{locale.toUpperCase()} · {status === "ready" ? "prête" : status === "stale" ? "à régénérer" : "absente"}</span>; })}</div>{state.stale.length > 0 && <p className="mt-2 flex items-center gap-1.5 text-xs text-amber-700"><CircleAlert className="h-3.5 w-3.5" /> Le texte français a changé : ouvrez la fiche pour relancer la mise à jour.</p>}</div><Button asChild variant="outline" className="border-sky-200 text-sky-800 hover:bg-sky-50"><Link href="/admin/produits">Gérer la fiche</Link></Button></div>; })}</div>}</CardContent></Card>
-    <div className="flex items-start gap-3 rounded-xl border border-orange-200 bg-orange-50 p-4 text-sm text-slate-700"><CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-orange-600" /><p><strong>Protégé :</strong> les prix, frais de livraison, commandes, comptes, pages légales et réglages techniques restent volontairement hors de cet espace.</p></div>
+        <Card className="border-sky-100 shadow-sm">
+          <CardHeader className="flex flex-row items-start justify-between gap-4 border-b border-border/70 pb-5">
+            <div>
+              <CardTitle className="flex items-center gap-2 text-xl"><Sparkles className="h-5 w-5 text-sky-700" /> État des traductions par fiche</CardTitle>
+              <CardDescription className="mt-1">Vert : version actualisée. Orange : texte français modifié, version à régénérer.</CardDescription>
+            </div>
+            <Button onClick={() => overviewQuery.refetch()} disabled={overviewQuery.isFetching} variant="outline" className="border-sky-200 text-sky-800 hover:bg-sky-50">
+              <RefreshCw className={`mr-2 h-4 w-4 ${overviewQuery.isFetching ? "animate-spin" : ""}`} />Actualiser
+            </Button>
+          </CardHeader>
+          <CardContent className="p-0">
+            {overviewQuery.isLoading ? (
+              <div className="space-y-3 p-5">{Array.from({ length: 4 }).map((_, index) => <Skeleton key={index} className="h-16 w-full" />)}</div>
+            ) : products.length === 0 ? (
+              <div className="flex min-h-64 flex-col items-center justify-center px-6 text-center">
+                <div className="rounded-full bg-sky-50 p-4 text-sky-700"><Languages className="h-8 w-8" /></div>
+                <p className="mt-4 font-semibold text-slate-800">Aucune fiche à traduire pour le moment</p>
+                <p className="mt-1 max-w-md text-sm text-muted-foreground">Dès votre premier produit français enregistré, ses six versions clients apparaîtront ici automatiquement.</p>
+                <Button asChild className="mt-5 bg-sky-700 hover:bg-sky-800"><Link href="/admin/produits">Créer un produit</Link></Button>
+              </div>
+            ) : (
+              <div className="divide-y divide-border/70">
+                {products.map(product => {
+                  const state = productState(product);
+                  return (
+                    <div key={product.id} className="flex flex-col gap-4 px-5 py-5 lg:flex-row lg:items-center">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="truncate font-semibold text-slate-900">{product.name}</p>
+                          <Badge className={state.complete ? "border-0 bg-emerald-100 text-emerald-800" : state.stale.length ? "border-0 bg-amber-100 text-amber-800" : "border-0 bg-slate-100 text-slate-700"}>
+                            {state.complete ? "Prête dans 6 langues" : state.stale.length ? "À régénérer" : "À générer"}
+                          </Badge>
+                          {product.status === "draft" && <Badge variant="outline">Brouillon</Badge>}
+                        </div>
+                        <div className="mt-3 flex flex-wrap gap-1.5">
+                          {locales.map(locale => {
+                            const status = product.translations.find(item => item.locale === locale)?.status;
+                            return (
+                              <span key={locale} className={`rounded-full border px-2 py-0.5 text-[11px] font-bold ${status === "ready" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : status === "stale" ? "border-amber-200 bg-amber-50 text-amber-700" : "border-slate-200 bg-slate-50 text-slate-500"}`}>
+                                {locale.toUpperCase()} · {status === "ready" ? "prête" : status === "stale" ? "à régénérer" : "absente"}
+                              </span>
+                            );
+                          })}
+                        </div>
+                        {state.stale.length > 0 && <p className="mt-2 flex items-center gap-1.5 text-xs text-amber-700"><CircleAlert className="h-3.5 w-3.5" /> Le texte français a changé : ouvrez la fiche pour relancer la mise à jour.</p>}
+                      </div>
+                      <Button asChild variant="outline" className="border-sky-200 text-sky-800 hover:bg-sky-50">
+                        <Link href="/admin/produits">Gérer la fiche</Link>
+                      </Button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+    )}
+
+    {/* ONGLET 2: TRADUCTIONS DES MENUS & NAVIGATION */}
+    {activeTab === "navigation" && (
+      <Card className="border-violet-100 shadow-sm">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-xl"><WandSparkles className="h-5 w-5 text-violet-700" /> Traduction des libellés de navigation</CardTitle>
+          <CardDescription>Choisissez une langue, générez une version depuis le français, puis corrigez-la. Le Header public utilise cette version dans la langue concernée.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {designQuery.isLoading ? <Skeleton className="h-44 w-full" /> : (
+            <>
+              <div className="flex flex-wrap gap-2">
+                {locales.map(locale => (
+                  <Button key={locale} type="button" variant={targetLocale === locale ? "default" : "outline"} onClick={() => setTargetLocale(locale)} className={targetLocale === locale ? "bg-violet-700 hover:bg-violet-800" : "border-violet-200 text-violet-800 hover:bg-violet-50"}>
+                    {localeLabels[locale]}
+                  </Button>
+                ))}
+              </div>
+              <div className="mt-5 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                {([ ["navigationHome", "Accueil"], ["navigationShop", "Boutique"], ["navigationCategories", "Catégories"], ["navigationCreations", "Créations"], ["navigationContact", "Contact"] ] as Array<[keyof NavigationLabels, string]>).map(([field, label]) => (
+                  <div key={field} className="space-y-2">
+                    <Label htmlFor={`navigation-${field}`}>{label}</Label>
+                    <Input id={`navigation-${field}`} maxLength={40} value={navigation[field]} onChange={event => setNavigation(current => ({ ...current, [field]: event.target.value }))} />
+                  </div>
+                ))}
+              </div>
+              <div className="mt-5 flex flex-col gap-3 rounded-xl bg-violet-50 p-4 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-sm leading-6 text-violet-950">Les modifications de menu ne rendent pas les textes d’accueil obsolètes.</p>
+                <div className="flex flex-wrap gap-2">
+                  <Button onClick={translateNavigation} disabled={autoTranslateNavigation.isPending} variant="outline" className="border-violet-300 bg-white text-violet-800 hover:bg-violet-100">
+                    {autoTranslateNavigation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <WandSparkles className="mr-2 h-4 w-4" />}Traduire automatiquement
+                  </Button>
+                  <Button onClick={saveNavigation} disabled={updateDesign.isPending} className="bg-violet-700 hover:bg-violet-800">
+                    {updateDesign.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}Enregistrer les libellés
+                  </Button>
+                </div>
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
+    )}
+
+    {/* ONGLET 3: TEXTES PUBLICS ET SOURCES */}
+    {activeTab === "vitrine" && (
+      <div className="space-y-6">
+        <PublicContentTranslationWorkbench />
+
+        <section>
+          <div className="mb-5">
+            <p className="text-xs font-bold uppercase tracking-[0.16em] text-sky-700">Sources françaises sûres</p>
+            <h2 className="mt-2 text-2xl font-bold text-slate-900">Modifier le texte avant de le traduire</h2>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">Après une modification, la version étrangère est marquée à régénérer. La boutique conserve alors la source française jusqu’à la prochaine version prête.</p>
+          </div>
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            {publicBlocks.map(block => (
+              <Card key={block.href} className="border-sky-100 shadow-sm">
+                <CardHeader>
+                  <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-50 text-sky-700"><block.icon className="h-5 w-5" /></div>
+                  <CardTitle className="pt-3 text-lg">{block.title}</CardTitle>
+                  <CardDescription className="leading-6">{block.description}</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <Link href={block.href}>
+                    <Button variant="outline" className="w-full border-sky-200 text-sky-800 hover:bg-sky-50">
+                      Modifier la source <ArrowUpRight className="ml-2 h-4 w-4" />
+                    </Button>
+                  </Link>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </section>
+      </div>
+    )}
+
+    <div className="flex items-start gap-3 rounded-xl border border-orange-200 bg-orange-50 p-4 text-sm text-slate-700">
+      <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-orange-600" />
+      <p><strong>Protégé :</strong> les prix, frais de livraison, commandes, comptes, pages légales et réglages techniques restent volontairement hors de cet espace.</p>
+    </div>
   </div></DashboardLayout>;
 }

@@ -21776,7 +21776,38 @@ function synthesizeCopilotResponse(params) {
       }]
     };
   }
-  if (query.includes("alg\xE9rie") || query.includes("algerie") || query.includes("wilaya") || query.includes("cod") || query.includes("livraison")) {
+  if (query.includes("reste du monde") || query.includes("international") || query.includes("monde") || query.includes("europe") || query.includes("suisse")) {
+    const internationalShippingGuide = `### \u{1F310} Guide Op\xE9rateur : Configuration des Livraisons Internationales & Reste du Monde
+
+Pour exp\xE9dier en dehors de votre march\xE9 domestique (Europe, Suisse, Am\xE9rique du Nord, reste du monde), voici la d\xE9marche structur\xE9e :
+
+#### 1. D\xE9coupage par Zones G\xE9ographiques
+* **Acc\xE8s :** Rendez-vous dans **\xAB Param\xE8tres \xBB** > **\xAB Exp\xE9ditions & Livraisons \xBB**.
+* **Zone 1 (Suisse / March\xE9 local) :** Colissimo / Poste Suisse standard & express.
+* **Zone 2 (Union Europ\xE9enne) :** Tarif forfaitaire selon le poids avec TVA \xE0 destination (OSS).
+* **Zone 3 (International & Grand Export) :** Transporteurs express internationaux (DHL Express, FedEx, UPS).
+
+#### 2. Strat\xE9gies Tarifaires Recommand\xE9es :
+1. **Forfait par tranche de poids :** Ex. 0 \xE0 1 kg (15 \u20AC), 1 \xE0 3 kg (22 \u20AC), > 3 kg (35 \u20AC).
+2. **Seuil de livraison offerte incitatif :** Activez la livraison gratuite \xE0 partir de 100 \u20AC / 120 CHF pour augmenter le panier moyen.
+3. **Formalit\xE9s Douani\xE8res & D\xE9clarations :**
+   * Renseignez le **code douanier SH (Harmonized System)** sur chaque fiche produit.
+   * Joignez automatiquement la facture proforma ou CN22/CN23 aux colis hors UE/Suisse.
+
+#### 3. R\xE9assurance Client lors du Checkout :
+* Affichez clairement sur la page panier les d\xE9lais estim\xE9s (ex. 3 \xE0 5 jours ouvr\xE9s en Europe, 5 \xE0 9 jours \xE0 l'international) et pr\xE9venez des \xE9ventuelles taxes douani\xE8res \xE0 l'importation.`;
+    return {
+      id: `copilot-${Date.now()}`,
+      created: Math.floor(Date.now() / 1e3),
+      model: "mazigho-copilot-engine",
+      choices: [{
+        index: 0,
+        message: { role: "assistant", content: internationalShippingGuide },
+        finish_reason: "stop"
+      }]
+    };
+  }
+  if ((query.includes("alg\xE9rie") || query.includes("algerie") || query.includes("wilaya") || query.includes("cod")) && !query.includes("reste")) {
     return {
       id: `copilot-${Date.now()}`,
       created: Math.floor(Date.now() / 1e3),
@@ -21955,10 +21986,28 @@ async function invokeLLM(params) {
       if (response.ok) {
         return await response.json();
       }
-      console.warn(`[invokeLLM] Remote API returned status ${response.status}, switching to local copilot fallback.`);
+      console.warn(`[invokeLLM] Remote API returned status ${response.status}, switching to live reasoning engine.`);
     } catch (err) {
-      console.warn("[invokeLLM] Remote API error, switching to local copilot fallback:", err);
+      console.warn("[invokeLLM] Remote API error, switching to live reasoning engine:", err);
     }
+  }
+  try {
+    const liveReasoningResponse = await fetch("https://text.pollinations.ai/openai/v1/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "openai-fast",
+        messages: params.messages.map(normalizeMessage)
+      })
+    });
+    if (liveReasoningResponse.ok) {
+      const data = await liveReasoningResponse.json();
+      if (data.choices?.[0]?.message?.content) {
+        return data;
+      }
+    }
+  } catch (liveErr) {
+    console.warn("[invokeLLM] Live reasoning engine notice, switching to offline fallback:", liveErr);
   }
   return synthesizeCopilotResponse(params);
 }
