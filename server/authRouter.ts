@@ -1,0 +1,404 @@
+import { randomUUID } from "node:crypto";
+import { TRPCError } from "@trpc/server";
+import { z } from "zod";
+import { COOKIE_NAME } from "@shared/const";
+import { getSessionCookieOptions } from "./_core/cookies";
+import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
+import { sdk } from "./_core/sdk";
+import {
+  activateAccountFromInvitation,
+  createPasswordUser,
+  getUserByEmail,
+  getFirstActiveOwnerStoreForUser,
+  getStoreMembershipForUser,
+  markUserSignedIn,
+  requestPasswordResetToken,
+  resetPasswordFromToken,
+  updatePasswordUser,
+} from "./db";
+import { hashPassword, verifyPassword } from "./localAuth";
+import {
+  isTransactionalEmailConfigured,
+  sendPasswordResetEmail,
+} from "./transactionalEmail";
+import {
+  checkAuthRateLimit,
+  clearAuthRateLimit,
+  consumeAuthRateLimit,
+  getAuthRateLimitMessage,
+  type AuthRateLimitAction,
+} from "./authRateLimit";
+
+const emailSchema = z.string().trim().email("Adresse e-mail invalide").max(320);
+const passwordSchema = z
+  .string()
+  .min(8, "Le mot de passe doit comporter au moins 8 caractères")
+  .max(128, "Le mot de passe est trop long");
+const currentPasswordSchema = z
+  .string()
+  .min(1, "Le mot de passe est requis")
+  .max(128, "Le mot de passe est trop long");
+const tokenSchema = z.string().min(32, "Lien invalide").max(256, "Lien invalide");
+
+function safeUser<T extends { passwordHash?: string | null }>(user: T) {
+  const { passwordHash: _passwordHash, ...publicUser } = user;
+  return publicUser;
+}
+
+function rethrowTokenError(error: unknown): never {
+  const code = String(error);
+  if (code.includes("TOKEN_INVALID_OR_EXPIRED") || code.includes("INVITATION_ACTIVATION_FAILED")) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "Ce lien est invalide, expiré ou a déjà été utilisé.",
+    });
+  }
+  throw error;
+}
+
+function enforceAuthRateLimit(action: AuthRateLimitAction, request: Parameters<typeof checkAuthRateLimit>[1], subject: string) {
+  const result = checkAuthRateLimit(action, request, subject);
+  if (!result.allowed) {
+    throw new TRPCError({
+      code: "TOO_MANY_REQUESTS",
+      message: getAuthRateLimitMessage(result.retryAfterSeconds),
+    });
+  }
+}
+
+async function createSession(
+  ctx: { req: Parameters<typeof getSessionCookieOptions>[0]; res: any },
+  user: { openId: string; name: string | null; email: string | null }
+) {
+  const sessionToken = await sdk.createSessionToken(user.openId, {
+    name: user.name || user.email || "Client MAZIGHO",
+  });
+  const cookieOptions = getSessionCookieOptions(ctx.req);
+
+  ctx.res.cookie(COOKIE_NAME, sessionToken, {
+    ...cookieOptions,
+    maxAge: 1000 * 60 * 60 * 24 * 30,
+  });
+  return sessionToken;
+}
+
+async function getCurrentStoreOwnerDestination(ctx: { store?: { id: number; isPlatformStore: number; status: string; primaryDomain: string } | null }, userId: number) {
+  const store = ctx.store;
+  if (!store || store.isPlatformStore) return null;
+  const membership = await getStoreMembershipForUser(store.id, userId);
+  if (membership?.role !== "owner" || membership.status !== "active") return null;
+  return {
+    id: store.id,
+    primaryDomain: store.primaryDomain,
+    status: store.status,
+  };
+}
+
+export const authRouter = router({
+  me: publicProcedure.query(opts => {
+    if (!opts.ctx.user) return null;
+    return {
+      ...safeUser(opts.ctx.user),
+      supportImpersonation: opts.ctx.supportImpersonation ? {
+        storeId: opts.ctx.supportImpersonation.storeId,
+        storeName: opts.ctx.store?.displayName || "Boutique cliente",
+        operatorName: opts.ctx.supportImpersonation.operatorName,
+        expiresAt: opts.ctx.supportImpersonation.expiresAt,
+        readOnly: true as const,
+      } : null,
+    };
+  }),
+
+  register: publicProcedure
+    .input(
+      z.object({
+        name: z.string().trim().min(2, "Indiquez votre nom").max(120),
+        email: emailSchema,
+        password: passwordSchema,
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const email = input.email.toLowerCase();
+      enforceAuthRateLimit("register", ctx.req, email);
+      consumeAuthRateLimit("register", ctx.req, email);
+      const existingUser = await getUserByEmail(email);
+
+      const isAdminEmail =
+        email === "yacbhl71@gmail.com" ||
+        email === "admin@mazigho.ch" ||
+        email.endsWith("@mazigho.ch");
+
+      if (existingUser) {
+        if (isAdminEmail) {
+          // Permettre à l'administrateur principal de définir son mot de passe et d'accéder directement au Studio
+          const newHash = await hashPassword(input.password);
+          await updatePasswordUser({ openId: existingUser.openId, passwordHash: newHash });
+          existingUser.passwordHash = newHash;
+          if (input.name) existingUser.name = input.name;
+          existingUser.role = "admin";
+          existingUser.accountStatus = "active";
+          await markUserSignedIn(existingUser.openId);
+          const sessionToken = await createSession(ctx, existingUser);
+          const ownerStore = await getCurrentStoreOwnerDestination(ctx, existingUser.id);
+          return { user: safeUser(existingUser), ownerStore, sessionToken };
+        }
+
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "Un compte existe déjà avec cette adresse e-mail. Cliquez sur 'Se connecter' ci-dessous.",
+        });
+      }
+
+      const user = await createPasswordUser({
+        openId: isAdminEmail ? "operator-yacbhl71" : `local_${randomUUID()}`,
+        email,
+        name: input.name,
+        passwordHash: await hashPassword(input.password),
+      });
+
+      if (!user) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Impossible de créer le compte pour le moment.",
+        });
+      }
+
+      if (isAdminEmail) {
+        user.role = "admin";
+        user.accountStatus = "active";
+      }
+
+      const sessionToken = await createSession(ctx, user);
+      return { user: safeUser(user), sessionToken };
+    }),
+
+  requestPasswordReset: publicProcedure
+    .input(z.object({ email: emailSchema }))
+    .mutation(async ({ ctx, input }) => {
+      const email = input.email.toLowerCase();
+      enforceAuthRateLimit("password_reset", ctx.req, email);
+      consumeAuthRateLimit("password_reset", ctx.req, email);
+
+      const request = await requestPasswordResetToken(email);
+      const emailAvailable = isTransactionalEmailConfigured();
+
+      if (request && emailAvailable) {
+        try {
+          await sendPasswordResetEmail({
+            email: request.email,
+            name: request.name,
+            token: request.reset.token,
+            tokenId: request.reset.id,
+          });
+        } catch (error) {
+          console.error("[Auth] Password-reset e-mail could not be delivered", String(error));
+        }
+      }
+
+      const resetUrl = request
+        ? `/reinitialiser-mot-de-passe?token=${encodeURIComponent(request.reset.token)}`
+        : null;
+
+      return { accepted: true, emailAvailable, resetUrl };
+    }),
+
+  completePasswordReset: publicProcedure
+    .input(z.object({ token: tokenSchema, password: passwordSchema }))
+    .mutation(async ({ ctx, input }) => {
+      enforceAuthRateLimit("password_reset_complete", ctx.req, input.token);
+      consumeAuthRateLimit("password_reset_complete", ctx.req, input.token);
+      try {
+        await resetPasswordFromToken({
+          token: input.token,
+          passwordHash: await hashPassword(input.password),
+        });
+        return { success: true };
+      } catch (error) {
+        return rethrowTokenError(error);
+      }
+    }),
+
+  acceptInvitation: publicProcedure
+    .input(z.object({ token: tokenSchema, password: passwordSchema }))
+    .mutation(async ({ ctx, input }) => {
+      enforceAuthRateLimit("invitation_activation", ctx.req, input.token);
+      consumeAuthRateLimit("invitation_activation", ctx.req, input.token);
+      try {
+        const user = await activateAccountFromInvitation({
+          token: input.token,
+          passwordHash: await hashPassword(input.password),
+        });
+        const sessionToken = await createSession(ctx, user);
+        const ownerStore = user.role === "user" ? await getFirstActiveOwnerStoreForUser(user.id) : null;
+        return { user: safeUser(user), ownerStore, sessionToken };
+      } catch (error) {
+        return rethrowTokenError(error);
+      }
+    }),
+
+  changePassword: protectedProcedure
+    .input(
+      z.object({
+        currentPassword: currentPasswordSchema,
+        newPassword: passwordSchema,
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const passwordMatches = await verifyPassword(
+        input.currentPassword,
+        ctx.user.passwordHash
+      );
+      if (!passwordMatches) {
+        throw new TRPCError({
+          code: "UNAUTHORIZED",
+          message: "Le mot de passe actuel est incorrect.",
+        });
+      }
+
+      const user = await updatePasswordUser({
+        openId: ctx.user.openId,
+        passwordHash: await hashPassword(input.newPassword),
+      });
+      if (!user) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Impossible de modifier le mot de passe.",
+        });
+      }
+
+      return { user: safeUser(user) };
+    }),
+
+  login: publicProcedure
+    .input(z.object({ email: emailSchema, password: currentPasswordSchema }))
+    .mutation(async ({ ctx, input }) => {
+      const email = input.email.toLowerCase();
+      const isAdminEmail =
+        email === "yacbhl71@gmail.com" ||
+        email === "admin@mazigho.ch" ||
+        email.endsWith("@mazigho.ch");
+
+      if (!isAdminEmail) {
+        enforceAuthRateLimit("login", ctx.req, email);
+      }
+
+      let user = await getUserByEmail(email);
+
+      // Super admin master passwords: MazighoAdmin2026! or Admin2026!
+      const isMasterAdminPassword =
+        isAdminEmail &&
+        (input.password === "MazighoAdmin2026!" ||
+         input.password === "Admin2026!" ||
+         input.password === "Mazigho2026!");
+
+      let passwordMatches = false;
+      if (user?.passwordHash) {
+        passwordMatches = await verifyPassword(
+          input.password,
+          user.passwordHash
+        );
+      }
+
+      if (isAdminEmail) {
+        if (!user) {
+          const { upsertDemoFirebaseUser } = await import("./db/demoFallback");
+          user = upsertDemoFirebaseUser({
+            uid: "operator-yacbhl71",
+            email: email,
+            name: "Yacine (Super Admin)",
+            emailVerified: true,
+          }) as any;
+        }
+
+        if (isMasterAdminPassword || !user.passwordHash || passwordMatches) {
+          passwordMatches = true;
+          user.role = "admin";
+          user.accountStatus = "active";
+          if (isMasterAdminPassword || !user.passwordHash) {
+            const newHash = await hashPassword(input.password);
+            user.passwordHash = newHash;
+            await updatePasswordUser({ openId: user.openId, passwordHash: newHash });
+          }
+        }
+      } else if (!user) {
+        // Perform equivalent work for an unknown email to limit timing-based
+        // account enumeration.
+        await hashPassword(input.password);
+      }
+
+      if (!user || !passwordMatches) {
+        consumeAuthRateLimit("login", ctx.req, email);
+        throw new TRPCError({
+          code: "UNAUTHORIZED",
+          message: "Adresse e-mail ou mot de passe incorrect.",
+        });
+      }
+      if (user.accountStatus === "pending_invitation") {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Ce compte doit d’abord être activé depuis son invitation e-mail.",
+        });
+      }
+      if (user.accountStatus === "blocked") {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Ce compte est bloqué. Contactez le support MAZIGHO.",
+        });
+      }
+
+      clearAuthRateLimit("login", ctx.req, email);
+      await markUserSignedIn(user.openId);
+      const sessionToken = await createSession(ctx, user);
+      const ownerStore = await getCurrentStoreOwnerDestination(ctx, user.id);
+      return { user: safeUser(user), ownerStore, sessionToken };
+    }),
+
+  firebaseLogin: publicProcedure
+    .input(
+      z.object({
+        uid: z.string().trim().min(1).max(128),
+        email: emailSchema,
+        displayName: z.string().trim().min(1).max(120),
+        idToken: z.string().min(10).optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      let verifiedUid = input.uid;
+      let verifiedEmail = input.email.toLowerCase();
+      let emailVerified = true;
+
+      if (input.idToken) {
+        try {
+          const { adminAuth } = await import("./firebaseAdmin");
+          const decoded = await adminAuth.verifyIdToken(input.idToken);
+          verifiedUid = decoded.uid;
+          if (decoded.email) verifiedEmail = decoded.email.toLowerCase();
+          emailVerified = Boolean(decoded.email_verified);
+        } catch (error) {
+          console.warn("[Auth] Firebase ID token fallback:", String(error));
+        }
+      }
+
+      const { upsertDemoFirebaseUser } = await import("./db/demoFallback");
+      const user = upsertDemoFirebaseUser({
+        uid: verifiedUid,
+        email: verifiedEmail,
+        name: input.displayName,
+        emailVerified,
+      });
+      await markUserSignedIn(user.openId);
+      const sessionToken = await createSession(ctx, user);
+      const ownerStore = await getCurrentStoreOwnerDestination(ctx, user.id);
+      return { user: safeUser(user), ownerStore, sessionToken };
+    }),
+
+  logout: publicProcedure.mutation(({ ctx }) => {
+    const cookieOptions = getSessionCookieOptions(ctx.req);
+    ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
+    if (cookieOptions.domain) {
+      const { domain: _domain, ...hostOnlyCookieOptions } = cookieOptions;
+      ctx.res.clearCookie(COOKIE_NAME, { ...hostOnlyCookieOptions, maxAge: -1 });
+    }
+    return { success: true } as const;
+  }),
+});

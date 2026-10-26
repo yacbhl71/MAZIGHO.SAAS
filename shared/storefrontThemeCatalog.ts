@@ -1,0 +1,330 @@
+export const storefrontThemeIds = [
+  "violetCraft",
+  "telephony",
+  "pet",
+  "fashion",
+  "automotive",
+  "beauty",
+  "home",
+  "sport",
+  "jewelry",
+  "coffee",
+  "marketExpress",
+  "gallerySignature",
+  "studioFlux",
+  "glamourNoir",
+  "luminaLuxe",
+  "nordicMinimal",
+  "nebulasTech",
+  "botanicaOrganic",
+  "artisanBakery",
+  "velvetApothecary",
+  "apexAthletics",
+  "auraJewelry",
+] as const;
+
+export type StorefrontThemeId = (typeof storefrontThemeIds)[number];
+
+export type StorefrontThemePlanTier = "free" | "basic" | "pro" | "lifetime";
+
+/** Curated premium templates. Their preview remains visible when not attributed; only Studio can authorize use. */
+export const premiumStorefrontThemeIds = [
+  "gallerySignature",
+  "studioFlux",
+  "glamourNoir",
+  "luminaLuxe",
+  "nordicMinimal",
+  "nebulasTech",
+  "botanicaOrganic",
+  "artisanBakery",
+  "velvetApothecary",
+  "apexAthletics",
+  "auraJewelry",
+] as const satisfies readonly StorefrontThemeId[];
+
+export const isPremiumStorefrontTheme = (themeId: StorefrontThemeId) =>
+  premiumStorefrontThemeIds.includes(themeId as typeof premiumStorefrontThemeIds[number]);
+
+export type StorefrontThemeCatalogItem = {
+  id: StorefrontThemeId;
+  label: string;
+  eyebrow: string;
+  description: string;
+  visual: string;
+  visualAlt: string;
+  benefits: readonly string[];
+  minPlanTier: StorefrontThemePlanTier;
+  palette: {
+    card: string;
+    label: string;
+    title: string;
+    text: string;
+    button: string;
+    badge: string;
+  };
+};
+
+/**
+ * Presentation-only catalog shared by the Studio and an owner panel.
+ * The actual content application remains server-side and store-scoped.
+ */
+export const storefrontThemeCatalog: readonly StorefrontThemeCatalogItem[] = [
+  {
+    id: "violetCraft",
+    label: "Atelier créatif violet",
+    eyebrow: "Loisirs créatifs",
+    description: "Diamond Painting, broderie, laine et crochet : une boutique douce, lumineuse et éditoriale.",
+    visual: "/assets/dyama/dyama-hero-diamond-painting.webp",
+    visualAlt: "Matériel créatif violet pour Diamond Painting",
+    benefits: ["Hero créatif et textes d’atelier", "Menu loisirs créatifs", "Cartes catégories illustrées"],
+    minPlanTier: "free",
+    palette: { card: "border-violet-200 bg-violet-50/70", label: "text-violet-700", title: "text-violet-950", text: "text-violet-900", button: "bg-violet-700 hover:bg-violet-800", badge: "bg-violet-100 text-violet-800" },
+  },
+  {
+    id: "telephony",
+    label: "Téléphonie & gadgets",
+    eyebrow: "Tech connectée",
+    description: "Smartphones, charge, protection et audio : une identité bleu nuit nette et actuelle.",
+    visual: "/assets/themes/telephony-hero.webp",
+    visualAlt: "Smartphone et accessoires bleus sur un bureau sombre",
+    benefits: ["Hero smartphones et accessoires", "Menu tech clair", "Visuels charge, protection et audio"],
+    minPlanTier: "free",
+    palette: { card: "border-blue-200 bg-blue-50/70", label: "text-blue-700", title: "text-blue-950", text: "text-blue-900", button: "bg-blue-700 hover:bg-blue-800", badge: "bg-blue-100 text-blue-800" },
+  },
+  {
+    id: "pet",
+    label: "Animalerie complice",
+    eyebrow: "Univers animalier",
+    description: "Chiens, chats, jeux et promenades : un univers chaleureux pensé pour les familles et leurs compagnons.",
+    visual: "/assets/themes/pet-hero.webp",
+    visualAlt: "Chien et chat avec leurs accessoires à la maison",
+    benefits: ["Hero chien et chat", "Menu chiens, chats et promenades", "Visuels chaleureux pour les catégories"],
+    minPlanTier: "free",
+    palette: { card: "border-lime-200 bg-lime-50/70", label: "text-lime-700", title: "text-lime-950", text: "text-lime-900", button: "bg-lime-700 hover:bg-lime-800", badge: "bg-lime-100 text-lime-800" },
+  },
+  {
+    id: "fashion",
+    label: "Atelier Urbain — mode",
+    eyebrow: "Mode & accessoires",
+    description: "Une vitrine contemporaine pour vêtements, chaussures et accessoires, avec un rythme éditorial affirmé.",
+    visual: "/assets/themes/fashion/hero.webp",
+    visualAlt: "Silhouette mode contemporaine devant une architecture minimaliste",
+    benefits: ["Hero éditorial avec espace titre", "Menu mode sur deux niveaux", "Cartes vêtements, chaussures et accessoires"],
+    minPlanTier: "free",
+    palette: { card: "border-slate-200 bg-slate-50", label: "text-sky-700", title: "text-slate-950", text: "text-slate-700", button: "bg-slate-800 hover:bg-slate-950", badge: "bg-sky-100 text-sky-800" },
+  },
+  {
+    id: "automotive",
+    label: "Atelier Route — automobile",
+    eyebrow: "Pièces auto & accessoires",
+    description: "Un univers bleu pétrole et orange, prêt à organiser les familles produit et accélérer la recherche.",
+    visual: "/assets/themes/automotive/hero.webp",
+    visualAlt: "Pièces automobiles sur un établi devant un véhicule",
+    benefits: ["Recherche élargie et prioritaire", "Menu besoins, accessoires et conseils", "Cartes moteur, freinage et sécurité"],
+    minPlanTier: "free",
+    palette: { card: "border-cyan-200 bg-cyan-50/60", label: "text-cyan-800", title: "text-slate-950", text: "text-slate-700", button: "bg-[#123047] hover:bg-[#0b2132]", badge: "bg-orange-100 text-orange-800" },
+  },
+  {
+    id: "beauty",
+    label: "Atelier Beauté — salon & coiffure",
+    eyebrow: "Beauté & bien-être",
+    description: "Une identité lumineuse et raffinée pour coiffure, institut, soins et rituels bien-être.",
+    visual: "/assets/themes/beauty/hero.webp",
+    visualAlt: "Salon de beauté élégant avec fauteuil et miroir",
+    benefits: ["Hero salon lumineux", "Menu prestations et rituels", "Cartes cheveux, soins et bien-être"],
+    minPlanTier: "free",
+    palette: { card: "border-rose-200 bg-rose-50/70", label: "text-rose-700", title: "text-rose-950", text: "text-rose-900", button: "bg-[#5B234F] hover:bg-[#421a39]", badge: "bg-rose-100 text-rose-800" },
+  },
+  {
+    id: "home",
+    label: "Maison douce — décoration",
+    eyebrow: "Maison & art de vivre",
+    description: "Ligne organique, matières naturelles et ton sable : une base apaisante pour l’univers maison.",
+    visual: "/assets/category-maison-hero.webp",
+    visualAlt: "Intérieur chaleureux avec décoration et matières naturelles",
+    benefits: ["Hero maison lumineux", "Menu décoration et art de vivre", "Cartes textiles, table et rangement"],
+    minPlanTier: "free",
+    palette: { card: "border-amber-200 bg-amber-50/70", label: "text-amber-700", title: "text-amber-950", text: "text-amber-900", button: "bg-[#7C4A2D] hover:bg-[#623920]", badge: "bg-amber-100 text-amber-800" },
+  },
+  {
+    id: "sport",
+    label: "Mouvement — sport & outdoor",
+    eyebrow: "Sport & plein air",
+    description: "Contraste intense, énergie et recherche rapide pour entraîner, explorer et progresser.",
+    visual: "/assets/category-sport-hero.webp",
+    visualAlt: "Athlète s’entraînant avec une kettlebell",
+    benefits: ["Hero mouvement énergique", "Recherche catalogue prioritaire", "Cartes entraînement, outdoor et récupération"],
+    minPlanTier: "free",
+    palette: { card: "border-emerald-200 bg-emerald-50/70", label: "text-emerald-700", title: "text-emerald-950", text: "text-emerald-900", button: "bg-[#14532D] hover:bg-[#0D3E21]", badge: "bg-emerald-100 text-emerald-800" },
+  },
+  {
+    id: "jewelry",
+    label: "Éclat Atelier — bijoux",
+    eyebrow: "Bijoux & cadeaux",
+    description: "Un décor précieux, minéral et doré pour mettre les pièces, coffrets et attentions au premier plan.",
+    visual: "/assets/themes/jewelry-hero.webp",
+    visualAlt: "Bijoux dorés et perles dans une composition éditoriale",
+    benefits: ["Hero luxe avec espace titre", "Menu collections et idées cadeaux", "Univers doré, profond et élégant"],
+    minPlanTier: "free",
+    palette: { card: "border-yellow-200 bg-yellow-50/70", label: "text-amber-700", title: "text-stone-950", text: "text-stone-700", button: "bg-[#6B4F13] hover:bg-[#513C0F]", badge: "bg-yellow-100 text-amber-900" },
+  },
+  {
+    id: "coffee",
+    label: "Maison Café — épicerie fine",
+    eyebrow: "Café, thé & saveurs",
+    description: "Une atmosphère artisanale et chaleureuse pour cafés, thés, douceurs et cadeaux gourmands.",
+    visual: "/assets/themes/coffee-hero.webp",
+    visualAlt: "Café espresso et accessoires artisanaux dans une ambiance chaleureuse",
+    benefits: ["Hero café immersif", "Menu cafés, thés et cadeaux", "Cartes découverte, origines et accessoires"],
+    minPlanTier: "free",
+    palette: { card: "border-orange-200 bg-orange-50/70", label: "text-orange-800", title: "text-stone-950", text: "text-stone-700", button: "bg-[#5A321E] hover:bg-[#402316]", badge: "bg-orange-100 text-orange-900" },
+  },
+  {
+    id: "marketExpress",
+    label: "Market Express — proximité & livraison",
+    eyebrow: "Épicerie, frais & quotidien",
+    description: "Une vitrine structurée pour l’épicerie, les produits frais, la maison et la livraison locale, avec recherche et rayons visuels.",
+    visual: "https://files.manuscdn.com/user_upload_by_module/session_file/310519663209309444/WbCbbwpstYGIDuNO.webp",
+    visualAlt: "Courses et produits frais présentés dans une ambiance de marché de proximité",
+    benefits: ["Recherche centrale et navigation par rayons", "Hero livraison locale prêt à adapter", "Cartes catégories illustrées et défilables"],
+    minPlanTier: "basic",
+    palette: { card: "border-teal-200 bg-teal-50/70", label: "text-teal-800", title: "text-slate-950", text: "text-slate-700", button: "bg-[#0F4C5C] hover:bg-[#0B3945]", badge: "bg-amber-100 text-amber-900" },
+  },
+  {
+    id: "gallerySignature",
+    label: "Galerie Signature — design premium",
+    eyebrow: "Art, design & objets",
+    description: "Une direction galerie haut de gamme : identité centrée, navigation en seconde ligne et récit de collection.",
+    visual: "/assets/themes/galerie-signature/hero.webp",
+    visualAlt: "Composition premium d’objets design dans une galerie contemporaine",
+    benefits: ["Identité centrée et menu galerie", "Manifeste éditorial en ouverture", "Palette encre, ivoire et laiton"],
+    minPlanTier: "pro",
+    palette: { card: "border-stone-300 bg-stone-50", label: "text-stone-700", title: "text-slate-950", text: "text-stone-700", button: "bg-slate-950 hover:bg-slate-800", badge: "bg-stone-200 text-stone-900" },
+  },
+  {
+    id: "studioFlux",
+    label: "Studio Flux — commerce premium",
+    eyebrow: "Sélection contemporaine",
+    description: "Une vitrine directe et graphique : recherche prioritaire, navigation en bande et mises en avant rythmées.",
+    visual: "/assets/themes/studio-flux/hero.webp",
+    visualAlt: "Sélection d’objets contemporains sur des socles bleu cobalt et orange",
+    benefits: ["Recherche large et navigation utilitaire", "Nouveautés mises en avant avant le récit", "Blocs modulaires au rythme graphique"],
+    minPlanTier: "pro",
+    palette: { card: "border-blue-200 bg-blue-50/60", label: "text-blue-800", title: "text-slate-950", text: "text-slate-700", button: "bg-[#183B73] hover:bg-[#102B57]", badge: "bg-orange-100 text-orange-900" },
+  },
+  {
+    id: "glamourNoir",
+    label: "Glamour Noir — beauté premium",
+    eyebrow: "Beauté, parfum & rituels",
+    description: "Un décor noir éditorial illuminé de cyan et de rose, pensé pour la beauté, le parfum, les accessoires et les lancements de collection.",
+    visual: "/assets/themes/glamour-noir/glamour-noir-hero.webp",
+    visualAlt: "Produits de beauté premium devant un halo cyan sur fond noir",
+    benefits: ["Hero immersif avec espace de titre", "Navigation sombre et minimaliste", "Blocs éditoriaux et catégories illustrées"],
+    minPlanTier: "pro",
+    palette: { card: "border-slate-700 bg-[#191820]", label: "text-cyan-300", title: "text-white", text: "text-slate-300", button: "bg-cyan-500 text-slate-950 hover:bg-cyan-400", badge: "bg-fuchsia-500/15 text-fuchsia-200" },
+  },
+  {
+    id: "luminaLuxe",
+    label: "Lumina Luxe — haute horlogerie & joaillerie",
+    eyebrow: "Luxe & haute horlogerie",
+    description: "Inspiré des plus grands thèmes Shopify Luxe : fond d'ébène, détails or brossé et éclat champagne pour bijoux, montres et prêt-à-porter de prestige.",
+    visual: "https://images.unsplash.com/photo-1522335789203-aabd1fc54bc9?w=1200",
+    visualAlt: "Montre de luxe et bijoux dorés sur fond ébène",
+    benefits: ["Hero vidéo/image plein écran", "Mise en page éditoriale Vogue", "Effets survol or brossé & d'ébène"],
+    minPlanTier: "lifetime",
+    palette: { card: "border-amber-800/40 bg-[#0F0D0A]", label: "text-amber-400", title: "text-amber-100", text: "text-amber-200/80", button: "bg-amber-500 text-slate-950 font-bold hover:bg-amber-400", badge: "bg-amber-500/20 text-amber-300 border-amber-500/30" },
+  },
+  {
+    id: "nordicMinimal",
+    label: "Nordic Minimal — design scandinave & éco-luxe",
+    eyebrow: "Design scandinave & éco-luxe",
+    description: "Inspiré des thèmes Shopify épurés (Pipeline/Symmetry) : lignes pures, tons sauge, lin et terre cuite avec typographie suisse éditée.",
+    visual: "https://images.unsplash.com/photo-1513519245088-0e12902e5a38?w=1200",
+    visualAlt: "Intérieur scandinave minimaliste aux tons lin et céramique",
+    benefits: ["Grille asymétrique épurée", "Badges éco-responsables", "Aperçu textures & matières naturelles"],
+    minPlanTier: "lifetime",
+    palette: { card: "border-emerald-800/20 bg-[#F7F5F0]", label: "text-emerald-800", title: "text-slate-900", text: "text-slate-700", button: "bg-[#2D3E33] text-white hover:bg-[#1f2b23]", badge: "bg-emerald-100 text-emerald-900" },
+  },
+  {
+    id: "nebulasTech",
+    label: "Nebulas Tech — high-tech & cyber gaming",
+    eyebrow: "High-Tech & Cyber Gaming",
+    description: "Thème futuriste style Shopify 'Impulse Cyber' aux néons violets et bleu cyan, idéal pour les appareils électroniques, le gaming et les gadgets connectés.",
+    visual: "https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=1200",
+    visualAlt: "Setup high-tech futuriste illuminé aux néons cyans et violets",
+    benefits: ["Bannières cyberpunk dynamiques", "Fiches techniques intégrées", "Design sombre néon haute performance"],
+    minPlanTier: "lifetime",
+    palette: { card: "border-purple-500/30 bg-[#0B0914]", label: "text-purple-300", title: "text-white", text: "text-purple-100/80", button: "bg-purple-600 text-white font-bold hover:bg-purple-500", badge: "bg-cyan-500/20 text-cyan-300 border-cyan-500/30" },
+  },
+  {
+    id: "botanicaOrganic",
+    label: "Botanica Organic — slow cosmétique & soins bio",
+    eyebrow: "Slow Cosmétique & Soins Bio",
+    description: "Une atmosphère naturelle apaisante aux tons thé vert, eucalyptus et céramique, pensée pour la beauté bio, les huiles essentielles et le bien-être.",
+    visual: "https://images.unsplash.com/photo-1556228720-195a672e8a03?w=1200",
+    visualAlt: "Flacons de sérum et ingrédients botaniques bio",
+    benefits: ["Section ingrédients & vertus bio", "Blocs rituels & avis certifiés", "Palette botanique apaisante"],
+    minPlanTier: "pro",
+    palette: { card: "border-teal-800/20 bg-[#F2F6F3]", label: "text-teal-900", title: "text-slate-900", text: "text-slate-700", button: "bg-[#1E3F35] text-white hover:bg-[#142d25]", badge: "bg-teal-100 text-teal-900" },
+  },
+  {
+    id: "artisanBakery",
+    label: "Artisan Gourmand — boulangerie & confiserie",
+    eyebrow: "Pâtisserie & artisanat d'art",
+    description: "Inspiré des plus beaux thèmes gourmands Shopify : tons crème, chocolat, pistache et visuels chauds pour boulangeries, salons de thé et gourmandises d'exception.",
+    visual: "https://images.unsplash.com/photo-1509440159596-0249088772ff?w=1200",
+    visualAlt: "Pâtisseries artisanales dorées au four dans une boulangerie chaleureuse",
+    benefits: ["Grasse matinée & précommande", "Aperçu ingrédients & allergènes", "Design gourmand chaleureux"],
+    minPlanTier: "basic",
+    palette: { card: "border-amber-300 bg-[#FFFBF5]", label: "text-amber-800", title: "text-stone-900", text: "text-stone-700", button: "bg-[#78350F] text-white hover:bg-[#58270B]", badge: "bg-amber-100 text-amber-900 border-amber-300" },
+  },
+  {
+    id: "velvetApothecary",
+    label: "Velvet Apothecary — herboristerie & sérums bio",
+    eyebrow: "Soins d'apothicaire & sérums bio",
+    description: "Un univers mystique et raffiné aux reflets vert émeraude, verre fumé et cuivré, parfait pour les sérums naturels, cosmétiques et remèdes bio.",
+    visual: "https://images.unsplash.com/photo-1608248597260-a7d5705a62e0?w=1200",
+    visualAlt: "Flacons d'apothicaire en verre brun et sérums botaniques",
+    benefits: ["Compositions d'élixirs détaillées", "Guide d'application sérums", "Visualisation flaconnage de luxe"],
+    minPlanTier: "pro",
+    palette: { card: "border-emerald-900/40 bg-[#0B1712]", label: "text-emerald-400", title: "text-emerald-50", text: "text-emerald-200/80", button: "bg-emerald-600 text-slate-950 font-bold hover:bg-emerald-500", badge: "bg-emerald-500/20 text-emerald-300 border-emerald-500/30" },
+  },
+  {
+    id: "apexAthletics",
+    label: "Apex Athletics — fitness & vêtements d'élite",
+    eyebrow: "Sport haute performance",
+    description: "Thème d'action haute intensité aux tons carbone, néon orange et acier brossé. Conçu pour le streetwear sportif, les accessoires fitness et la nutrition sportive.",
+    visual: "https://images.unsplash.com/photo-1517838277536-f5f99be501cd?w=1200",
+    visualAlt: "Équipement de sport et vêtements de fitness haute performance",
+    benefits: ["Grille dynamique haute fréquence", "Guide des tailles interactif", "Design athlétique à fort impact"],
+    minPlanTier: "pro",
+    palette: { card: "border-orange-500/30 bg-[#0E0F12]", label: "text-orange-400", title: "text-white", text: "text-slate-300", button: "bg-orange-500 text-slate-950 font-bold hover:bg-orange-400", badge: "bg-orange-500/20 text-orange-300 border-orange-500/30" },
+  },
+  {
+    id: "auraJewelry",
+    label: "Aura Joaillerie — haute joaillerie & pièces uniques",
+    eyebrow: "Haute joaillerie & écrins d'or",
+    description: "L'excellence absolue des thèmes Shopify Premium VIP : onyx profond, or champagne et reflets diamantaires pour créateurs de bijoux, diamants et montres de collection.",
+    visual: "https://images.unsplash.com/photo-1535632066927-ab7c9ab60908?w=1200",
+    visualAlt: "Collier et bijoux en diamant sur présentoir en velours sombre",
+    benefits: ["Galerie zoom 360° & macro", "Certificats d'authenticité", "Écrin VIP & livraison sécurisée"],
+    minPlanTier: "lifetime",
+    palette: { card: "border-amber-500/30 bg-[#0A0A0E]", label: "text-amber-300", title: "text-white", text: "text-slate-200", button: "bg-gradient-to-r from-amber-400 to-yellow-500 text-slate-950 font-bold hover:opacity-90", badge: "bg-amber-400/20 text-amber-200 border-amber-400/30" },
+  },
+] as const;
+
+export const storefrontThemeLabels = Object.fromEntries(
+  storefrontThemeCatalog.map(theme => [theme.id, theme.label]),
+) as Record<StorefrontThemeId, string>;
+
+export const planTierLabels: Record<StorefrontThemePlanTier, string> = {
+  free: "Formule FREE",
+  basic: "Formule BASIC",
+  pro: "Formule PRO",
+  lifetime: "Formule VIP / Studio",
+};
+
+export function getThemeMinPlanTier(themeId: StorefrontThemeId): StorefrontThemePlanTier {
+  const found = storefrontThemeCatalog.find(theme => theme.id === themeId);
+  return found?.minPlanTier ?? "free";
+}

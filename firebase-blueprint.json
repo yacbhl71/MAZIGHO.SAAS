@@ -1,0 +1,529 @@
+{
+  "entities": {
+    "Store": {
+      "title": "Store",
+      "description": "Multi-tenant storefront configuration and identity in MAZIGHO.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "number",
+          "description": "Numeric store identifier."
+        },
+        "slug": {
+          "type": "string",
+          "description": "Unique URL-friendly store slug.",
+          "minLength": 2,
+          "maxLength": 80,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Public display name of the storefront.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "primaryDomain": {
+          "type": "string",
+          "description": "Primary domain configured for the storefront.",
+          "minLength": 3,
+          "maxLength": 160
+        },
+        "status": {
+          "type": "string",
+          "description": "Lifecycle status of the store.",
+          "enum": ["setup", "ready", "active", "suspended"]
+        },
+        "isPlatformStore": {
+          "type": "number",
+          "description": "1 if primary platform store, 0 otherwise."
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the store owner.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update timestamp."
+        }
+      },
+      "required": ["id", "slug", "displayName", "primaryDomain", "status", "isPlatformStore", "ownerId", "createdAt", "updatedAt"]
+    },
+    "Category": {
+      "title": "Category",
+      "description": "Product category scoped to a specific storefront.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "number",
+          "description": "Numeric category identifier."
+        },
+        "storeId": {
+          "type": "number",
+          "description": "Numeric store identifier owning this category."
+        },
+        "name": {
+          "type": "string",
+          "description": "Category display name.",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "slug": {
+          "type": "string",
+          "description": "URL-safe category slug.",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "description": {
+          "type": "string",
+          "description": "Category summary shown on catalog pages.",
+          "maxLength": 500
+        },
+        "imageUrl": {
+          "type": "string",
+          "description": "Category illustration path or URL.",
+          "maxLength": 500
+        },
+        "icon": {
+          "type": "string",
+          "description": "Category icon or emoji.",
+          "maxLength": 32
+        },
+        "catalogSection": {
+          "type": "string",
+          "description": "Catalog section grouping.",
+          "enum": ["standard", "creations"]
+        },
+        "displayOrder": {
+          "type": "number",
+          "description": "Sort order index."
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the owner who created the category.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update timestamp."
+        }
+      },
+      "required": ["id", "storeId", "name", "slug", "description", "imageUrl", "icon", "catalogSection", "displayOrder", "ownerId", "createdAt", "updatedAt"]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "Product item in a MAZIGHO storefront catalog.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "number",
+          "description": "Numeric product ID."
+        },
+        "storeId": {
+          "type": "number",
+          "description": "Store identifier."
+        },
+        "categoryId": {
+          "type": "number",
+          "description": "Category identifier."
+        },
+        "name": {
+          "type": "string",
+          "description": "Product title.",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "slug": {
+          "type": "string",
+          "description": "URL-safe product slug.",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "description": {
+          "type": "string",
+          "description": "Short product description.",
+          "minLength": 1,
+          "maxLength": 600
+        },
+        "longDescription": {
+          "type": "string",
+          "description": "Detailed product description.",
+          "maxLength": 4000
+        },
+        "price": {
+          "type": "number",
+          "description": "Price in cents."
+        },
+        "originalPrice": {
+          "type": "number",
+          "description": "Compare-at price in cents."
+        },
+        "stock": {
+          "type": "number",
+          "description": "Available inventory units."
+        },
+        "featured": {
+          "type": "number",
+          "description": "1 if featured on home page, 0 otherwise."
+        },
+        "newBadge": {
+          "type": "number",
+          "description": "1 if displaying New badge, 0 otherwise."
+        },
+        "status": {
+          "type": "string",
+          "description": "Publication status.",
+          "enum": ["active", "draft", "archived"]
+        },
+        "imageUrl": {
+          "type": "string",
+          "description": "Primary product image URL.",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the store owner.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update timestamp."
+        }
+      },
+      "required": ["id", "storeId", "categoryId", "name", "slug", "description", "longDescription", "price", "originalPrice", "stock", "featured", "newBadge", "status", "imageUrl", "ownerId", "createdAt", "updatedAt"]
+    },
+    "Review": {
+      "title": "Review",
+      "description": "Customer product review.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "number",
+          "description": "Numeric review ID."
+        },
+        "storeId": {
+          "type": "number",
+          "description": "Store ID."
+        },
+        "productId": {
+          "type": "number",
+          "description": "Reviewed product ID."
+        },
+        "authorId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the reviewer.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userName": {
+          "type": "string",
+          "description": "Public display name of the reviewer.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "rating": {
+          "type": "number",
+          "description": "Star rating between 1 and 5."
+        },
+        "comment": {
+          "type": "string",
+          "description": "Review text content.",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "verified": {
+          "type": "number",
+          "description": "1 if verified purchase, 0 otherwise."
+        },
+        "status": {
+          "type": "string",
+          "description": "Moderation status.",
+          "enum": ["approved", "pending", "rejected"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update timestamp."
+        }
+      },
+      "required": ["id", "storeId", "productId", "authorId", "userName", "rating", "comment", "verified", "status", "createdAt", "updatedAt"]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Non-PII public profile document for an authenticated user.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID matching the document ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "User display name.",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "role": {
+          "type": "string",
+          "description": "Application role (always user on self-registration).",
+          "enum": ["user", "admin"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Account creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Profile update timestamp."
+        }
+      },
+      "required": ["uid", "displayName", "role", "createdAt", "updatedAt"]
+    },
+    "UserPrivateInfo": {
+      "title": "UserPrivateInfo",
+      "description": "Strictly isolated PII subcollection document for a user.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the owner.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "User email address.",
+          "minLength": 3,
+          "maxLength": 254
+        },
+        "phone": {
+          "type": "string",
+          "description": "User phone number.",
+          "maxLength": 40
+        },
+        "address": {
+          "type": "string",
+          "description": "Shipping address.",
+          "maxLength": 400
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Update timestamp."
+        }
+      },
+      "required": ["uid", "email", "phone", "address", "createdAt", "updatedAt"]
+    },
+    "CartItem": {
+      "title": "CartItem",
+      "description": "Shopping cart line item stored under a user subcollection.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the cart owner.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "storeId": {
+          "type": "number",
+          "description": "Store ID."
+        },
+        "productId": {
+          "type": "number",
+          "description": "Product ID."
+        },
+        "quantity": {
+          "type": "number",
+          "description": "Quantity between 1 and 99."
+        },
+        "selectedVariantLabel": {
+          "type": "string",
+          "description": "Selected variant or option label.",
+          "maxLength": 120
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Update timestamp."
+        }
+      },
+      "required": ["userId", "storeId", "productId", "quantity", "selectedVariantLabel", "createdAt", "updatedAt"]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Customer order record.",
+      "type": "object",
+      "properties": {
+        "orderNumber": {
+          "type": "string",
+          "description": "Human-readable order reference.",
+          "minLength": 3,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the customer.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "storeId": {
+          "type": "number",
+          "description": "Numeric store identifier."
+        },
+        "totalAmount": {
+          "type": "number",
+          "description": "Total order amount in cents."
+        },
+        "shippingCost": {
+          "type": "number",
+          "description": "Shipping cost in cents."
+        },
+        "currency": {
+          "type": "string",
+          "description": "ISO currency code.",
+          "enum": ["CHF", "EUR", "USD", "GBP", "CAD"]
+        },
+        "status": {
+          "type": "string",
+          "description": "Order fulfillment status.",
+          "enum": ["pending", "confirmed", "processing", "shipped", "delivered", "cancelled"]
+        },
+        "paymentStatus": {
+          "type": "string",
+          "description": "Payment lifecycle state.",
+          "enum": ["pending", "paid", "failed", "refunded"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Order creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Order update timestamp."
+        }
+      },
+      "required": ["orderNumber", "userId", "storeId", "totalAmount", "shippingCost", "currency", "status", "paymentStatus", "createdAt", "updatedAt"]
+    },
+    "AdminRecord": {
+      "title": "AdminRecord",
+      "description": "Trusted administrator membership document.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Admin Firebase UID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Verified admin email.",
+          "minLength": 3,
+          "maxLength": 254
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when admin record was created."
+        }
+      },
+      "required": ["uid", "email", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/stores/{storeId}": {
+      "schema": "Store",
+      "description": "Multi-tenant stores catalog."
+    },
+    "/categories/{categoryId}": {
+      "schema": "Category",
+      "description": "Storefront categories."
+    },
+    "/products/{productId}": {
+      "schema": "Product",
+      "description": "Storefront products."
+    },
+    "/reviews/{reviewId}": {
+      "schema": "Review",
+      "description": "Customer product reviews."
+    },
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profile documents (non-PII)."
+    },
+    "/users/{userId}/private/{infoId}": {
+      "schema": "UserPrivateInfo",
+      "description": "Isolated PII user details."
+    },
+    "/users/{userId}/cartItems/{cartItemId}": {
+      "schema": "CartItem",
+      "description": "Authenticated user's shopping cart items."
+    },
+    "/orders/{orderId}": {
+      "schema": "Order",
+      "description": "Customer orders."
+    },
+    "/admins/{adminId}": {
+      "schema": "AdminRecord",
+      "description": "Platform administrator registry."
+    }
+  }
+}

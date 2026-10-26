@@ -1,0 +1,275 @@
+import { Link, useLocation } from "wouter";
+import { Button } from "@/components/ui/button";
+import { CampaignBar } from "@/components/CampaignBar";
+import { Menu, X, Heart, ShoppingCart, User, LayoutDashboard, MapPin, Sparkles } from "lucide-react";
+import { useEffect, useState } from "react";
+import { trpc } from "@/lib/trpc";
+import SearchBar from "./SearchBar";
+import { useCart } from "@/hooks/useCart";
+import { useFavorites } from "@/hooks/useFavorites";
+import { useAuth } from "@/_core/hooks/useAuth";
+import { deliveryCountries, useDeliveryCountry } from "@/contexts/DeliveryCountryContext";
+import { localeOptions, useLocale } from "@/contexts/LocaleContext";
+import { t } from "@/lib/i18n";
+import { getCreativeMenuCopy, getPublicCopy } from "@/lib/publicCopy";
+import { getLocalizedCountryName } from "@/lib/countryLocale";
+import { getLocalizedCategoryPresentation } from "@/lib/categoryPresentation";
+import { getLimitedStorefrontCopy } from "@/lib/limitedStorefrontCopy";
+import { useDesignProfile } from "@/hooks/useDesignProfile";
+import ThemeToggle from "./ThemeToggle";
+import { MAZIGHO_BOUTIQUE_LOGO } from "@/const";
+import { hasVisibleCountrySelector, hasVisibleLanguageSelector } from "@shared/storeMarketSettings";
+
+const countryFlags: Record<string, string> = { CH: "🇨🇭", FR: "🇫🇷", DE: "🇩🇪", IT: "🇮🇹", AT: "🇦🇹", BE: "🇧🇪", NL: "🇳🇱", ES: "🇪🇸", PT: "🇵🇹", MA: "🇲🇦", MX: "🇲🇽", DZ: "🇩🇿" };
+const languageFlags: Record<string, string> = { fr: "🇫🇷", de: "🇩🇪", it: "🇮🇹", en: "🇬🇧", es: "🇪🇸", nl: "🇳🇱", ar: "🌐" };
+
+export default function Header() {
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [openDropdown, setOpenDropdown] = useState<string | number | null>(null);
+  const [location] = useLocation();
+  
+  const { getItemCount } = useCart();
+  const { favorites } = useFavorites();
+  const cartCount = getItemCount();
+  const favoritesCount = favorites.length;
+  const { user, isAuthenticated } = useAuth();
+  const workspaceQuery = trpc.workspace.getCurrent.useQuery(undefined, { enabled: isAuthenticated });
+  const { countryCode, setCountryCode } = useDeliveryCountry();
+  const { locale, setLocale } = useLocale();
+  const categoriesQuery = trpc.categories.getAll.useQuery(locale);
+  const categories = (categoriesQuery.data || []).map(category => getLocalizedCategoryPresentation(locale, category));
+  const standardCategories = categories.filter(category => category.catalogSection !== "creations");
+  const creativeCategories = categories.filter(category => category.catalogSection === "creations");
+  // Le ruban est alimenté directement par les catégories de la boutique :
+  // ajouter une catégorie illustrée suffit pour ajouter sa carte ronde.
+  const marketCategoryRail = standardCategories;
+  const usesCompactMarketRail = marketCategoryRail.length <= 6;
+  const usesScrollableMarketRail = marketCategoryRail.length > 10;
+  const { profile, palette, isLoading: designProfileLoading } = useDesignProfile(locale);
+  const storeAvailability = trpc.storefront.getAvailability.useQuery(undefined, { retry: false, refetchOnWindowFocus: false });
+  const marketSettings = trpc.storefront.getMarketSettings.useQuery(undefined, { retry: false, refetchOnWindowFocus: false });
+  const isPlatformStore = Boolean(storeAvailability.data?.isPlatformStore);
+  const hasResolvedNonPlatformStore = Boolean(storeAvailability.data && !storeAvailability.data.isPlatformStore);
+  const commerceEnabled = storeAvailability.data?.commerceEnabled !== false;
+  const limitedShowcase = Boolean(storeAvailability.data?.publicStorefront && storeAvailability.data.commerceEnabled === false);
+  const customCreationRequests = trpc.customCreationRequests.getAvailability.useQuery(undefined, { retry: false, refetchOnWindowFocus: false });
+  const activeCountries = marketSettings.data ? deliveryCountries.filter(country => marketSettings.data.activeCountries.includes(country.code)) : deliveryCountries;
+  const activeLanguages = marketSettings.data ? localeOptions.filter(option => marketSettings.data.activeLanguages.includes(option.code)) : localeOptions;
+  // Do not briefly show fallback selectors before the boutique-specific market
+  // configuration arrives. A visible default followed by a hidden persisted
+  // setting is confusing, especially on tablets.
+  const showCountrySelector = !marketSettings.isLoading && (marketSettings.data ? hasVisibleCountrySelector(marketSettings.data) : true);
+  const showLanguageSelector = !marketSettings.isLoading && (marketSettings.data ? hasVisibleLanguageSelector(marketSettings.data) : true);
+  useEffect(() => {
+    if (marketSettings.data && !marketSettings.data.activeCountries.includes(countryCode)) {
+      setCountryCode(marketSettings.data.primaryCountry as typeof countryCode);
+    }
+  }, [countryCode, marketSettings.data, setCountryCode]);
+  useEffect(() => {
+    if (marketSettings.data && !marketSettings.data.activeLanguages.includes(locale)) {
+      setLocale(marketSettings.data.primaryLanguage as typeof locale);
+    }
+  }, [locale, marketSettings.data, setLocale]);
+  const brandName = profile.brandName?.trim() || "MAZIGHO";
+  const brandMessage = profile.brandMessage?.trim() || "";
+  const brandLogoUrl = profile.brandLogoUrl?.trim() || "";
+  const activeStoreMembership = workspaceQuery.data?.membership?.status === "active" ? workspaceQuery.data.membership : null;
+  const hasCurrentStoreManagementAccess = isPlatformStore
+    ? user?.role === "admin"
+    : ["owner", "manager", "catalog_editor", "order_operator"].includes(activeStoreMembership?.role || "");
+  const managementLabel = isPlatformStore ? "MAZIGHO Studio" : `Gérer ${brandName}`;
+  const headerLayout = profile.headerLayout || "inline";
+  const usesGalleryHeader = headerLayout === "gallery";
+  const usesMarketHeader = headerLayout === "market";
+  const usesGlamourHeader = headerLayout === "glamour";
+  const usesSplitHeader = headerLayout === "split" || usesGalleryHeader || usesMarketHeader || usesGlamourHeader;
+  const usesSearchFirstHeader = headerLayout === "searchFirst";
+  const copy = getPublicCopy(locale);
+  const creativeCopy = getCreativeMenuCopy(locale);
+  const savedNavigation = locale === "fr" ? undefined : profile.navigationTranslations[locale];
+  const navigation = locale === "fr" ? {
+    home: profile.navigationHome,
+    shop: profile.navigationShop,
+    categories: profile.navigationCategories,
+    creations: profile.navigationCreations,
+    contact: profile.navigationContact,
+  } : savedNavigation ? {
+    home: savedNavigation.navigationHome,
+    shop: savedNavigation.navigationShop,
+    categories: savedNavigation.navigationCategories,
+    creations: savedNavigation.navigationCreations,
+    contact: savedNavigation.navigationContact,
+  } : {
+    home: t(locale, "home"),
+    shop: t(locale, "shop"),
+    categories: t(locale, "categories"),
+    creations: t(locale, "creations"),
+    contact: t(locale, "contact"),
+  };
+
+  const navigationItems = (profile.navigationItems || []).filter(item => item.visible && (!limitedShowcase || !["new", "best-sellers", "promos"].includes(item.id)));
+  const getNavigationItem = (id: string) => navigationItems.find(item => item.id === id);
+  const navigationLabel = (id: string, fallback: string) => getNavigationItem(id)?.label?.trim() || fallback;
+  const isNavigationVisible = (id: string) => Boolean(getNavigationItem(id));
+  const customNavigationItems = navigationItems.filter(item => item.kind === "custom");
+  const rootNavigationItems = navigationItems.filter(item => !item.parentId);
+  const hasCustomCreationNavigation = navigationItems.some(item => item.href === "/demande-sur-mesure");
+  const showCustomCreationNavigation = customCreationRequests.data?.enabled === true && customCreationRequests.data.visibleInNavigation === true && !hasCustomCreationNavigation;
+  const customCreationNavigationLabel = customCreationRequests.data?.navigationLabel?.trim() || "Sur mesure";
+  const getCustomNavigationChildren = (parentId: string) => customNavigationItems.filter(item => item.parentId === parentId);
+  const isActive = (path: string) => location === path;
+  const announcementItems = (limitedShowcase
+    ? getLimitedStorefrontCopy(locale).announcements
+    : locale === "fr"
+    ? profile.announcementItems
+    : [t(locale, "topSelection"), t(locale, "topDelivery"), t(locale, "topQuote")]
+  ).map(item => item.trim()).filter(Boolean);
+  const fallbackNavigationLabels: Record<string, string> = { home: navigation.home, shop: navigation.shop, categories: navigation.categories, creations: navigation.creations, new: t(locale, "new"), "best-sellers": t(locale, "bestSellers"), promos: t(locale, "promotions"), contact: navigation.contact };
+  const desktopLinkClass = (href: string) => `cursor-pointer border-b-2 px-1.5 py-1.5 text-xs font-medium transition-colors ${isActive(href) ? "border-[var(--mazigho-accent)] text-[var(--mazigho-accent)]" : usesGlamourHeader ? "border-transparent text-white/75 hover:border-[var(--mazigho-accent)] hover:text-white" : "border-transparent text-slate-600 hover:border-[var(--mazigho-accent)] hover:text-[var(--mazigho-primary)]"}`;
+  const renderDesktopNavigationItem = (item: any) => {
+    const label = item.label?.trim() || fallbackNavigationLabels[item.id] || "Menu";
+    if (item.kind === "custom") {
+      const children = getCustomNavigationChildren(item.id);
+      if (!children.length) return <a key={item.id} href={item.href} className={desktopLinkClass(item.href)} target={/^https:\/\//i.test(item.href) ? "_blank" : undefined} rel={/^https:\/\//i.test(item.href) ? "noreferrer" : undefined}>{label}</a>;
+      const dropdownId = `custom-${item.id}`;
+      return <div key={item.id} className="relative group"><button type="button" aria-expanded={openDropdown === dropdownId} onClick={() => setOpenDropdown(openDropdown === dropdownId ? null : dropdownId)} className={`flex items-center gap-0.5 rounded px-1.5 py-1.5 text-xs font-medium transition-colors ${isActive(item.href) ? "border-b-2 border-[var(--mazigho-primary)] text-[var(--mazigho-primary)]" : "border-b-2 border-transparent text-slate-600 hover:border-[var(--mazigho-accent)] hover:text-[var(--mazigho-primary)]"}`}>{label}<span className={`text-xs transition-transform ${openDropdown === dropdownId ? "rotate-180" : ""}`}>▼</span></button><div className={`absolute left-0 top-full z-50 mt-2 w-56 rounded-xl border border-slate-200 bg-white p-2 shadow-xl transition-all duration-200 ${openDropdown === dropdownId ? "visible opacity-100" : "invisible opacity-0 group-hover:visible group-hover:opacity-100"}`}><a href={item.href} className="block rounded-lg px-3 py-2 text-xs font-bold text-slate-800 hover:bg-[var(--mazigho-soft)]">Voir {label} →</a><div className="my-1 border-t border-slate-100" />{children.map(child => <a key={child.id} href={child.href} className="block rounded-lg px-3 py-2 text-sm font-medium text-slate-700 hover:bg-[var(--mazigho-soft)] hover:text-[var(--mazigho-primary)]" target={/^https:\/\//i.test(child.href) ? "_blank" : undefined} rel={/^https:\/\//i.test(child.href) ? "noreferrer" : undefined}>{child.label?.trim() || "Sous-menu"}</a>)}</div></div>;
+    }
+    if (item.id === "categories") return <div key={item.id} className="relative group"><button type="button" aria-expanded={openDropdown === 1} onClick={() => setOpenDropdown(openDropdown === 1 ? null : 1)} className={`flex items-center gap-0.5 rounded px-1.5 py-1.5 text-xs font-medium transition-colors hover:bg-[var(--mazigho-soft)] hover:text-[var(--mazigho-accent)] ${usesGlamourHeader ? "text-white/75" : "text-slate-600"}`}>{label}<span className={`text-xs transition-transform ${openDropdown === 1 ? "rotate-180" : ""}`}>▼</span></button><div className={`absolute left-0 top-full z-50 mt-2 w-[420px] rounded-xl border border-slate-200 bg-white p-4 shadow-xl transition-all duration-200 ${openDropdown === 1 ? "visible opacity-100" : "invisible opacity-0 group-hover:visible group-hover:opacity-100"}`}><div className="mb-3 border-b border-gray-100 pb-3"><p className="text-xs font-bold uppercase tracking-[0.2em]" style={{ color: palette.primary }}>{t(locale, "exploreUniverse")}</p><p className="mt-1 text-xs text-gray-500">{copy.discovery.text}</p></div><div className="grid grid-cols-2 gap-2">{standardCategories.map(cat => <Link key={cat.id} href={`/categorie/${cat.slug}`}><div onClick={() => setOpenDropdown(null)} className="flex min-h-[58px] cursor-pointer items-center gap-3 rounded-lg px-3 py-2 transition-colors hover:bg-[var(--mazigho-soft)]"><span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--mazigho-soft)] text-lg">{(cat as any).icon || "✦"}</span><div className="min-w-0"><h3 className="truncate text-sm font-semibold text-gray-800">{cat.name}</h3><p className="mt-0.5 line-clamp-1 text-[11px] text-gray-500">{cat.description}</p></div></div></Link>)}</div><Link href="/boutique"><div onClick={() => setOpenDropdown(null)} className="mt-3 flex items-center justify-between border-t border-slate-100 pt-3 text-xs font-bold uppercase tracking-wider" style={{ color: palette.primary }}>{copy.discovery.allShop} <span>→</span></div></Link></div></div>;
+    if (item.id === "creations") return <div key={item.id} className="relative group"><button type="button" aria-expanded={openDropdown === 2} onClick={() => setOpenDropdown(openDropdown === 2 ? null : 2)} className={`flex items-center gap-0.5 rounded px-1.5 py-1.5 text-xs font-medium transition-colors ${isActive("/creations") ? "border-b-2 border-[var(--mazigho-primary)] text-[var(--mazigho-primary)]" : "border-b-2 border-transparent text-slate-600 hover:border-[var(--mazigho-accent)] hover:text-[var(--mazigho-primary)]"}`}>{label}<span className={`text-xs transition-transform ${openDropdown === 2 ? "rotate-180" : ""}`}>▼</span></button><div className={`absolute left-0 top-full z-50 mt-2 w-[380px] rounded-xl border border-slate-200 bg-white p-4 shadow-xl transition-all duration-200 ${openDropdown === 2 ? "visible opacity-100" : "invisible opacity-0 group-hover:visible group-hover:opacity-100"}`}><div className="mb-3 border-b border-rose-100 pb-3"><p className="text-xs font-bold uppercase tracking-[0.2em]" style={{ color: palette.primary }}>{creativeCopy.title}</p><p className="mt-1 text-xs text-gray-500">{creativeCopy.intro}</p></div><div className="grid grid-cols-2 gap-2">{creativeCategories.map(cat => <Link key={cat.id} href={`/categorie/${cat.slug}`}><div onClick={() => setOpenDropdown(null)} className="flex min-h-[54px] cursor-pointer items-center gap-3 rounded-lg px-3 py-2 transition-colors hover:bg-[var(--mazigho-soft)]"><span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--mazigho-soft)] text-lg">{(cat as any).icon || "✦"}</span><div className="min-w-0"><h3 className="truncate text-sm font-semibold text-gray-800">{cat.name}</h3><p className="mt-0.5 line-clamp-1 text-[11px] text-gray-500">{cat.description}</p></div></div></Link>)}</div><Link href="/creations"><div onClick={() => setOpenDropdown(null)} className="mt-3 flex items-center justify-between border-t border-slate-100 pt-3 text-xs font-bold uppercase tracking-wider" style={{ color: palette.primary }}>{creativeCopy.all} <span>→</span></div></Link></div></div>;
+    return <Link key={item.id} href={item.href}><span className={desktopLinkClass(item.href)}>{label}</span></Link>;
+  };
+  const renderMobileNavigationItem = (item: any) => {
+    const label = item.label?.trim() || fallbackNavigationLabels[item.id] || "Menu";
+    const close = () => setIsMenuOpen(false);
+    if (item.kind === "custom") {
+      const children = getCustomNavigationChildren(item.id);
+      if (!children.length) return <a key={item.id} href={item.href} onClick={close} className="flex min-h-11 items-center rounded px-4 py-2 text-sm font-medium text-slate-700 hover:bg-gray-100" target={/^https:\/\//i.test(item.href) ? "_blank" : undefined} rel={/^https:\/\//i.test(item.href) ? "noreferrer" : undefined}>{label}</a>;
+      const dropdownId = `custom-mobile-${item.id}`;
+      return <div key={item.id} className="space-y-1"><button type="button" onClick={() => setOpenDropdown(openDropdown === dropdownId ? null : dropdownId)} className="flex min-h-11 w-full items-center justify-between rounded px-4 py-2 text-left text-sm font-medium text-slate-700 hover:bg-gray-100">{label}<span className={`text-xs transition-transform ${openDropdown === dropdownId ? "rotate-180" : ""}`}>▼</span></button>{openDropdown === dropdownId && <div className="space-y-1 rounded bg-[var(--mazigho-soft)] p-2"><a href={item.href} onClick={close} className="flex min-h-11 items-center rounded px-4 py-2 text-xs font-bold text-slate-800 hover:bg-white">Voir {label}</a>{children.map(child => <a key={child.id} href={child.href} onClick={close} className="flex min-h-11 items-center rounded px-4 py-2 text-sm font-medium text-slate-700 hover:bg-white" target={/^https:\/\//i.test(child.href) ? "_blank" : undefined} rel={/^https:\/\//i.test(child.href) ? "noreferrer" : undefined}>{child.label?.trim() || "Sous-menu"}</a>)}</div>}</div>;
+    }
+    if (item.id === "categories") return <div key={item.id} className="space-y-1"><button onClick={() => setOpenDropdown(openDropdown === 0 ? null : 0)} className="flex min-h-11 w-full items-center justify-between rounded px-4 py-2 text-left text-sm font-medium hover:bg-gray-100">{label}<span className={`text-xs transition-transform ${openDropdown === 0 ? "rotate-180" : ""}`}>▼</span></button>{openDropdown === 0 && <div className="space-y-1 rounded bg-gray-50 p-2">{standardCategories.map(cat => <Link key={cat.id} href={`/categorie/${cat.slug}`}><div onClick={close} className="flex min-h-11 cursor-pointer items-center rounded px-4 py-2 text-xs hover:bg-white">{(cat as any).icon || "📦"} {cat.name}</div></Link>)}</div>}</div>;
+    if (item.id === "creations") return <div key={item.id} className="space-y-1"><Link href="/creations"><div onClick={close} className="flex min-h-11 cursor-pointer items-center rounded px-4 py-2 text-sm font-medium text-rose-700 hover:bg-rose-50">{label}</div></Link><button onClick={() => setOpenDropdown(openDropdown === 3 ? null : 3)} className="flex min-h-11 w-full items-center justify-between rounded px-4 py-2 text-left text-xs font-medium text-rose-700 hover:bg-rose-50">Explorer les collections<span className={`text-xs transition-transform ${openDropdown === 3 ? "rotate-180" : ""}`}>▼</span></button>{openDropdown === 3 && <div className="space-y-1 rounded bg-rose-50 p-2">{creativeCategories.map(cat => <Link key={cat.id} href={`/categorie/${cat.slug}`}><div onClick={() => { setOpenDropdown(null); close(); }} className="flex min-h-11 cursor-pointer items-center rounded px-4 py-2 text-xs hover:bg-white">{(cat as any).icon || "✦"} {cat.name}</div></Link>)}</div>}</div>;
+    return <Link key={item.id} href={item.href}><div onClick={close} className={`flex min-h-11 cursor-pointer items-center rounded px-4 py-2 text-sm ${item.id === "promos" ? "font-semibold text-orange-500 hover:bg-orange-50" : "text-slate-700 hover:bg-gray-100"}`}>{label}</div></Link>;
+  };
+
+  if (designProfileLoading || storeAvailability.isLoading) {
+    return <header className="sticky top-0 z-50 border-b border-slate-100 bg-white" aria-busy="true" aria-label="Chargement de l’identité de la boutique"><div className="h-9 animate-pulse bg-slate-200/80" /><div className="flex h-16 items-center gap-3 px-4 sm:px-6"><div className="h-9 w-32 animate-pulse rounded-lg bg-slate-100" /><div className="hidden h-6 flex-1 animate-pulse rounded bg-slate-100 xl:block" /><div className="ml-auto h-9 w-28 animate-pulse rounded-lg bg-slate-100" /></div></header>;
+  }
+
+  return (
+    <header className={`sticky top-0 z-50 shadow-sm ${usesGlamourHeader ? "bg-[#15141a] text-white shadow-black/30" : "bg-white"}`} data-storefront-header-layout={headerLayout}>
+      <CampaignBar />
+      {/* Top Banner */}
+      {profile.showAnnouncement && announcementItems.length > 0 && <div className="bg-gradient-to-r from-orange-500 to-orange-600 px-4 py-2 text-white" style={{ backgroundImage: "none", backgroundColor: palette.primary }}>
+        <div className="container mx-auto flex flex-wrap items-center justify-center gap-x-7 gap-y-1 text-xs font-medium md:text-sm">
+          {announcementItems.map((item, index) => <div key={`${item}-${index}`} className="contents"><span>{item}</span>{index < announcementItems.length - 1 && <span className="hidden h-1 w-1 rounded-full bg-white/70 sm:block" aria-hidden="true" />}</div>)}
+        </div>
+      </div>}
+
+      {/* Main Navigation */}
+      <nav className={`w-full px-3 py-2 sm:px-4 xl:px-6 ${usesGalleryHeader ? "xl:py-3" : "xl:py-2.5"}`}>
+        <div className={`relative flex items-center gap-2 xl:gap-3 ${usesGalleryHeader ? "xl:min-h-12 xl:justify-between" : ""}`}>
+          {/* Logo */}
+          <Link href="/" aria-label={`Accueil ${brandName}`}>
+            <div className={`group flex min-h-11 min-w-0 cursor-pointer items-center gap-2 border-r pr-2 xl:min-h-0 xl:pr-3 ${usesGlamourHeader ? "border-white/10" : "border-slate-200"} ${usesGalleryHeader ? "xl:absolute xl:left-1/2 xl:-translate-x-1/2 xl:border-r-0 xl:px-6 xl:pr-6" : ""} ${usesMarketHeader ? "xl:min-w-[13rem]" : ""}`}>
+              <>{brandLogoUrl ? <img src={brandLogoUrl} alt="" className="h-8 w-8 shrink-0 rounded-lg border border-orange-100 bg-white object-contain p-0.5" style={{ borderColor: palette.soft }} /> : isPlatformStore ? <img src={MAZIGHO_BOUTIQUE_LOGO} alt="" className="h-8 w-8 shrink-0 object-contain" /> : null}<span className="truncate whitespace-nowrap text-base font-semibold tracking-[0.11em] text-orange-700 transition-colors group-hover:text-orange-800 xl:text-lg" style={{ color: usesGlamourHeader ? "#ffffff" : palette.primary }}>{brandName}</span>{!brandLogoUrl && !isPlatformStore && <span className="h-2 w-2 shrink-0 rounded-full bg-orange-500" style={{ backgroundColor: palette.accent }} aria-hidden="true" />}{brandMessage ? <span className={`hidden max-w-44 truncate border-l pl-2 text-[10px] font-medium 2xl:inline ${usesGlamourHeader ? "border-white/10 text-white/50" : "border-orange-100 text-slate-500"}`} style={{ borderColor: usesGlamourHeader ? undefined : palette.soft }}>{brandMessage}</span> : null}</>
+            </div>
+          </Link>
+
+          {/* Desktop Menu */}
+          {!usesSplitHeader && <div className={`hidden flex-shrink-0 items-center gap-0 ${usesSearchFirstHeader ? "xl:ml-3" : "xl:ml-5"} xl:flex`}>
+            {rootNavigationItems.map(renderDesktopNavigationItem)}
+            {showCustomCreationNavigation && <Link href="/demande-sur-mesure" className={desktopLinkClass("/demande-sur-mesure")}><Sparkles className="mr-1 inline h-3.5 w-3.5" aria-hidden="true" />{customCreationNavigationLabel}</Link>}
+          </div>}
+
+          {/* Search Bar - Desktop */}
+          <div className={`hidden xl:block ${usesMarketHeader ? "min-w-0 flex-1 xl:ml-0 xl:max-w-[56rem]" : "flex-none xl:ml-auto"} ${usesGalleryHeader ? "w-40" : usesSearchFirstHeader ? "w-60" : usesSplitHeader ? "w-48" : "w-32"}`}>
+            <SearchBar />
+          </div>
+
+          {showCountrySelector && <div className="hidden items-center rounded-lg border border-slate-200 bg-white px-1.5 py-1 text-xs text-slate-600 sm:flex" title={`${t(locale, "deliveryCountry")} : ${getLocalizedCountryName(countryCode, locale)}`}><label className="sr-only" htmlFor="delivery-country">{t(locale, "deliveryCountry")}</label><select id="delivery-country" aria-label={`${t(locale, "deliveryCountry")} : ${getLocalizedCountryName(countryCode, locale)}`} value={countryCode} onChange={event => setCountryCode(event.target.value as typeof countryCode)} className="w-[4.65rem] bg-transparent font-semibold outline-none"><option disabled value="">🌐 --</option>{activeCountries.map(country => <option key={country.code} value={country.code}>{`${countryFlags[country.code] || "🌐"} ${country.code}`}</option>)}</select></div>}
+
+          {showLanguageSelector && <div className="relative hidden h-10 w-10 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white text-base shadow-sm transition-colors hover:border-[var(--mazigho-accent)] hover:bg-[var(--mazigho-soft)] sm:flex" title={`${t(locale, "displayLanguage")} : ${localeOptions.find(option => option.code === locale)?.nativeLabel || locale}`}><span aria-hidden="true">{languageFlags[locale] || "🌐"}</span><label className="sr-only" htmlFor="storefront-language">{t(locale, "displayLanguage")}</label><select id="storefront-language" aria-label={`${t(locale, "displayLanguage")} : ${localeOptions.find(option => option.code === locale)?.nativeLabel || locale}`} value={locale} onChange={event => setLocale(event.target.value as typeof locale)} className="absolute inset-0 h-full w-full cursor-pointer appearance-none opacity-0">{activeLanguages.map(option => <option key={option.code} value={option.code}>{`${languageFlags[option.code] || "🌐"} ${option.code.toUpperCase()}`}</option>)}</select></div>}
+
+          {/* Right Icons */}
+          <div className="ml-auto flex items-center gap-0.5 xl:ml-0">
+            <ThemeToggle />
+            <Link href="/favoris" aria-label="Favoris">
+              <div className="relative p-1.5 hover:bg-gray-100 rounded-lg transition-colors cursor-pointer hidden 2xl:block">
+                <Heart className="h-5 w-5 text-gray-700" />
+                {favoritesCount > 0 && (
+                  <span className="absolute top-0 right-0 flex h-5 w-5 items-center justify-center rounded-full text-xs font-bold text-white" style={{ backgroundColor: palette.accent }}>
+                    {favoritesCount}
+                  </span>
+                )}
+              </div>
+            </Link>
+            {commerceEnabled && <Link href="/panier" aria-label="Panier">
+              <div className="relative p-1.5 hover:bg-gray-100 rounded-lg transition-colors cursor-pointer">
+                <ShoppingCart className="h-5 w-5 text-gray-700" />
+                {cartCount > 0 && (
+                  <span className="absolute top-0 right-0 flex h-5 w-5 items-center justify-center rounded-full text-xs font-bold text-white" style={{ backgroundColor: palette.accent }}>
+                    {cartCount}
+                  </span>
+                )}
+              </div>
+            </Link>}
+            <Link href="/mon-compte" aria-label={t(locale, "account")} className="hidden min-h-11 items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium text-white shadow-sm transition-transform hover:scale-[1.02] sm:inline-flex xl:min-h-0" style={{ backgroundColor: palette.accent }}>
+              <User className="h-4 w-4" aria-hidden="true" />
+              <span>{t(locale, "account")}</span>
+            </Link>
+            {hasCurrentStoreManagementAccess && <Button asChild variant="outline" className="hidden 2xl:inline-flex gap-2 border-slate-300 bg-slate-900 text-sm text-white hover:bg-slate-800 hover:text-white"><Link href="/admin"><LayoutDashboard className="h-4 w-4" /><span>{managementLabel}</span></Link></Button>}
+
+            {/* Mobile Menu Button */}
+            <button
+              onClick={() => setIsMenuOpen(!isMenuOpen)}
+              className="min-h-11 min-w-11 xl:hidden hover:bg-gray-100 rounded-lg"
+              aria-label={t(locale, isMenuOpen ? "closeMenu" : "openMenu")}
+            >
+              {isMenuOpen ? (
+                <X className="h-6 w-6" />
+              ) : (
+                <Menu className="h-6 w-6" />
+              )}
+            </button>
+          </div>
+        </div>
+
+          {usesSplitHeader && <div className={`hidden border-t pt-2 xl:flex xl:items-center xl:gap-1 xl:pb-0.5 ${usesGlamourHeader ? "border-white/10" : "border-slate-100"} ${usesMarketHeader ? "xl:justify-between" : "xl:justify-center"}`}>
+          {usesMarketHeader && <span className="px-1 text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">Sélection en ligne</span>}
+          <div className="flex items-center gap-1">{rootNavigationItems.map(renderDesktopNavigationItem)}{showCustomCreationNavigation && <Link href="/demande-sur-mesure" className={desktopLinkClass("/demande-sur-mesure")}><Sparkles className="mr-1 inline h-3.5 w-3.5" aria-hidden="true" />{customCreationNavigationLabel}</Link>}</div>
+          {usesMarketHeader && <span className="px-1 text-[10px] font-bold uppercase tracking-[0.2em]" style={{ color: palette.accent }}>{limitedShowcase ? getLimitedStorefrontCopy(locale).shopEyebrow : "Nouveautés & offres"}</span>}
+        </div>}
+
+        {/* Mobile Search Bar */}
+        <div className="md:hidden mt-3">
+          <SearchBar />
+        </div>
+
+        {usesMarketHeader && marketCategoryRail.length > 0 && <div className="border-t border-slate-100 bg-white py-3.5" data-testid="market-category-rail" aria-label="Rayons de la boutique">
+          <div className={`container flex snap-x snap-mandatory gap-3 overflow-x-auto px-4 pb-1 [-ms-overflow-style:none] [scrollbar-width:none] sm:gap-4 ${usesScrollableMarketRail ? "xl:overflow-x-auto" : "xl:overflow-visible"} ${usesCompactMarketRail ? "xl:justify-center xl:gap-8" : "xl:justify-between xl:gap-5"} [&::-webkit-scrollbar]:hidden`}>
+            {marketCategoryRail.map(category => <Link key={category.id} href={`/categorie/${category.slug}`} className="group flex w-[5.15rem] shrink-0 snap-start flex-col items-center text-center focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--mazigho-accent)] focus-visible:ring-offset-2 sm:w-[5.45rem]">
+              <span className="relative block h-[4.55rem] w-[4.55rem] overflow-hidden rounded-full border-2 border-white bg-[var(--mazigho-soft)] shadow-sm ring-1 ring-slate-200 transition duration-200 group-hover:-translate-y-0.5 group-hover:ring-[var(--mazigho-accent)] sm:h-[4.8rem] sm:w-[4.8rem]">
+                {category.imageUrl ? <img src={category.imageUrl} alt="" width={140} height={140} loading="lazy" decoding="async" className="h-full w-full object-cover" /> : <span className="grid h-full w-full place-items-center text-xl" aria-hidden="true">✦</span>}
+              </span>
+              <span className="mt-1.5 line-clamp-2 text-[11px] font-semibold leading-4 text-slate-700 transition-colors group-hover:text-[var(--mazigho-primary)]">{category.name}</span>
+            </Link>)}
+          </div>
+        </div>}
+
+        {/* Mobile Menu */}
+        {isMenuOpen && (
+          <div className="xl:hidden mt-4 pb-4 border-t pt-4 space-y-2">
+            {showCountrySelector && <label className="mx-4 flex items-center gap-2 rounded-lg border px-3 py-2 text-sm text-slate-700 md:hidden" style={{ borderColor: palette.soft, backgroundColor: palette.soft }}><MapPin className="h-4 w-4" style={{ color: palette.primary }} /><span className="font-medium">{t(locale, "deliverTo")}</span><select value={countryCode} onChange={event => setCountryCode(event.target.value as typeof countryCode)} className="ml-auto bg-transparent font-semibold outline-none">{activeCountries.map(country => <option key={country.code} value={country.code}>{getLocalizedCountryName(country.code, locale)}</option>)}</select></label>}
+            {showLanguageSelector && <label className="mx-4 flex items-center gap-2 rounded-lg border px-3 py-2 text-sm text-slate-700 md:hidden" style={{ borderColor: palette.soft, backgroundColor: palette.soft }}><span className="text-base font-semibold" style={{ color: palette.primary }} aria-hidden="true">A</span><span className="font-medium">{t(locale, "language")}</span><select value={locale} onChange={event => setLocale(event.target.value as typeof locale)} className="ml-auto bg-transparent font-semibold outline-none">{activeLanguages.map(option => <option key={option.code} value={option.code}>{option.nativeLabel}</option>)}</select></label>}
+            {rootNavigationItems.map(renderMobileNavigationItem)}
+            {showCustomCreationNavigation && <Link href="/demande-sur-mesure"><div onClick={() => setIsMenuOpen(false)} className="flex min-h-11 cursor-pointer items-center gap-2 rounded px-4 py-2 text-sm font-semibold text-violet-800 hover:bg-violet-50"><Sparkles className="h-4 w-4" aria-hidden="true" /> {customCreationNavigationLabel}</div></Link>}
+
+            <Button asChild className="mt-4 min-h-11 w-full gap-2 text-sm text-white" style={{ backgroundColor: palette.accent }}><Link href="/mon-compte"><User className="h-4 w-4" /> {t(locale, "account")}</Link></Button>
+            {hasCurrentStoreManagementAccess && <Button asChild variant="outline" className="mt-2 w-full gap-2 border-slate-300 bg-slate-900 text-white hover:bg-slate-800 hover:text-white"><Link href="/admin"><LayoutDashboard className="h-4 w-4" /> {managementLabel}</Link></Button>}
+          </div>
+        )}
+      </nav>
+    </header>
+  );
+}

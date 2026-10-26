@@ -1,0 +1,5 @@
+{
+  "summary":  "Spécification fonctionnelle et architecturale du Hub Fournisseurs multi-tenant (CJdropshipping, AliExpress, Printful, Printify) pour MAZIGHO, incluant l'isolation stricte par boutique, la gestion des droits via Studio, le pipeline de sourcing et le calculateur de marges.",
+  "updatedAt":  "2026-10-25T03:29:34.532588184Z",
+  "userFacing":  true
+}

@@ -1,0 +1,1185 @@
+import { useState, useEffect, useMemo, useRef } from "react";
+import { trpc } from "@/lib/trpc";
+import DashboardLayout from "@/components/DashboardLayout";
+import { Button } from "@/components/ui/button";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Plus, Edit, Trash, Package, Import, Loader2, Image as ImageIcon, X, ChevronDown, ChevronUp, Upload, ExternalLink, ShieldCheck, Percent, Languages, Search, RotateCcw, SlidersHorizontal, Eye, Archive, CheckCircle2, CalendarDays, ListChecks, Save, Download } from "lucide-react";
+import { Link } from "wouter";
+import { Badge } from "@/components/ui/badge";
+import { formatPrice } from "@/lib/currency";
+import { Skeleton } from "@/components/ui/skeleton";
+import { toast } from "sonner";
+import { downloadDraftCsv } from "@/lib/draftCsvExport";
+import { parseDraftCsvImport } from "@/lib/draftCsvImport";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+
+const automaticTranslationLocales = ["de", "it", "en", "es", "nl", "ar"] as const;
+const deliveryCountries = [
+  { code: "CH", label: "Suisse" }, { code: "FR", label: "France" }, { code: "DE", label: "Allemagne" },
+  { code: "IT", label: "Italie" }, { code: "AT", label: "Autriche" }, { code: "BE", label: "Belgique" },
+  { code: "NL", label: "Pays-Bas" }, { code: "ES", label: "Espagne" },
+] as const;
+type DeliveryProfileDraft = { countryCode: string; supplierVariantId: string; supplierShippingCost: string; customerShippingCost: string; deliveryMethod: string; minDeliveryDays: string; maxDeliveryDays: string };
+const makeDeliveryProfile = (countryCode: string): DeliveryProfileDraft => ({ countryCode, supplierVariantId: "test", supplierShippingCost: "0,00", customerShippingCost: "0,00", deliveryMethod: "Test Stripe", minDeliveryDays: "3", maxDeliveryDays: "7" });
+
+const extractAliExpressProductId = (url: string): string | null => {
+  if (!url) return null;
+  const match = url.match(/\/item\/(\d{6,})\.html/) || url.match(/[?&]productId=(\d{6,})/) || url.match(/(\d{10,})/);
+  return match ? match[1] : null;
+};
+const parseChfToCents = (raw: string): number | null => {
+  const value = raw.trim().replace(/\s/g, "");
+  if (!value) return 0;
+  const normalized = value.includes(",") && value.includes(".") ? value.replace(/\./g, "").replace(",", ".") : value.replace(",", ".");
+  const amount = Number(normalized);
+  return Number.isFinite(amount) && amount >= 0 ? Math.round(amount * 100) : null;
+};
+const centsToChfInput = (cents: unknown): string => {
+  const amount = Number(cents || 0) / 100;
+  return amount.toFixed(2).replace(".", ",");
+};
+const formatProductDate = (value: unknown) => {
+  const date = value instanceof Date ? value : new Date(String(value));
+  return Number.isNaN(date.getTime()) ? "—" : new Intl.DateTimeFormat("fr-CH", { dateStyle: "medium", timeStyle: "short" }).format(date);
+};
+
+const getCjVariantReview = (product: { supplier?: string | null; supplierProductId?: string | null; lastSyncedAt?: unknown }) => {
+  if (product.supplier !== "CJdropshipping") return null;
+  if (!product.supplierProductId) return { label: "Référence manquante", tone: "danger" as const, detail: "Ce produit CJ ne peut pas être réactualisé tant que sa référence interne fournisseur est absente." };
+  const lastSyncedAt = product.lastSyncedAt instanceof Date ? product.lastSyncedAt : new Date(String(product.lastSyncedAt || ""));
+  if (Number.isNaN(lastSyncedAt.getTime())) return { label: "À vérifier", tone: "warning" as const, detail: "Les variantes CJ n’ont pas encore été réactualisées depuis l’ajout de ce repère." };
+  const ageInDays = (Date.now() - lastSyncedAt.getTime()) / 86_400_000;
+  if (ageInDays > 30) return { label: "À revalider", tone: "warning" as const, detail: `Dernière réactualisation : ${formatProductDate(lastSyncedAt)}. Les variantes fournisseur peuvent avoir évolué.` };
+  return { label: "Révisé", tone: "ready" as const, detail: `Dernière réactualisation : ${formatProductDate(lastSyncedAt)}.` };
+};
+
+export default function AdminProducts() {
+  const [isOpen, setIsOpen] = useState(false);
+  const [editingProduct, setEditingProduct] = useState<any>(null);
+  
+  // Form state
+  const [name, setName] = useState("");
+  const [slug, setSlug] = useState("");
+  const [price, setPrice] = useState("");
+  const [originalPrice, setOriginalPrice] = useState("");
+  const [discountPercent, setDiscountPercent] = useState("");
+  const [stock, setStock] = useState("");
+  const [categoryId, setCategoryId] = useState("");
+  const [categoryIds, setCategoryIds] = useState<number[]>([]);
+  const [deliveryProfiles, setDeliveryProfiles] = useState<DeliveryProfileDraft[]>([]);
+  const [description, setDescription] = useState("");
+  const [longDescription, setLongDescription] = useState("");
+  const [status, setStatus] = useState("draft");
+  const [images, setImages] = useState<string[]>([]);
+  const [newImageUrl, setNewImageUrl] = useState("");
+  const [options, setOptions] = useState<{name: string, values: string[]}[]>([]);
+  const [newOptionName, setNewOptionName] = useState("");
+  const [newOptionValues, setNewOptionValues] = useState("");
+  
+  // Supplier info (Internal only)
+  const [supplier, setSupplier] = useState("");
+  const [supplierUrl, setSupplierUrl] = useState("");
+  const [supplierProductId, setSupplierProductId] = useState("");
+  const [supplierPrice, setSupplierPrice] = useState("");
+  const [variantMappings, setVariantMappings] = useState<Record<string, string>>({});
+  const [aliImportOpen, setAliImportOpen] = useState(false);
+  const [aliImportUrls, setAliImportUrls] = useState("");
+  const [aliImportCategoryId, setAliImportCategoryId] = useState("");
+
+  // Customer-facing translations remain separate from the French source form above.
+  const [translationLocale, setTranslationLocale] = useState<"de" | "it" | "en" | "es" | "nl" | "ar">("de");
+  const [translationName, setTranslationName] = useState("");
+  const [translationDescription, setTranslationDescription] = useState("");
+  const [translationLongDescription, setTranslationLongDescription] = useState("");
+  const [translationOptions, setTranslationOptions] = useState("");
+
+  const productsQuery = trpc.admin.products.getAll.useQuery();
+  const odooStatusQuery = trpc.admin.integrations.odoo.status.useQuery();
+  const syncOdooCatalog = trpc.admin.integrations.odoo.syncCatalog.useMutation({
+    onSuccess: (result) => {
+      if (result.failed === 0) {
+        toast.success(`Catalogue Odoo synchronisé : ${result.created} créé(s), ${result.updated} mis à jour.`);
+      } else {
+        toast.warning(`Synchronisation terminée : ${result.created} créé(s), ${result.updated} mis à jour, ${result.failed} échec(s).`);
+      }
+    },
+    onError: (error) => toast.error(error.message || "La synchronisation Odoo a échoué."),
+  });
+  const products = productsQuery.data;
+  const isLoading = productsQuery.isLoading;
+  const error = productsQuery.error;
+  const refetch = productsQuery.refetch;
+  const { data: categories } = trpc.categories.getAll.useQuery("fr");
+  const translationsQuery = trpc.admin.products.getTranslations.useQuery(editingProduct?.id || 1, {
+    enabled: Boolean(editingProduct?.id),
+  });
+  const translations = translationsQuery.data || [];
+  const translationOverviewQuery = trpc.admin.products.getTranslationOverview.useQuery();
+  const translationOverviewByProductId = new Map((translationOverviewQuery.data || []).map((product: any) => [product.id, product]));
+  const [translatingProductId, setTranslatingProductId] = useState<number | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "draft" | "archived">("all");
+  const [cjReviewFilter, setCjReviewFilter] = useState<"all" | "needs_review" | "reviewed" | "not_cj">("all");
+  const [translationFilter, setTranslationFilter] = useState<"all" | "ready" | "attention">("all");
+  const [stockFilter, setStockFilter] = useState<"all" | "available" | "low" | "empty">("all");
+  const [categoryFilter, setCategoryFilter] = useState<string>("all");
+  const [sortOrder, setSortOrder] = useState<"created_desc" | "created_asc" | "updated_desc" | "name_asc">("created_desc");
+  const [selectedProductIds, setSelectedProductIds] = useState<number[]>([]);
+  const [bulkEditOpen, setBulkEditOpen] = useState(false);
+  const [bulkCategoryId, setBulkCategoryId] = useState("__keep__");
+  const [bulkPrice, setBulkPrice] = useState("");
+  const [bulkStock, setBulkStock] = useState("");
+  const draftCsvFileInputRef = useRef<HTMLInputElement>(null);
+
+  const translationState = (productId: number) => {
+    const overview = translationOverviewByProductId.get(productId) as any;
+    const ready = overview?.translations?.filter((translation: any) => translation.status === "ready").length || 0;
+    const stale = overview?.translations?.some((translation: any) => translation.status === "stale");
+    return { ready, stale, complete: ready === 6 && !stale };
+  };
+
+  // Order-independent key for an option combination (e.g. { Couleur: "Bleu", Taille: "M" }).
+  const comboKey = (combo: Record<string, string>) => Object.keys(combo).sort().map((k) => `${k}=${combo[k]}`).join("|");
+  const optionCombinations = useMemo(() => {
+    if (!options.length || options.some((g) => !g.values?.length)) return [] as Record<string, string>[];
+    let combos: Record<string, string>[] = [{}];
+    for (const group of options) {
+      const next: Record<string, string>[] = [];
+      for (const combo of combos) for (const val of group.values) next.push({ ...combo, [group.name]: val });
+      combos = next;
+      if (combos.length > 60) return combos.slice(0, 60);
+    }
+    return combos;
+  }, [options]);
+
+  const filteredProducts = useMemo(() => {
+    const normalizedQuery = searchQuery.trim().toLowerCase();
+    return (products || []).filter((product: any) => {
+      const translation = translationState(product.id);
+      const matchesQuery = !normalizedQuery || [product.name, product.slug, product.categoryName, product.supplier]
+        .filter(Boolean)
+        .some((value: string) => value.toLowerCase().includes(normalizedQuery));
+      const matchesStatus = statusFilter === "all" || product.status === statusFilter;
+      const matchesTranslation = translationFilter === "all" || (translationFilter === "ready" ? translation.complete : !translation.complete);
+      const matchesStock = stockFilter === "all"
+        || (stockFilter === "available" && product.stock > 5)
+        || (stockFilter === "low" && product.stock > 0 && product.stock <= 5)
+        || (stockFilter === "empty" && product.stock <= 0);
+      const cjReview = getCjVariantReview(product);
+      const matchesCjReview = cjReviewFilter === "all"
+        || (cjReviewFilter === "needs_review" && Boolean(cjReview && cjReview.tone !== "ready"))
+        || (cjReviewFilter === "reviewed" && cjReview?.tone === "ready")
+        || (cjReviewFilter === "not_cj" && !cjReview);
+      const matchesCategory = categoryFilter === "all"
+        || (Array.isArray(product.categoryIds) && product.categoryIds.length
+          ? product.categoryIds.map(String).includes(categoryFilter)
+          : String(product.categoryId) === categoryFilter);
+      return matchesQuery && matchesStatus && matchesCjReview && matchesTranslation && matchesStock && matchesCategory;
+    }).sort((a: any, b: any) => {
+      if (sortOrder === "name_asc") return (a.name || "").localeCompare(b.name || "", "fr");
+      const left = new Date(String(sortOrder === "updated_desc" ? a.updatedAt : a.createdAt)).getTime();
+      const right = new Date(String(sortOrder === "updated_desc" ? b.updatedAt : b.createdAt)).getTime();
+      return sortOrder === "created_asc" ? left - right : right - left;
+    });
+  }, [products, searchQuery, statusFilter, cjReviewFilter, translationFilter, stockFilter, categoryFilter, sortOrder, translationOverviewQuery.data]);
+
+  const clearFilters = () => {
+    setSearchQuery("");
+    setStatusFilter("all");
+    setCjReviewFilter("all");
+    setTranslationFilter("all");
+    setStockFilter("all");
+    setCategoryFilter("all");
+    setSortOrder("created_desc");
+  };
+
+  const translateProduct = trpc.admin.products.translate.useMutation({
+    onMutate: (input) => setTranslatingProductId(input.productId),
+    onSuccess: () => {
+      toast.success("Traductions générées. Vous pouvez les vérifier et les corriger ci-dessous.");
+      translationsQuery.refetch();
+      translationOverviewQuery.refetch();
+    },
+    onError: (error) => toast.error(`Traduction indisponible : ${error.message}`),
+    onSettled: () => setTranslatingProductId(null),
+  });
+
+  const saveTranslation = trpc.admin.products.saveTranslation.useMutation({
+    onSuccess: () => {
+      toast.success("Traduction enregistrée.");
+      translationsQuery.refetch();
+    },
+    onError: (error) => toast.error(`Impossible d’enregistrer : ${error.message}`),
+  });
+
+  const createProduct = trpc.admin.products.create.useMutation({
+    onSuccess: (createdProduct) => {
+      // The translation call is explicitly tied to the administrator saving the French source.
+      translateProduct.mutate({ productId: createdProduct.id, locales: [...automaticTranslationLocales] });
+      toast.success("Produit créé. Les versions clients sont en cours de traduction.");
+      setIsOpen(false);
+      resetForm();
+      refetch();
+    },
+    onError: (error) => toast.error(`Erreur : ${error.message}`),
+  });
+
+  const bulkImportAliExpress = trpc.admin.products.bulkImportAliExpress.useMutation({
+    onSuccess: (res: any) => {
+      toast.success(`${res.created} brouillon(s) AliExpress créé(s)${res.skipped?.length ? `, ${res.skipped.length} ignoré(s)` : ""}.`);
+      setAliImportOpen(false);
+      setAliImportUrls("");
+      refetch();
+    },
+    onError: (error) => toast.error(`Erreur : ${error.message}`),
+  });
+
+  const updateProduct = trpc.admin.products.update.useMutation({
+    onSuccess: (_result, variables) => {
+      // Rebuild all customer versions after a source save; the existing versions are marked stale server-side first.
+      translateProduct.mutate({ productId: variables.id, locales: [...automaticTranslationLocales] });
+      toast.success("Produit enregistré. Les versions clients sont en cours de mise à jour.");
+      setIsOpen(false);
+      resetForm();
+      refetch();
+    },
+    onError: (error) => toast.error(`Erreur : ${error.message}`),
+  });
+
+  const deleteProduct = trpc.admin.products.delete.useMutation({
+    onSuccess: () => {
+      toast.success("Produit supprimé");
+      refetch();
+    },
+    onError: (error) => toast.error(`Erreur : ${error.message}`),
+  });
+  const clearBulkSelection = () => setSelectedProductIds([]);
+  const bulkArchiveProducts = trpc.admin.products.bulkArchive.useMutation({
+    onSuccess: (result) => { toast.success(`${result.updated} produit(s) archivé(s).`); clearBulkSelection(); refetch(); },
+    onError: (error) => toast.error(error.message),
+  });
+  const bulkActivateProducts = trpc.admin.products.bulkActivate.useMutation({
+    onSuccess: (result) => { toast.success(`${result.updated} produit(s) activé(s) ou réactivé(s).`); clearBulkSelection(); refetch(); },
+    onError: (error) => toast.error(error.message),
+  });
+  const bulkUpdateProducts = trpc.admin.products.bulkUpdate.useMutation({
+    onSuccess: (result) => { toast.success(`${result.updated} produit(s) modifié(s).`); setBulkEditOpen(false); setBulkCategoryId("__keep__"); setBulkPrice(""); setBulkStock(""); clearBulkSelection(); refetch(); },
+    onError: (error) => toast.error(error.message),
+  });
+  const bulkDeleteArchivedProducts = trpc.admin.products.bulkDeleteArchived.useMutation({
+    onSuccess: (result) => { toast.success(`${result.deleted} produit(s) archivé(s) supprimé(s) définitivement.`); clearBulkSelection(); refetch(); },
+    onError: (error) => toast.error(error.message),
+  });
+  const syncCjVariants = trpc.admin.products.syncCjDraftVariants.useMutation({
+    onSuccess: (result) => {
+      const ignored = result.noVariants + result.skipped + result.failedIds.length;
+      if (ignored > 0) toast.warning(`${result.updated} produit(s) CJ réactualisé(s) ; ${ignored} ignoré(s).`);
+      else toast.success(`${result.updated} produit(s) CJ réactualisé(s) avec leurs options disponibles.`);
+      clearBulkSelection();
+      refetch();
+      translationOverviewQuery.refetch();
+    },
+    onError: (error) => toast.error(error.message || "La révalidation des variantes CJ a échoué."),
+  });
+  const importDraftCsv = trpc.admin.products.importDraftCsv.useMutation({
+    onSuccess: (result) => {
+      const ignored = result.missing + result.skippedNotDraft + result.skippedEmpty;
+      if (ignored > 0) {
+        toast.warning(`${result.updated} brouillon(s) mis à jour ; ${ignored} ligne(s) ignorée(s). Consultez les détails ci-dessous.`);
+      } else {
+        toast.success(`${result.updated} brouillon(s) mis à jour avec succès.`);
+      }
+      refetch();
+      translationOverviewQuery.refetch();
+    },
+    onError: (error) => toast.error(error.message || "L’import CSV a échoué."),
+  });
+
+  const resetForm = () => {
+    setName("");
+    setSlug("");
+    setPrice("");
+    setOriginalPrice("");
+    setDiscountPercent("");
+    setStock("");
+    setCategoryId("");
+    setCategoryIds([]);
+    setDeliveryProfiles([]);
+    setDescription("");
+    setLongDescription("");
+    setStatus("draft");
+    setImages([]);
+    setNewImageUrl("");
+    setOptions([]);
+    setSupplier("");
+    setSupplierUrl("");
+    setSupplierProductId("");
+    setSupplierPrice("");
+    setVariantMappings({});
+    setTranslationLocale("de");
+    setTranslationName("");
+    setTranslationDescription("");
+    setTranslationLongDescription("");
+    setTranslationOptions("");
+    setEditingProduct(null);
+  };
+
+  const handleEdit = (product: any) => {
+    setEditingProduct(product);
+    setName(product.name);
+    setSlug(product.slug);
+    setPrice(centsToChfInput(product.price));
+    setOriginalPrice(product.originalPrice ? centsToChfInput(product.originalPrice) : "");
+    
+    // Calculate initial discount percent if prices exist
+    if (product.originalPrice && product.price && product.originalPrice > product.price) {
+      const percent = Math.round(((product.originalPrice - product.price) / product.originalPrice) * 100);
+      setDiscountPercent(String(percent));
+    } else {
+      setDiscountPercent("");
+    }
+
+    setStock(String(product.stock));
+    setCategoryId(String(product.categoryId));
+    setCategoryIds(product.categoryIds?.length ? product.categoryIds : [product.categoryId]);
+    setDeliveryProfiles((product.deliveryProfiles || []).map((profile: any) => ({ countryCode: profile.countryCode, supplierVariantId: profile.supplierVariantId || "", supplierShippingCost: centsToChfInput(profile.supplierShippingCost), customerShippingCost: centsToChfInput(profile.customerShippingCost), deliveryMethod: profile.deliveryMethod || "", minDeliveryDays: String(profile.minDeliveryDays ?? ""), maxDeliveryDays: String(profile.maxDeliveryDays ?? "") })));
+    setDescription(product.description || "");
+    setLongDescription(product.longDescription || "");
+    setStatus(product.status);
+    setImages(product.images?.map((img: any) => img.imageUrl) || []);
+    setSupplier(product.supplier || "");
+    setSupplierUrl(product.supplierUrl || "");
+    setSupplierProductId(product.supplierProductId || "");
+    setSupplierPrice(product.supplierPrice ? centsToChfInput(product.supplierPrice) : "");
+    try {
+      const parsedMap = product.supplierVariantMappings ? JSON.parse(product.supplierVariantMappings) : null;
+      const map: Record<string, string> = {};
+      if (parsedMap && Array.isArray(parsedMap.mappings)) {
+        for (const m of parsedMap.mappings) {
+          if (m && m.selectedOptions && typeof m.supplierVariantId === "string") map[comboKey(m.selectedOptions)] = m.supplierVariantId;
+        }
+      }
+      setVariantMappings(map);
+    } catch {
+      setVariantMappings({});
+    }
+    
+    try {
+      const parsedOptions = typeof product.options === 'string' ? JSON.parse(product.options) : (product.options || []);
+      setOptions(parsedOptions);
+    } catch (e) {
+      setOptions([]);
+    }
+    
+    setIsOpen(true);
+  };
+
+  useEffect(() => {
+    const current = translations.find(translation => translation.locale === translationLocale);
+    setTranslationName(current?.name || "");
+    setTranslationDescription(current?.description || "");
+    setTranslationLongDescription(current?.longDescription || "");
+    setTranslationOptions(current?.options || "");
+  }, [translationLocale, translationsQuery.data]);
+
+  const handleDiscountChange = (value: string) => {
+    setDiscountPercent(value);
+    const finalCents = parseChfToCents(price);
+    const discount = Number.parseInt(value, 10);
+    if (finalCents != null && finalCents > 0 && Number.isFinite(discount) && discount > 0 && discount < 100) {
+      const calculatedOriginal = Math.round(finalCents / (1 - discount / 100));
+      setOriginalPrice(centsToChfInput(calculatedOriginal));
+    } else if (!value.trim()) {
+      setOriginalPrice("");
+    }
+  };
+
+  const handleOriginalPriceChange = (value: string) => {
+    setOriginalPrice(value);
+    const finalCents = parseChfToCents(price);
+    const originalCents = parseChfToCents(value);
+    if (finalCents != null && finalCents > 0 && originalCents != null && originalCents > finalCents) {
+      const calculatedDiscount = Math.round(((originalCents - finalCents) / originalCents) * 100);
+      setDiscountPercent(String(calculatedDiscount));
+    } else if (!value.trim()) {
+      setDiscountPercent("");
+    }
+  };
+
+  const addImage = () => {
+    if (newImageUrl.trim()) {
+      setImages([...images, newImageUrl.trim()]);
+      setNewImageUrl("");
+    }
+  };
+
+  const removeImage = (index: number) => {
+    setImages(images.filter((_, i) => i !== index));
+  };
+
+  const setMainImage = (index: number) => {
+    if (index === 0) return;
+    setImages([images[index], ...images.filter((_, i) => i !== index)]);
+    toast.success("Image principale définie");
+  };
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 2 * 1024 * 1024) {
+      toast.error("Le fichier est trop volumineux (max 2MB)");
+      return;
+    }
+
+    toast.info("Téléversement de l'image...");
+    
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const base64 = event.target?.result as string;
+      setImages([...images, base64]);
+      toast.success("Image ajoutée avec succès !");
+    };
+    reader.onerror = () => toast.error("Erreur lors de la lecture du fichier");
+    reader.readAsDataURL(file);
+  };
+
+  const addOption = () => {
+    if (newOptionName.trim() && newOptionValues.trim()) {
+      const values = newOptionValues.split(",").map(v => v.trim()).filter(Boolean);
+      setOptions([...options, { name: newOptionName.trim(), values }]);
+      setNewOptionName("");
+      setNewOptionValues("");
+      toast.success("Option ajoutée");
+    }
+  };
+
+  const removeOption = (index: number) => {
+    setOptions(options.filter((_, i) => i !== index));
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    const parsedPrice = parseChfToCents(price);
+    const parsedOriginalPrice = originalPrice ? parseChfToCents(originalPrice) : undefined;
+    const parsedStock = parseInt(stock);
+    const parsedCategoryId = parseInt(categoryId);
+    const selectedCategoryIds = categoryIds.length > 0 ? categoryIds : (Number.isNaN(parsedCategoryId) ? [] : [parsedCategoryId]);
+    const parsedSupplierPrice = supplierPrice ? parseChfToCents(supplierPrice) : undefined;
+    const variantMappingList = optionCombinations
+      .map((combo) => ({ selectedOptions: combo, supplierVariantId: (variantMappings[comboKey(combo)] || "").trim() }))
+      .filter((m) => m.supplierVariantId);
+    const supplierVariantMappingsJson = variantMappingList.length ? JSON.stringify({ options, mappings: variantMappingList }) : undefined;
+
+    if (!name || !slug || parsedPrice == null || parsedPrice <= 0 || parsedOriginalPrice === null || parsedSupplierPrice === null || isNaN(parsedStock) || selectedCategoryIds.length === 0) {
+      toast.error("Veuillez remplir tous les champs obligatoires avec des valeurs valides");
+      return;
+    }
+
+    const payload = {
+      name,
+      slug,
+      price: parsedPrice,
+      originalPrice: parsedOriginalPrice,
+      stock: parsedStock,
+      categoryId: selectedCategoryIds[0],
+      categoryIds: selectedCategoryIds,
+      deliveryProfiles: deliveryProfiles.map(profile => ({ countryCode: profile.countryCode as any, supplierVariantId: profile.supplierVariantId || null, supplierShippingCost: parseChfToCents(profile.supplierShippingCost) ?? 0, customerShippingCost: parseChfToCents(profile.customerShippingCost) ?? 0, deliveryMethod: profile.deliveryMethod || null, minDeliveryDays: profile.minDeliveryDays === "" ? null : parseInt(profile.minDeliveryDays), maxDeliveryDays: profile.maxDeliveryDays === "" ? null : parseInt(profile.maxDeliveryDays) })),
+      description: description || undefined,
+      longDescription: longDescription || undefined,
+      status: status as any,
+      images: images.length > 0 ? images : undefined,
+      options: options.length > 0 ? JSON.stringify(options) : undefined,
+      featured: editingProduct ? undefined : 0,
+      supplier: supplier || undefined,
+      supplierUrl: supplierUrl || undefined,
+      supplierProductId: supplierProductId || undefined,
+      supplierVariantMappings: supplierVariantMappingsJson,
+      supplierPrice: parsedSupplierPrice,
+    };
+
+    if (editingProduct) {
+      updateProduct.mutate({ 
+        id: editingProduct.id, 
+        ...payload
+      });
+    } else {
+      createProduct.mutate(payload as any);
+    }
+  };
+
+  const handleDelete = (id: number) => {
+    if (confirm("Êtes-vous sûr de vouloir supprimer ce produit ?")) {
+      deleteProduct.mutate(id);
+    }
+  };
+
+  const visibleDraftProducts = filteredProducts.filter((product: any) => product.status === "draft");
+  const exportVisibleDraftsToCsv = () => {
+    if (visibleDraftProducts.length === 0) {
+      toast.error("Aucun brouillon affiché ne peut être exporté.");
+      return;
+    }
+    downloadDraftCsv(visibleDraftProducts);
+    toast.success(`${visibleDraftProducts.length} brouillon(s) exporté(s) dans un fichier CSV compatible Excel.`);
+  };
+
+  const handleDraftCsvImport = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) {
+      toast.error("Le fichier CSV est trop volumineux (maximum 2 Mo). Divisez-le en plusieurs lots.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const parsed = parseDraftCsvImport(String(reader.result || ""));
+        const confirmation = `Importer ${parsed.updates.length} brouillon(s) depuis « ${file.name} » ?\n\nSeuls les brouillons dont le SKU correspond seront modifiés. Les produits actifs ou archivés, les SKU inconnus et les lignes sans texte seront ignorés. Les cellules vides ne supprimeront aucun texte existant.`;
+        if (window.confirm(confirmation)) {
+          importDraftCsv.mutate({ updates: parsed.updates });
+        }
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Impossible de lire ce fichier CSV.");
+      }
+    };
+    reader.onerror = () => toast.error("Impossible de lire ce fichier CSV.");
+    reader.readAsText(file, "UTF-8");
+  };
+
+  const visibleProductIds = filteredProducts.map((product: any) => product.id);
+  const allVisibleProductsSelected = visibleProductIds.length > 0 && visibleProductIds.every((id: number) => selectedProductIds.includes(id));
+  const selectedProducts = (products || []).filter((product: any) => selectedProductIds.includes(product.id));
+  const selectedStatusLabel = Array.from(new Set(selectedProducts.map((product: any) => product.status))).map(status => status === "active" ? "actif" : status === "archived" ? "archivé" : "brouillon").join(", ");
+  const canBulkDelete = selectedProducts.length > 0 && selectedProducts.every((product: any) => product.status === "archived");
+  const addSelection = (current: number[], ids: number[]) => {
+    const merged = Array.from(new Set([...current, ...ids]));
+    if (merged.length <= 100) return merged;
+    toast.warning("La sélection groupée est limitée à 100 produits.");
+    return merged.slice(0, 100);
+  };
+  const toggleVisibleProducts = (checked: boolean) => setSelectedProductIds(current => checked
+    ? addSelection(current, visibleProductIds)
+    : current.filter(id => !visibleProductIds.includes(id)));
+  const toggleProductSelection = (id: number, checked: boolean) => setSelectedProductIds(current => checked
+    ? addSelection(current, [id])
+    : current.filter(currentId => currentId !== id));
+  const applyBulkEdit = () => {
+    const parsedPrice = bulkPrice.trim() ? parseChfToCents(bulkPrice) : undefined;
+    const parsedStock = bulkStock.trim() ? Number.parseInt(bulkStock, 10) : undefined;
+    if (parsedPrice !== undefined && (parsedPrice == null || parsedPrice <= 0)) { toast.error("Le prix groupé doit être supérieur à 0 CHF."); return; }
+    if (parsedStock !== undefined && (!Number.isInteger(parsedStock) || parsedStock < 0)) { toast.error("Le stock groupé doit être un nombre entier positif ou nul."); return; }
+    const categoryId = bulkCategoryId === "__keep__" ? undefined : Number(bulkCategoryId);
+    if (categoryId === undefined && parsedPrice === undefined && parsedStock === undefined) { toast.error("Choisissez au moins une valeur à modifier."); return; }
+    bulkUpdateProducts.mutate({ ids: selectedProductIds, categoryId, price: parsedPrice ?? undefined, stock: parsedStock });
+  };
+
+  const generateSlug = (val: string) => {
+    setName(val);
+    if (!editingProduct) {
+      setSlug(val.toLowerCase().replace(/ /g, "-").replace(/[^\w-]+/g, ""));
+    }
+  };
+
+  const currentSalePriceCents = parseChfToCents(price);
+  const currentSupplierProductCostCents = supplierPrice ? parseChfToCents(supplierPrice) : null;
+  const selectedCjVariantIds = selectedProductIds.filter(id => {
+    const product = (products || []).find((item: any) => item.id === id);
+    return (product?.status === "draft" || product?.status === "active") && product?.supplier === "CJdropshipping";
+  });
+  const canSyncCjVariants = selectedCjVariantIds.length >= 1 && selectedCjVariantIds.length <= 10;
+
+  const handleOdooCatalogSync = () => {
+    if (!odooStatusQuery.data?.configured) {
+      toast.error("La connexion Odoo n’est pas entièrement configurée côté serveur.");
+      return;
+    }
+    const confirmed = window.confirm(
+      "Synchroniser tous les produits MAZIGHO vers Odoo ? Les produits seront créés ou mis à jour à partir de leur référence MAZIGHO. Cette action ne supprime aucun produit Odoo.",
+    );
+    if (confirmed) syncOdooCatalog.mutate();
+  };
+
+  return (
+    <DashboardLayout>
+      <div className="space-y-6">
+        <div className="flex justify-between items-center">
+          <div>
+            <h1 className="text-3xl font-bold tracking-tight">Gestion des Produits</h1>
+            <p className="text-muted-foreground">Gérez votre inventaire, les prix et le statut de vos produits.</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button asChild variant="outline"><Link href="/admin/importation"><Import className="mr-2 h-4 w-4" /> Importer fournisseur</Link></Button>
+            <Button type="button" variant="outline" data-testid="open-ali-import-btn" onClick={() => setAliImportOpen(true)} className="border-orange-300 bg-white text-orange-700 hover:bg-orange-50"><Import className="mr-2 h-4 w-4" /> Importer AliExpress (URLs)</Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleOdooCatalogSync}
+              disabled={!odooStatusQuery.data?.configured || syncOdooCatalog.isPending}
+              title={odooStatusQuery.data?.configured ? "Créer ou mettre à jour le catalogue Odoo" : "Configurez d’abord les variables Odoo côté serveur"}
+              className="border-teal-200 bg-teal-50 text-teal-800 hover:bg-teal-100"
+            >
+              {syncOdooCatalog.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
+              Synchroniser le catalogue vers Odoo
+            </Button>
+            <Button className="bg-orange-500 hover:bg-orange-600" onClick={() => { resetForm(); setIsOpen(true); }}>
+              <Plus className="mr-2 h-4 w-4" /> Nouveau Produit
+            </Button>
+          </div>
+        </div>
+
+        <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <div className="flex items-center gap-2"><SlidersHorizontal className="h-4 w-4 text-orange-600" /><h2 className="font-semibold text-slate-900">Recherche et préparation</h2></div>
+              <p className="mt-1 text-sm text-muted-foreground">{isLoading ? "Chargement du catalogue…" : `${filteredProducts.length} produit(s) affiché(s) sur ${products?.length ?? 0}`}</p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 self-start lg:self-auto">
+              <Badge variant="outline" className="border-violet-200 bg-violet-50 text-violet-800">{visibleDraftProducts.length} brouillon(s) visible(s)</Badge>
+              <input ref={draftCsvFileInputRef} type="file" accept=".csv,text/csv" className="sr-only" aria-label="Choisir un fichier CSV de brouillons" onChange={handleDraftCsvImport} />
+              <Button type="button" variant="outline" size="sm" onClick={exportVisibleDraftsToCsv} disabled={visibleDraftProducts.length === 0} className="border-violet-300 bg-white text-violet-800 hover:bg-violet-50"><Download className="mr-2 h-4 w-4" />Exporter les brouillons en CSV</Button>
+              <Button type="button" variant="outline" size="sm" onClick={() => draftCsvFileInputRef.current?.click()} disabled={importDraftCsv.isPending} className="border-teal-300 bg-white text-teal-800 hover:bg-teal-50">{importDraftCsv.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}Importer / Mettre à jour via CSV</Button>
+              <Button type="button" variant="ghost" size="sm" onClick={clearFilters} disabled={!searchQuery && statusFilter === "all" && cjReviewFilter === "all" && translationFilter === "all" && stockFilter === "all" && categoryFilter === "all" && sortOrder === "created_desc"} className="text-slate-600 hover:bg-slate-100"><RotateCcw className="mr-2 h-4 w-4" /> Réinitialiser</Button>
+            </div>
+          </div>
+          <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-7">
+            <div className="relative"><Search className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-slate-400" /><Input value={searchQuery} onChange={event => setSearchQuery(event.target.value)} className="pl-9" placeholder="Nom, URL, catégorie ou fournisseur…" /></div>
+            <Select value={categoryFilter} onValueChange={setCategoryFilter}><SelectTrigger data-testid="admin-products-category-filter"><SelectValue placeholder="Catégorie" /></SelectTrigger><SelectContent><SelectItem value="all">Toutes les catégories</SelectItem>{(categories || []).map((cat: any) => (<SelectItem key={cat.id} value={String(cat.id)}>{cat.name}</SelectItem>))}</SelectContent></Select>
+            <Select value={statusFilter} onValueChange={value => setStatusFilter(value as typeof statusFilter)}><SelectTrigger><SelectValue placeholder="Statut" /></SelectTrigger><SelectContent><SelectItem value="all">Tous les statuts</SelectItem><SelectItem value="active">Actifs</SelectItem><SelectItem value="draft">Brouillons</SelectItem><SelectItem value="archived">Archivés</SelectItem></SelectContent></Select>
+            <Select value={cjReviewFilter} onValueChange={value => setCjReviewFilter(value as typeof cjReviewFilter)}><SelectTrigger><SelectValue placeholder="Contrôle CJ" /></SelectTrigger><SelectContent><SelectItem value="all">Tous les contrôles CJ</SelectItem><SelectItem value="needs_review">À vérifier / revalider</SelectItem><SelectItem value="reviewed">Révisés récemment</SelectItem><SelectItem value="not_cj">Hors CJ</SelectItem></SelectContent></Select>
+            <Select value={translationFilter} onValueChange={value => setTranslationFilter(value as typeof translationFilter)}><SelectTrigger><SelectValue placeholder="Traductions" /></SelectTrigger><SelectContent><SelectItem value="all">Toutes les traductions</SelectItem><SelectItem value="ready">6 langues prêtes</SelectItem><SelectItem value="attention">À compléter / régénérer</SelectItem></SelectContent></Select>
+            <Select value={stockFilter} onValueChange={value => setStockFilter(value as typeof stockFilter)}><SelectTrigger><SelectValue placeholder="Stock" /></SelectTrigger><SelectContent><SelectItem value="all">Tous les stocks</SelectItem><SelectItem value="available">Plus de 5 unités</SelectItem><SelectItem value="low">1 à 5 unités</SelectItem><SelectItem value="empty">Rupture de stock</SelectItem></SelectContent></Select>
+            <Select value={sortOrder} onValueChange={value => setSortOrder(value as typeof sortOrder)}><SelectTrigger><SelectValue placeholder="Tri" /></SelectTrigger><SelectContent><SelectItem value="created_desc">Création : récent d’abord</SelectItem><SelectItem value="created_asc">Création : ancien d’abord</SelectItem><SelectItem value="updated_desc">Modification : récent d’abord</SelectItem><SelectItem value="name_asc">Nom : A à Z</SelectItem></SelectContent></Select>
+          </div>
+        </section>
+
+        {selectedProductIds.length > 0 && (
+          <section className="flex flex-col gap-3 rounded-xl border border-orange-200 bg-orange-50 p-4 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex items-start gap-3"><ListChecks className="mt-0.5 h-5 w-5 shrink-0 text-orange-700" /><div><h2 className="font-semibold text-orange-950">{selectedProductIds.length} produit(s) sélectionné(s)</h2><p className="mt-1 text-sm text-orange-800">Statuts présents : {selectedStatusLabel}. Modifiez, activez ou archivez toute la sélection ; la suppression exige un archivage préalable.</p></div></div>
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" size="sm" variant="outline" className="border-sky-200 bg-white text-sky-800 hover:bg-sky-50" onClick={() => setBulkEditOpen(true)}><Save className="mr-2 h-4 w-4" />Modifier</Button>
+              <Button type="button" size="sm" variant="outline" className="border-violet-200 bg-white text-violet-800 hover:bg-violet-50" disabled={!canSyncCjVariants || syncCjVariants.isPending} title={selectedCjVariantIds.length === 0 ? "Sélectionnez au moins un produit CJ actif ou brouillon" : selectedCjVariantIds.length > 10 ? "Sélectionnez au maximum dix produits CJ à la fois" : "Réactualiser les options et correspondances privées de variantes CJ"} onClick={() => { if (confirm(`Réactualiser les variantes CJ de ${selectedCjVariantIds.length} produit(s) sélectionné(s) ? Cette action vérifie les tailles, couleurs et combinaisons actuellement disponibles, puis met à jour uniquement les options et correspondances privées. Elle ne modifie ni le prix, ni le stock, ni la livraison, ni le statut de publication ; elle ne crée aucune commande, aucun paiement et aucune expédition fournisseur.`)) syncCjVariants.mutate({ productIds: selectedCjVariantIds }); }}>
+                {syncCjVariants.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Package className="mr-2 h-4 w-4" />}Réactualiser variantes CJ ({selectedCjVariantIds.length}/10)
+              </Button>
+              <Button type="button" size="sm" variant="outline" className="border-emerald-200 bg-white text-emerald-800 hover:bg-emerald-50" disabled={bulkActivateProducts.isPending} onClick={() => { if (confirm(`Activer ou réactiver ${selectedProductIds.length} produit(s) ? Chaque produit à changer doit avoir un prix et un profil de livraison validé.`)) bulkActivateProducts.mutate({ ids: selectedProductIds }); }}><CheckCircle2 className="mr-2 h-4 w-4" />Activer</Button>
+              <Button type="button" size="sm" variant="outline" className="border-amber-200 bg-white text-amber-800 hover:bg-amber-50" disabled={bulkArchiveProducts.isPending} onClick={() => { if (confirm(`Archiver ${selectedProductIds.length} produit(s) ? Ils ne seront plus visibles en boutique.`)) bulkArchiveProducts.mutate({ ids: selectedProductIds }); }}><Archive className="mr-2 h-4 w-4" />Archiver</Button>
+              <Button type="button" size="sm" variant="destructive" title={canBulkDelete ? "Supprimer définitivement les produits archivés sélectionnés" : "Archivez d’abord tous les produits sélectionnés pour autoriser la suppression définitive"} disabled={!canBulkDelete || bulkDeleteArchivedProducts.isPending} onClick={() => { if (confirm(`Supprimer définitivement ${selectedProductIds.length} produit(s) archivé(s) ? Cette action est irréversible.`)) bulkDeleteArchivedProducts.mutate({ ids: selectedProductIds }); }}><Trash className="mr-2 h-4 w-4" />Supprimer</Button>
+              <Button type="button" size="sm" variant="ghost" className="text-slate-700" onClick={clearBulkSelection}>Désélectionner</Button>
+            </div>
+          </section>
+        )}
+
+        <div className="border rounded-lg bg-white overflow-x-auto">
+          <Table className="min-w-[1140px]">
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-12"><input type="checkbox" aria-label="Sélectionner tous les produits visibles" checked={allVisibleProductsSelected} disabled={visibleProductIds.length === 0} onChange={event => toggleVisibleProducts(event.target.checked)} className="h-4 w-4 accent-orange-500" /></TableHead>
+                <TableHead>Produit</TableHead>
+                <TableHead>Catégorie</TableHead>
+                <TableHead>Prix</TableHead>
+                <TableHead>Stock</TableHead>
+                <TableHead>Statut</TableHead>
+                <TableHead>CJ</TableHead>
+                <TableHead><span className="inline-flex items-center gap-1"><CalendarDays className="h-3.5 w-3.5" />Créé le</span></TableHead>
+                <TableHead>Langues</TableHead>
+                <TableHead className="w-[100px]">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {isLoading ? (
+                Array.from({ length: 5 }).map((_, i) => (
+                  <TableRow key={i}>
+                    <TableCell><Skeleton className="h-4 w-4" /></TableCell>
+                    <TableCell><Skeleton className="h-4 w-32" /></TableCell>
+                    <TableCell><Skeleton className="h-4 w-24" /></TableCell>
+                    <TableCell><Skeleton className="h-4 w-16" /></TableCell>
+                    <TableCell><Skeleton className="h-4 w-12" /></TableCell>
+                    <TableCell><Skeleton className="h-4 w-20" /></TableCell>
+                    <TableCell><Skeleton className="h-5 w-24" /></TableCell>
+                    <TableCell><Skeleton className="h-4 w-28" /></TableCell>
+                    <TableCell><Skeleton className="h-5 w-24" /></TableCell>
+                    <TableCell className="text-right"><Skeleton className="h-8 w-20 ml-auto" /></TableCell>
+                  </TableRow>
+                ))
+              ) : error ? (
+                <TableRow>
+                  <TableCell colSpan={10} className="text-center py-10 text-red-500">
+                    <div className="flex flex-col items-center gap-2">
+                      <p>Erreur lors du chargement des produits</p>
+                      <p className="text-xs font-mono">{error.message}</p>
+                      <Button variant="outline" size="sm" onClick={() => refetch()}>Réessayer</Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ) : filteredProducts.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={10} className="text-center py-10 text-muted-foreground">
+                    <div className="flex flex-col items-center gap-2">
+                      <p>{products?.length === 0 ? "Aucun produit trouvé." : "Aucun produit ne correspond à ces filtres."}</p>
+                      {products?.length === 0 ? <Button variant="outline" size="sm" onClick={() => refetch()}>Actualiser la liste</Button> : <Button variant="outline" size="sm" onClick={clearFilters}>Effacer les filtres</Button>}
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ) : (
+                filteredProducts.map((product: any) => (
+                  <TableRow key={product.id} className={selectedProductIds.includes(product.id) ? "bg-orange-50/60" : undefined}>
+                    <TableCell><input type="checkbox" aria-label={`Sélectionner ${product.name}`} checked={selectedProductIds.includes(product.id)} onChange={event => toggleProductSelection(product.id, event.target.checked)} className="h-4 w-4 accent-orange-500" /></TableCell>
+                    <TableCell className="font-medium">
+                      <div className="flex items-center gap-3">
+                        <div className="h-10 w-10 bg-gray-100 rounded overflow-hidden flex items-center justify-center">
+                          <Package className="h-4 w-4 text-gray-500" />
+                        </div>
+                        <div className="flex flex-col">
+                          <span className="font-semibold">{product.name}</span>
+                          <span className="text-xs text-gray-500">{product.slug}</span>
+                        </div>
+                      </div>
+                    </TableCell>
+                    <TableCell>{product.categoryName || "Sans catégorie"}</TableCell>
+                    <TableCell>
+                      <div className="flex flex-col">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-orange-600">{formatPrice(product.price)}</span>
+                          {product.originalPrice && (
+                            <Badge variant="outline" className="bg-red-50 text-red-600 border-red-200 text-[10px] h-4 px-1">
+                              PROMO
+                            </Badge>
+                          )}
+                        </div>
+                        {product.originalPrice && (
+                          <span className="text-xs text-gray-400 line-through">{formatPrice(product.originalPrice)}</span>
+                        )}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={product.stock > 0 ? "outline" : "destructive"}>
+                        {product.stock}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={product.status === "active" ? "default" : "secondary"}>
+                        {product.status === "active" ? "Actif" : product.status === "draft" ? "Brouillon" : "Archivé"}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>{(() => { const review = getCjVariantReview(product); if (!review) return <span className="text-xs text-slate-400">—</span>; const className = review.tone === "ready" ? "border-teal-200 bg-teal-50 text-teal-800" : review.tone === "danger" ? "border-red-200 bg-red-50 text-red-700" : "border-amber-200 bg-amber-50 text-amber-800"; return <Badge variant="outline" className={className} title={review.detail}>{review.label}</Badge>; })()}</TableCell>
+                    <TableCell className="whitespace-nowrap text-xs text-slate-600">{formatProductDate(product.createdAt)}</TableCell>
+                    <TableCell>{(() => { const translation = translationState(product.id); const pending = translatingProductId === product.id; return <div className="flex flex-wrap items-center gap-1"><Badge variant="outline" className={pending ? "border-sky-200 bg-sky-50 text-sky-700" : translation.stale ? "border-amber-200 bg-amber-50 text-amber-700" : translation.complete ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-slate-200 bg-slate-50 text-slate-600"}>{pending ? <><Loader2 className="mr-1 h-3 w-3 animate-spin" />Traduction…</> : translation.stale ? "À régénérer" : translation.complete ? "6 / 6 prêtes" : `${translation.ready} / 6 prêtes`}</Badge></div>; })()}</TableCell>
+                    <TableCell className="w-[100px]">
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 w-8 p-0 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50"
+                          title={product.status === "active" ? "Voir la fiche en boutique" : "Aperçu du brouillon (visible admin uniquement)"}
+                          data-testid={`product-preview-${product.id}`}
+                          onClick={() => window.open(`/produit/${product.slug}?preview=1`, "_blank", "noopener")}
+                        >
+                          <Eye className="h-4 w-4" />
+                        </Button>
+                        <Button 
+                          variant="ghost" 
+                          size="sm" 
+                          className="h-8 w-8 p-0 text-blue-600 hover:text-blue-700 hover:bg-blue-50" 
+                          onClick={() => handleEdit(product)}
+                        >
+                          <Edit className="h-4 w-4" />
+                        </Button>
+                        <Button 
+                          variant="ghost" 
+                          size="sm" 
+                          className="h-8 w-8 p-0 text-red-600 hover:text-red-700 hover:bg-red-50" 
+                          onClick={() => handleDelete(product.id)}
+                        >
+                          <Trash className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </div>
+      </div>
+
+      <Dialog open={isOpen} onOpenChange={(open) => { setIsOpen(open); if (!open) resetForm(); }}>
+        <DialogContent className="sm:max-w-[750px] max-h-[90vh] overflow-y-auto">
+          <form onSubmit={handleSubmit}>
+            <DialogHeader>
+              <DialogTitle>{editingProduct ? "Modifier le produit" : "Nouveau produit"}</DialogTitle>
+              <DialogDescription>
+                Remplissez les informations détaillées pour votre fiche produit professionnelle.
+              </DialogDescription>
+            </DialogHeader>
+            
+            <Tabs defaultValue="general" className="mt-6">
+              <TabsList className="flex w-full gap-2 overflow-x-auto rounded-md p-1 [scrollbar-width:thin]">
+                <TabsTrigger value="general" className="min-w-max shrink-0 px-3 whitespace-nowrap">Général</TabsTrigger>
+                <TabsTrigger value="images" className="min-w-max shrink-0 px-3 whitespace-nowrap">Images</TabsTrigger>
+                <TabsTrigger value="variants" className="min-w-max shrink-0 px-3 whitespace-nowrap">Variantes</TabsTrigger>
+                <TabsTrigger value="details" className="min-w-max shrink-0 px-3 whitespace-nowrap">Détails</TabsTrigger>
+                <TabsTrigger value="delivery" className="min-w-max shrink-0 whitespace-nowrap bg-emerald-50 px-3 text-emerald-700">Livraison</TabsTrigger>
+                <TabsTrigger value="translations" className="min-w-max shrink-0 whitespace-nowrap bg-sky-50 px-3 text-sky-700"><Languages className="mr-1 h-3.5 w-3.5" />Traductions</TabsTrigger>
+                <TabsTrigger value="internal" className="min-w-max shrink-0 whitespace-nowrap bg-orange-50 px-3 text-orange-700">Fournisseur</TabsTrigger>
+              </TabsList>
+              
+              <TabsContent value="general" className="space-y-4 py-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="grid gap-2">
+                    <Label htmlFor="name">Nom du produit *</Label>
+                    <Input id="name" value={name} onChange={(e) => generateSlug(e.target.value)} required />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="slug">Slug (URL) *</Label>
+                    <Input id="slug" value={slug} onChange={(e) => setSlug(e.target.value)} required />
+                  </div>
+                </div>
+                
+                <div className="grid grid-cols-4 gap-4 bg-gray-50 p-4 rounded-lg border border-gray-100">
+                  <div className="grid gap-2">
+                    <Label htmlFor="originalPrice" className="text-gray-500">Prix barré (CHF)</Label>
+                    <Input id="originalPrice" type="text" inputMode="decimal" value={originalPrice} onChange={(e) => handleOriginalPriceChange(e.target.value)} placeholder="Optionnel" />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="discountPercent" className="text-red-500 flex items-center gap-1">
+                      <Percent className="h-3 w-3" /> Rabais (%)
+                    </Label>
+                    <Input id="discountPercent" type="number" min="1" max="99" value={discountPercent} onChange={(e) => handleDiscountChange(e.target.value)} placeholder="Optionnel" className="border-red-200 focus:border-red-500" />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="price" className="font-bold">Prix de vente (CHF) *</Label>
+                    <Input id="price" type="text" inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value)} required placeholder="59,90" />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="stock">Stock *</Label>
+                    <Input id="stock" type="number" value={stock} onChange={(e) => setStock(e.target.value)} required />
+                  </div>
+                </div>
+                
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="grid gap-2">
+                    <Label>Catégories * <span className="font-normal text-xs text-muted-foreground">(la première cochée est principale)</span></Label>
+                    <div className="max-h-44 overflow-y-auto rounded-md border border-input bg-background p-3 space-y-2">
+                      {categories?.map((cat) => {
+                        const checked = categoryIds.includes(cat.id) || (categoryIds.length === 0 && String(cat.id) === categoryId);
+                        return <label key={cat.id} className="flex cursor-pointer items-center gap-2 text-sm">
+                          <input type="checkbox" checked={checked} onChange={(event) => {
+                            setCategoryIds(current => event.target.checked ? Array.from(new Set([...current, cat.id])) : current.filter(id => id !== cat.id));
+                            if (event.target.checked && !categoryId) setCategoryId(String(cat.id));
+                            if (!event.target.checked && categoryId === String(cat.id)) setCategoryId(String(categoryIds.find(id => id !== cat.id) || ""));
+                          }} className="h-4 w-4 accent-orange-500" />
+                          <span>{cat.name}</span>
+                        </label>;
+                      })}
+                    </div>
+                    <p className="text-[11px] text-muted-foreground">Sélectionnez une ou plusieurs catégories. La première sélectionnée reste la catégorie principale pour les liens existants.</p>
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="status">Statut de publication</Label>
+                    <Select value={status} onValueChange={setStatus}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="draft">Brouillon (invisible)</SelectItem>
+                        <SelectItem value="active">Actif (en ligne)</SelectItem>
+                        <SelectItem value="archived">Archivé</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                
+                <div className="grid gap-2">
+                  <Label htmlFor="description">Accroche courte (description simple)</Label>
+                  <Textarea id="description" value={description} onChange={(e) => setDescription(e.target.value)} rows={2} />
+                </div>
+              </TabsContent>
+              
+              <TabsContent value="images" className="space-y-4 py-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="grid gap-2">
+                    <Label>Ajouter par URL</Label>
+                    <div className="flex gap-2">
+                      <Input 
+                        placeholder="https://..." 
+                        value={newImageUrl} 
+                        onChange={(e) => setNewImageUrl(e.target.value)} 
+                        onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), addImage())}
+                      />
+                      <Button type="button" variant="outline" onClick={addImage}>Ajouter</Button>
+                    </div>
+                  </div>
+                  <div className="grid gap-2">
+                    <Label>Téléverser un fichier</Label>
+                    <div className="relative">
+                      <Input 
+                        type="file" 
+                        accept="image/*" 
+                        onChange={handleFileUpload}
+                        className="cursor-pointer"
+                      />
+                      <Upload className="absolute right-3 top-2.5 h-4 w-4 text-muted-foreground pointer-events-none" />
+                    </div>
+                  </div>
+                </div>
+                
+                <div className="grid grid-cols-4 gap-4 mt-4">
+                  {images.map((url, index) => (
+                    <div key={`${url}-${index}`} className="relative border-2 border-gray-200 rounded-lg overflow-hidden bg-gray-50 aspect-square flex flex-col items-center justify-center p-1">
+                      <img src={url} alt={`Aperçu ${index + 1}`} className="h-full w-full object-contain" />
+                      <div className={`absolute bottom-0 left-0 right-0 text-white text-[10px] py-1 text-center ${index === 0 ? "bg-orange-500 font-bold" : "bg-black/60"}`}>
+                        {index === 0 ? "Image principale" : `Image ${index + 1}`}
+                      </div>
+                      <div className="absolute right-1 top-1 flex gap-1">
+                        {index !== 0 && (
+                          <button type="button" onClick={() => setMainImage(index)} title="Définir comme image principale" aria-label="Définir comme image principale" className="rounded-full bg-white px-2 py-1 text-[10px] font-semibold text-orange-700 shadow hover:bg-orange-50">Principale</button>
+                        )}
+                        <button type="button" onClick={() => removeImage(index)} title="Supprimer cette image" aria-label="Supprimer cette image" className="rounded-full bg-red-600 p-1.5 text-white shadow hover:bg-red-700">
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  {images.length === 0 && (
+                    <div className="col-span-4 py-10 border-2 border-dashed rounded-lg flex flex-col items-center justify-center text-muted-foreground">
+                      <ImageIcon className="h-10 w-10 mb-2 opacity-20" />
+                      <p>Aucune image ajoutée</p>
+                    </div>
+                  )}
+                </div>
+              </TabsContent>
+              
+              <TabsContent value="variants" className="space-y-4 py-4">
+                <div className="rounded-lg border p-4 bg-gray-50">
+                  <h3 className="text-sm font-semibold mb-3">Ajouter une option (ex: Taille, Couleur)</h3>
+                  <div className="grid grid-cols-2 gap-3 mb-3">
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="opt-name" className="text-xs">Nom de l'option</Label>
+                      <Input id="opt-name" placeholder="Couleur" value={newOptionName} onChange={(e) => setNewOptionName(e.target.value)} />
+                    </div>
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="opt-values" className="text-xs">Valeurs (séparées par des virgules)</Label>
+                      <Input id="opt-values" placeholder="Bleu, Rouge, Vert" value={newOptionValues} onChange={(e) => setNewOptionValues(e.target.value)} />
+                    </div>
+                  </div>
+                  <Button type="button" variant="outline" size="sm" className="w-full" onClick={addOption}>
+                    Ajouter cette option
+                  </Button>
+                </div>
+                
+                <div className="space-y-3 mt-4">
+                  {options.map((opt, index) => (
+                    <div key={index} className="flex items-center justify-between p-3 border rounded-lg bg-white shadow-sm">
+                      <div>
+                        <span className="font-bold text-sm">{opt.name} :</span>
+                        <div className="flex gap-1 mt-1 flex-wrap">
+                          {opt.values.map((v, i) => (
+                            <Badge key={i} variant="secondary" className="text-[10px]">{v}</Badge>
+                          ))}
+                        </div>
+                      </div>
+                      <Button type="button" variant="ghost" size="icon" onClick={() => removeOption(index)}>
+                        <Trash className="h-4 w-4 text-red-500" />
+                      </Button>
+                    </div>
+                  ))}
+                  {options.length === 0 && (
+                    <p className="text-center py-4 text-sm text-muted-foreground italic">Aucune variante configurée.</p>
+                  )}
+                </div>
+              </TabsContent>
+              
+              <TabsContent value="details" className="space-y-4 py-4">
+                <div className="grid gap-2">
+                  <Label htmlFor="longDescription">Description détaillée (HTML supporté)</Label>
+                  <Textarea 
+                    id="longDescription" 
+                    value={longDescription} 
+                    onChange={(e) => setLongDescription(e.target.value)} 
+                    rows={12} 
+                    placeholder="Décrivez les caractéristiques techniques, les dimensions, les matériaux..."
+                  />
+                  <p className="text-xs text-muted-foreground">Cette description apparaîtra en bas de la fiche produit pour donner plus d'informations aux clients.</p>
+                </div>
+              </TabsContent>
+
+              <TabsContent value="translations" className="space-y-4 py-4">
+                {!editingProduct ? (
+                  <div className="rounded-lg border border-dashed border-sky-200 bg-sky-50 px-4 py-8 text-center text-sm text-sky-800">Enregistrez d’abord la fiche française. Vous pourrez ensuite générer et corriger les versions destinées aux clients.</div>
+                ) : (
+                  <>
+                    <div className="rounded-lg border border-sky-200 bg-sky-50 p-4">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                        <div><h3 className="font-semibold text-sky-950">Source française, traductions contrôlées</h3><p className="mt-1 text-xs leading-5 text-sky-800">Le produit est saisi en français. Chaque enregistrement lance automatiquement la mise à jour des versions clients ; vous pouvez toujours vérifier et corriger chaque langue ci-dessous.</p></div>
+                        <Button type="button" size="sm" className="shrink-0 bg-sky-700 hover:bg-sky-800" disabled={translateProduct.isPending} onClick={() => translateProduct.mutate({ productId: editingProduct.id, locales: ["de", "it", "en", "es", "nl", "ar"] })}>{translateProduct.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Languages className="mr-2 h-4 w-4" />}Générer toutes les langues</Button>
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-2">{(["de", "it", "en", "es", "nl", "ar"] as const).map(locale => { const translation = translations.find(item => item.locale === locale); return <button type="button" key={locale} onClick={() => setTranslationLocale(locale)} className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${translation?.status === "ready" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : translation?.status === "stale" ? "border-amber-200 bg-amber-50 text-amber-700" : "border-slate-200 bg-white text-slate-600"}`}>{locale.toUpperCase()} · {translation?.status === "ready" ? "prête" : translation?.status === "stale" ? "à régénérer" : "absente"}</button>; })}</div>
+                    </div>
+
+                    <div className="grid gap-4 rounded-lg border bg-white p-4">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div className="grid gap-1"><Label htmlFor="translation-locale">Version client à éditer</Label><Select value={translationLocale} onValueChange={(value) => setTranslationLocale(value as typeof translationLocale)}><SelectTrigger id="translation-locale" className="w-48"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="de">Deutsch (DE)</SelectItem><SelectItem value="it">Italiano (IT)</SelectItem><SelectItem value="en">English (EN)</SelectItem><SelectItem value="es">Español (ES)</SelectItem><SelectItem value="nl">Nederlands (NL)</SelectItem><SelectItem value="ar">العربية (AR)</SelectItem></SelectContent></Select></div><Button type="button" variant="outline" disabled={translateProduct.isPending} onClick={() => translateProduct.mutate({ productId: editingProduct.id, locales: [translationLocale] })}>{translateProduct.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Languages className="mr-2 h-4 w-4" />}Générer cette langue</Button></div>
+                      <div className="grid gap-2"><Label htmlFor="translation-name">Nom traduit</Label><Input id="translation-name" value={translationName} onChange={event => setTranslationName(event.target.value)} /></div>
+                      <div className="grid gap-2"><Label htmlFor="translation-description">Accroche traduite</Label><Textarea id="translation-description" value={translationDescription} onChange={event => setTranslationDescription(event.target.value)} rows={2} /></div>
+                      <div className="grid gap-2"><Label htmlFor="translation-long-description">Description détaillée traduite</Label><Textarea id="translation-long-description" value={translationLongDescription} onChange={event => setTranslationLongDescription(event.target.value)} rows={7} /></div>
+                      <details className="rounded border border-slate-200 px-3 py-2"><summary className="cursor-pointer text-sm font-medium text-slate-700">Variantes traduites (JSON, facultatif)</summary><Textarea className="mt-3 font-mono text-xs" value={translationOptions} onChange={event => setTranslationOptions(event.target.value)} rows={5} /></details>
+                      <div className="flex justify-end"><Button type="button" className="bg-sky-700 hover:bg-sky-800" disabled={saveTranslation.isPending || translationName.trim().length === 0} onClick={() => saveTranslation.mutate({ productId: editingProduct.id, locale: translationLocale, name: translationName.trim(), description: translationDescription.trim() || null, longDescription: translationLongDescription.trim() || null, options: translationOptions.trim() || null })}>{saveTranslation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Enregistrer cette correction</Button></div>
+                    </div>
+                  </>
+                )}
+              </TabsContent>
+
+              <TabsContent value="delivery" className="space-y-4 py-4 border-2 border-emerald-100 rounded-lg p-4 bg-emerald-50/30">
+                <div className="flex items-center justify-between gap-3">
+                  <div><h3 className="font-bold text-emerald-800">Profils de livraison</h3><p className="text-xs text-emerald-700">Cochez les pays livrables et saisissez les coûts en CHF (ex. 3,50 ou 3.50).</p></div>
+                  <Badge variant="outline" className="border-emerald-300 text-emerald-700">{deliveryProfiles.length} pays</Badge>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {deliveryCountries.map(country => {
+                    const profile = deliveryProfiles.find(item => item.countryCode === country.code);
+                    return <label key={country.code} className="flex cursor-pointer items-center gap-2 rounded border border-emerald-100 bg-white p-2 text-sm">
+                      <input type="checkbox" checked={Boolean(profile)} onChange={event => setDeliveryProfiles(current => event.target.checked ? [...current, makeDeliveryProfile(country.code)] : current.filter(item => item.countryCode !== country.code))} className="h-4 w-4 accent-emerald-600" />
+                      <span className="font-medium">{country.label}</span><span className="text-xs text-muted-foreground">({country.code})</span>
+                    </label>;
+                  })}
+                </div>
+                {deliveryProfiles.map(profile => <div key={profile.countryCode} className="space-y-3 rounded border border-emerald-200 bg-white p-3">
+                  <div className="flex items-center justify-between"><p className="font-semibold text-slate-900">{deliveryCountries.find(country => country.code === profile.countryCode)?.label || profile.countryCode}</p><Button type="button" variant="ghost" size="sm" className="text-red-600" onClick={() => setDeliveryProfiles(current => current.filter(item => item.countryCode !== profile.countryCode))}>Retirer</Button></div>
+                  <div className="grid gap-3 sm:grid-cols-3"><div className="grid gap-1"><Label className="text-xs">Frais fournisseur (CHF)</Label><Input type="text" inputMode="decimal" placeholder="0,00" value={profile.supplierShippingCost} onChange={event => setDeliveryProfiles(current => current.map(item => item.countryCode === profile.countryCode ? { ...item, supplierShippingCost: event.target.value } : item))} /></div><div className="grid gap-1"><Label className="text-xs">Frais client (CHF)</Label><Input type="text" inputMode="decimal" placeholder="0,00" value={profile.customerShippingCost} onChange={event => setDeliveryProfiles(current => current.map(item => item.countryCode === profile.countryCode ? { ...item, customerShippingCost: event.target.value } : item))} /></div><div className="grid gap-1"><Label className="text-xs">Méthode</Label><Input value={profile.deliveryMethod} onChange={event => setDeliveryProfiles(current => current.map(item => item.countryCode === profile.countryCode ? { ...item, deliveryMethod: event.target.value } : item))} placeholder="DHL / Poste" /></div></div>
+                  {(() => { const supplierShippingCents = parseChfToCents(profile.supplierShippingCost) || 0; const customerShippingCents = parseChfToCents(profile.customerShippingCost) || 0; const totalCostCents = currentSupplierProductCostCents == null ? null : currentSupplierProductCostCents + supplierShippingCents; const customerTotalCents = currentSalePriceCents == null ? null : currentSalePriceCents + customerShippingCents; const estimatedProfitCents = currentSalePriceCents == null || totalCostCents == null ? null : currentSalePriceCents - totalCostCents + customerShippingCents; const marginRate = estimatedProfitCents != null && customerTotalCents ? (estimatedProfitCents / customerTotalCents) * 100 : null; return <div className={`rounded px-3 py-2 text-xs ${estimatedProfitCents != null && estimatedProfitCents < 0 ? "border border-red-200 bg-red-50 text-red-900" : "bg-emerald-50 text-emerald-900"}`}><div><strong>Prix de revient total :</strong> {totalCostCents == null ? "renseignez le coût produit" : `${centsToChfInput(totalCostCents)} CHF`} <span className="text-emerald-700">(produit + transport fournisseur)</span></div>{currentSalePriceCents != null && <div className="mt-1"><strong>Total payé par le client :</strong> {centsToChfInput(customerTotalCents || 0)} CHF <span className="text-slate-600">(prix produit + frais client)</span></div>}{estimatedProfitCents != null && <div className="mt-1"><strong>{estimatedProfitCents < 0 ? "Perte estimée" : "Bénéfice estimé"} :</strong> {centsToChfInput(Math.abs(estimatedProfitCents))} CHF{marginRate != null ? ` · marge ${marginRate.toFixed(1).replace(".", ",")} %` : ""}</div>}{estimatedProfitCents != null && estimatedProfitCents < 0 && <p className="mt-1 font-semibold text-red-700">Attention : le prix de vente ne couvre pas le coût total pour ce pays.</p>}</div>; })()}
+                  <div className="grid gap-3 sm:grid-cols-2"><div className="grid gap-1"><Label className="text-xs">Délai minimum (jours)</Label><Input type="number" min="0" value={profile.minDeliveryDays} onChange={event => setDeliveryProfiles(current => current.map(item => item.countryCode === profile.countryCode ? { ...item, minDeliveryDays: event.target.value } : item))} /></div><div className="grid gap-1"><Label className="text-xs">Délai maximum (jours)</Label><Input type="number" min="0" value={profile.maxDeliveryDays} onChange={event => setDeliveryProfiles(current => current.map(item => item.countryCode === profile.countryCode ? { ...item, maxDeliveryDays: event.target.value } : item))} /></div></div>
+                </div>)}
+                {deliveryProfiles.length === 0 && <p className="rounded border border-dashed border-emerald-300 bg-white p-3 text-sm text-muted-foreground">Aucun pays sélectionné. Le produit ne sera pas affiché comme livrable.</p>}
+              </TabsContent>
+              <TabsContent value="internal" className="space-y-4 py-4 border-2 border-orange-100 rounded-lg p-4 bg-orange-50/30">
+                <div className="flex items-center gap-2 text-orange-700 mb-2">
+                  <ShieldCheck className="h-5 w-5" />
+                  <h3 className="font-bold">Informations Fournisseur (INTERNE UNIQUEMENT)</h3>
+                </div>
+                <p className="text-xs text-orange-600 mb-4">Ces informations ne seront jamais affichées aux clients. Elles servent uniquement à votre gestion et au suivi dropshipping.</p>
+                
+                <div className="grid gap-4">
+                  <div className="grid gap-2">
+                    <Label htmlFor="supplier">Nom du fournisseur (ex: AliExpress, Temu)</Label>
+                    <Input id="supplier" value={supplier} onChange={(e) => setSupplier(e.target.value)} placeholder="AliExpress" />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="supplierUrl">Lien direct vers le produit (Source)</Label>
+                    <div className="flex gap-2">
+                      <Input id="supplierUrl" value={supplierUrl} onChange={(e) => { const v = e.target.value; setSupplierUrl(v); const id = extractAliExpressProductId(v); if (id && !supplierProductId) setSupplierProductId(id); }} placeholder="https://aliexpress.com/item/..." />
+                      {supplierUrl && (
+                        <Button type="button" variant="outline" size="icon" asChild>
+                          <a href={supplierUrl} target="_blank" rel="noopener noreferrer"><ExternalLink className="h-4 w-4" /></a>
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="supplierProductId">ID produit fournisseur (AliExpress)</Label>
+                    <div className="flex gap-2">
+                      <Input id="supplierProductId" data-testid="product-supplier-id-input" value={supplierProductId} onChange={(e) => setSupplierProductId(e.target.value)} placeholder="Ex. 1005001234567890" />
+                      <Button type="button" variant="outline" data-testid="extract-ali-id-btn" onClick={() => { const id = extractAliExpressProductId(supplierUrl); if (id) { setSupplierProductId(id); toast.success("ID extrait de l'URL AliExpress"); } else { toast.error("Impossible d'extraire l'ID depuis l'URL"); } }}>Extraire de l'URL</Button>
+                    </div>
+                    <p className="text-xs text-muted-foreground">Requis pour la préparation automatique AliExpress (extension Chrome). L'ID figure dans l'URL : .../item/<strong>ID</strong>.html</p>
+                  </div>
+                  <div className="grid gap-2 w-1/2">
+                    <Label htmlFor="supplierPrice">Prix d'achat fournisseur (CHF)</Label>
+                    <Input id="supplierPrice" type="text" inputMode="decimal" value={supplierPrice} onChange={(e) => setSupplierPrice(e.target.value)} placeholder="34,00" />
+                    <p className="text-[10px] text-muted-foreground">Utile pour calculer votre marge réelle.</p>
+                  </div>
+                  {optionCombinations.length > 0 && (
+                    <div className="grid gap-2">
+                      <Label>Mapping variantes → SKU AliExpress (optionnel)</Label>
+                      <p className="text-xs text-muted-foreground">Associez chaque combinaison d'options au SKU/ID de variante AliExpress. Cela fait passer la ligne de « à vérifier » à « mappée » lors de la préparation d'une commande.</p>
+                      <div className="space-y-2 max-h-64 overflow-auto rounded border bg-white p-2" data-testid="variant-mapping-editor">
+                        {optionCombinations.map((combo) => {
+                          const key = comboKey(combo);
+                          const label = options.map((g) => `${g.name}: ${combo[g.name]}`).join(" · ");
+                          return (
+                            <div key={key} className="flex items-center gap-2">
+                              <span className="min-w-[45%] text-xs text-slate-700">{label}</span>
+                              <Input value={variantMappings[key] || ""} onChange={(e) => setVariantMappings((prev) => ({ ...prev, [key]: e.target.value }))} placeholder="SKU / ID variante AliExpress" className="h-8 text-xs" />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </TabsContent>
+            </Tabs>
+            
+            <DialogFooter className="mt-6 border-t pt-4">
+              <Button type="button" variant="outline" onClick={() => setIsOpen(false)}>Annuler</Button>
+              <Button type="submit" disabled={createProduct.isPending || updateProduct.isPending} className="bg-orange-500 hover:bg-orange-600">
+                {(createProduct.isPending || updateProduct.isPending) && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                {editingProduct ? "Enregistrer les modifications" : "Créer le produit"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={aliImportOpen} onOpenChange={setAliImportOpen}>
+        <DialogContent className="sm:max-w-[560px]">
+          <DialogHeader>
+            <DialogTitle>Importer des produits AliExpress</DialogTitle>
+            <DialogDescription>Collez une URL AliExpress par ligne. Chaque produit est créé en <strong>brouillon</strong> avec son ID fournisseur extrait automatiquement — complétez ensuite nom, prix, images et livraison.</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3">
+            <div className="grid gap-2">
+              <Label>Catégorie</Label>
+              <Select value={aliImportCategoryId} onValueChange={setAliImportCategoryId}>
+                <SelectTrigger data-testid="ali-import-category"><SelectValue placeholder="Choisir une catégorie" /></SelectTrigger>
+                <SelectContent>{(categories || []).map((c: any) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+            <div className="grid gap-2">
+              <Label>URLs AliExpress (une par ligne)</Label>
+              <Textarea data-testid="ali-import-urls" value={aliImportUrls} onChange={(e) => setAliImportUrls(e.target.value)} placeholder="https://www.aliexpress.com/item/1005001234567890.html" rows={7} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setAliImportOpen(false)}>Annuler</Button>
+            <Button type="button" data-testid="ali-import-submit" disabled={bulkImportAliExpress.isPending} className="bg-orange-500 hover:bg-orange-600" onClick={() => {
+              const urls = aliImportUrls.split(/\n+/).map((u) => u.trim()).filter(Boolean);
+              const cat = parseInt(aliImportCategoryId);
+              if (!urls.length) { toast.error("Ajoutez au moins une URL."); return; }
+              if (Number.isNaN(cat)) { toast.error("Choisissez une catégorie."); return; }
+              bulkImportAliExpress.mutate({ categoryId: cat, urls });
+            }}>{bulkImportAliExpress.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Importer</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={bulkEditOpen} onOpenChange={setBulkEditOpen}>
+        <DialogContent className="sm:max-w-[520px]">
+          <DialogHeader>
+            <DialogTitle>Modifier {selectedProductIds.length} produit(s)</DialogTitle>
+            <DialogDescription>Ne renseignez que les champs à changer. Les valeurs laissées vides restent inchangées. Cette action peut s’appliquer aux produits actifs, brouillons et archivés.</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-3">
+            <div className="grid gap-2"><Label htmlFor="bulk-category">Catégorie principale</Label><Select value={bulkCategoryId} onValueChange={setBulkCategoryId}><SelectTrigger id="bulk-category"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="__keep__">Conserver les catégories actuelles</SelectItem>{(categories || []).map((category: any) => <SelectItem key={category.id} value={String(category.id)}>{category.name}</SelectItem>)}</SelectContent></Select></div>
+            <div className="grid gap-2"><Label htmlFor="bulk-price">Prix de vente unique (CHF)</Label><Input id="bulk-price" value={bulkPrice} onChange={event => setBulkPrice(event.target.value)} inputMode="decimal" placeholder="Ex. 24,90 — laisser vide pour conserver" /></div>
+            <div className="grid gap-2"><Label htmlFor="bulk-stock">Stock unique</Label><Input id="bulk-stock" value={bulkStock} onChange={event => setBulkStock(event.target.value)} type="number" min="0" step="1" placeholder="Ex. 12 — laisser vide pour conserver" /></div>
+            <p className="rounded-lg border border-sky-100 bg-sky-50 px-3 py-2 text-xs leading-5 text-sky-900">La modification par lot peut s’appliquer à tous les statuts. Pour changer le titre, la description, les images ou les profils de livraison, utilisez l’édition individuelle.</p>
+          </div>
+          <DialogFooter><Button type="button" variant="outline" onClick={() => setBulkEditOpen(false)}>Annuler</Button><Button type="button" className="bg-orange-500 hover:bg-orange-600" disabled={bulkUpdateProducts.isPending} onClick={applyBulkEdit}>{bulkUpdateProducts.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}Appliquer aux produits</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </DashboardLayout>
+  );
+}
