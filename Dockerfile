@@ -25,7 +25,9 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/server-dist ./server-dist
 COPY --from=builder /app/firebase-applet-config.json ./firebase-applet-config.json
+COPY --from=builder /app/drizzle ./drizzle
+COPY --from=builder /app/scripts/run-schema-bootstrap.mjs ./scripts/run-schema-bootstrap.mjs
 
 EXPOSE 8080
 
-CMD ["node", "server-dist/index.js"]
+CMD ["sh", "-c", "node scripts/run-schema-bootstrap.mjs && node server-dist/index.js"]

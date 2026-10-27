@@ -5949,15 +5949,20 @@ export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
     try {
       const connectionString = process.env.DATABASE_URL;
-      console.log("[Database] Connecting with universal SSL fallback...");
-      
-      // Use a connection pool with forced SSL but tolerant certificate check
-      // This is the most compatible way for TiDB Cloud on Vercel
+      const usesCloudSqlSocket = connectionString.includes("socketPath=%2Fcloudsql%2F")
+        || connectionString.includes("socketPath=/cloudsql/");
+      console.log(usesCloudSqlSocket
+        ? "[Database] Connecting through the Cloud SQL Unix socket."
+        : "[Database] Connecting with universal SSL fallback.");
+
+      // TiDB/Vercel connections require the historical TLS fallback. Cloud Run
+      // mounts Cloud SQL as a local Unix socket, where attempting TLS is both
+      // unnecessary and rejected by the local connector.
       const pool = mysql.createPool({
         uri: connectionString,
-        ssl: {
-          rejectUnauthorized: false, // Force SSL but bypass certificate chain validation
-        },
+        ...(usesCloudSqlSocket ? {} : {
+          ssl: { rejectUnauthorized: false },
+        }),
         waitForConnections: true,
         connectionLimit: 1,
         maxIdle: 1,
