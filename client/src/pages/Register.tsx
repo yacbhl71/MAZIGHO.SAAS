@@ -70,21 +70,6 @@ export default function Register() {
     onError: error => toast.error(error.message || copy.register.error),
   });
 
-  const handleQuickAdminAccess = async (destination: "/admin" | "/admin/studio") => {
-    const data = await firebaseLogin.mutateAsync({
-      uid: "operator-yacbhl71",
-      email: "yacbhl71@gmail.com",
-      displayName: "Yacine (Opérateur MAZIGHO)",
-    });
-    if (typeof window !== "undefined" && data.sessionToken) {
-      window.localStorage.setItem("mazigho_session_token", data.sessionToken);
-    }
-    utils.auth.me.setData(undefined, data.user as any);
-    await utils.auth.me.invalidate();
-    toast.success(copy.register.success);
-    setLocation(destination);
-  };
-
   const handleGoogleSignIn = async () => {
     try {
       setGoogleLoading(true);
@@ -93,12 +78,7 @@ export default function Register() {
         toast.error("Aucune adresse e-mail associée à ce compte Google.");
         return;
       }
-      await firebaseLogin.mutateAsync({
-        uid: fbUser.uid,
-        email: fbUser.email,
-        displayName: fbUser.displayName,
-        idToken: fbUser.idToken,
-      });
+      await firebaseLogin.mutateAsync({ idToken: fbUser.idToken });
     } catch (error) {
       console.error("[Firebase Auth]", error);
       toast.error("Inscription Google interrompue ou refusée.");
@@ -125,19 +105,6 @@ export default function Register() {
             >
               {googleLoading ? "Connexion Google en cours..." : "S’inscrire avec Google"}
             </Button>
-            <div className="grid grid-cols-1 gap-2 pt-1">
-              <Button
-                type="button"
-                disabled={googleLoading || register.isPending || firebaseLogin.isPending}
-                onClick={() => handleQuickAdminAccess("/admin/studio")}
-                data-testid="quick-studio-register-btn"
-                className="w-full bg-orange-600 font-semibold text-white hover:bg-orange-700 shadow-sm"
-              >
-                {firebaseLogin.isPending
-                  ? "Ouverture de MAZIGHO Studio..."
-                  : "Connexion 1-Clic Super Admin (Studio)"}
-              </Button>
-            </div>
           </div>
           <div className="my-5 flex items-center gap-3 text-xs text-slate-400">
             <div className="h-px flex-1 bg-slate-200" />

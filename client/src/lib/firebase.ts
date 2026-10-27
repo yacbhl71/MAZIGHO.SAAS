@@ -106,9 +106,6 @@ export async function syncUserProfileToFirestore(user: FirebaseUser): Promise<vo
   const privateRef = doc(db, "users", user.uid, "private", "default");
 
   const displayName = sanitizeDisplayName(user.displayName, user.email);
-  const isBootstrappedAdmin =
-    user.emailVerified && user.email?.toLowerCase() === "yacbhl71@gmail.com";
-
   let existingSnap;
   try {
     existingSnap = await getDoc(userRef);
@@ -121,7 +118,7 @@ export async function syncUserProfileToFirestore(user: FirebaseUser): Promise<vo
       await setDoc(userRef, {
         uid: user.uid,
         displayName,
-        role: isBootstrappedAdmin ? "admin" : "user",
+        role: "user",
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
@@ -174,32 +171,6 @@ export async function syncUserProfileToFirestore(user: FirebaseUser): Promise<vo
     }
   }
 
-  if (isBootstrappedAdmin) {
-    await seedInitialFirestoreStoresIfAdmin(user.uid);
-  }
-}
-
-async function seedInitialFirestoreStoresIfAdmin(ownerUid: string): Promise<void> {
-  const storePath = "stores/primary-store";
-  const storeRef = doc(db, "stores", "primary-store");
-  try {
-    const snap = await getDoc(storeRef);
-    if (!snap.exists()) {
-      await setDoc(storeRef, {
-        id: 1,
-        slug: "primary-store",
-        displayName: "MAZIGHO",
-        primaryDomain: "www.mazigho.ch",
-        status: "active",
-        isPlatformStore: 1,
-        ownerId: ownerUid,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-    }
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, storePath);
-  }
 }
 
 export async function signInWithGooglePopup(): Promise<{ idToken: string; user: FirebaseUser }> {

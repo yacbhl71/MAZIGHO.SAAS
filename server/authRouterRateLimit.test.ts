@@ -23,6 +23,7 @@ vi.mock("./transactionalEmail", () => ({
 
 import { authRouter } from "./authRouter";
 import { resetAuthRateLimitForTests } from "./authRateLimit";
+import * as db from "./db";
 
 function caller() {
   return authRouter.createCaller({
@@ -34,7 +35,10 @@ function caller() {
 }
 
 describe("auth router rate-limit integration", () => {
-  beforeEach(() => resetAuthRateLimitForTests());
+  beforeEach(() => {
+    resetAuthRateLimitForTests();
+    vi.clearAllMocks();
+  });
 
   it("returns a uniform 429 only after the configured failed-login allowance", async () => {
     const client = caller();
@@ -46,5 +50,28 @@ describe("auth router rate-limit integration", () => {
       code: "TOO_MANY_REQUESTS",
       message: expect.stringContaining("Trop de tentatives"),
     });
+  });
+
+  it("ne retourne jamais un jeton de récupération au navigateur", async () => {
+    vi.mocked(db.requestPasswordResetToken).mockResolvedValue({
+      userId: 12,
+      name: "Compte test",
+      email: "owner@example.test",
+      reset: { id: 4, token: "one-time-token-that-must-stay-server-side" },
+    } as any);
+
+    const result = await caller().requestPasswordReset({ email: "owner@example.test" });
+
+    expect(result).toEqual({ accepted: true, emailAvailable: false });
+    expect(result).not.toHaveProperty("resetUrl");
+    expect(result).not.toHaveProperty("token");
+  });
+
+  it("refuse une connexion Google sans jeton Firebase vérifiable", async () => {
+    await expect(caller().firebaseLogin({
+      uid: "operator-yacbhl71",
+      email: "yacbhl71@gmail.com",
+      displayName: "Identité fournie par le navigateur",
+    } as any)).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 });

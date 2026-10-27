@@ -52,9 +52,6 @@ export function MazighoSurfaceSwitcher() {
   const [switching, setSwitching] = useState<string | null>(null);
   const [location, setLocation] = useLocation();
   const { user } = useAuth() as any;
-  const utils = trpc.useUtils();
-  const firebaseLogin = trpc.auth.firebaseLogin.useMutation();
-
   const publicStoresQuery = trpc.storefront.listPublicStores.useQuery(
     undefined,
     { staleTime: 30_000, retry: false }
@@ -62,19 +59,7 @@ export function MazighoSurfaceSwitcher() {
 
   const clientStores = publicStoresQuery.data ?? [];
 
-  const hostname = typeof window !== "undefined" ? window.location.hostname.toLowerCase() : "";
-  const isPreviewHost =
-    hostname.endsWith(".run.app") ||
-    hostname.endsWith(".usercontent.goog") ||
-    hostname === "localhost" ||
-    hostname === "127.0.0.1" ||
-    hostname.endsWith(".localhost") ||
-    hostname.includes("studio") ||
-    hostname.includes("pro");
-
-  if (!isPreviewHost && user?.role !== "admin") {
-    return null;
-  }
+  if (user?.role !== "admin") return null;
 
   const currentPath = location.split("?")[0];
   const activeSurface =
@@ -88,54 +73,18 @@ export function MazighoSurfaceSwitcher() {
             ? SURFACES[1]
             : SURFACES[0];
 
-  const handleSelectSurface = async (surface: (typeof SURFACES)[number]) => {
-    try {
-      setSwitching(surface.id);
-      if (surface.requiresAdmin && (!user || user.role !== "admin") && isPreviewHost) {
-        const res = await firebaseLogin.mutateAsync({
-          uid: "operator-yacbhl71",
-          email: "yacbhl71@gmail.com",
-          displayName: "Yacine (Opérateur MAZIGHO)",
-        });
-        if (typeof window !== "undefined" && res.sessionToken) {
-          window.localStorage.setItem("mazigho_session_token", res.sessionToken);
-        }
-        utils.auth.me.setData(undefined, res.user as any);
-        await Promise.all([
-          utils.auth.me.invalidate(),
-          utils.workspace.getCurrent.invalidate(),
-        ]);
-      }
-      setLocation(surface.path);
-      setOpen(false);
-    } finally {
-      setSwitching(null);
-    }
+  const handleSelectSurface = (surface: (typeof SURFACES)[number]) => {
+    setSwitching(surface.id);
+    setLocation(surface.path);
+    setOpen(false);
+    setSwitching(null);
   };
 
-  const handleSelectStore = async (storeId: number) => {
-    try {
-      setSwitching(`store-${storeId}`);
-      if ((!user || user.role !== "admin") && isPreviewHost) {
-        const res = await firebaseLogin.mutateAsync({
-          uid: "operator-yacbhl71",
-          email: "yacbhl71@gmail.com",
-          displayName: "Yacine (Opérateur MAZIGHO)",
-        });
-        if (typeof window !== "undefined" && res.sessionToken) {
-          window.localStorage.setItem("mazigho_session_token", res.sessionToken);
-        }
-        utils.auth.me.setData(undefined, res.user as any);
-        await Promise.all([
-          utils.auth.me.invalidate(),
-          utils.workspace.getCurrent.invalidate(),
-        ]);
-      }
-      setLocation(`/admin/studio/gestion-boutique/${storeId}`);
-      setOpen(false);
-    } finally {
-      setSwitching(null);
-    }
+  const handleSelectStore = (storeId: number) => {
+    setSwitching(`store-${storeId}`);
+    setLocation(`/admin/studio/gestion-boutique/${storeId}`);
+    setOpen(false);
+    setSwitching(null);
   };
 
   return (

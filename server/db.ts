@@ -6047,58 +6047,9 @@ export async function getUserByOpenId(openId: string) {
   return result.length > 0 ? result[0] : undefined;
 }
 
-let _superAdminSeedReady: Promise<void> | null = null;
-export async function ensureSuperAdminSeed() {
-  if (_superAdminSeedReady) return _superAdminSeedReady;
-  _superAdminSeedReady = (async () => {
-    const db = await getDb();
-    if (!db) return;
-    try {
-      await ensurePasswordHashColumn();
-      await ensureAccountStatusColumn();
-      const defaultHash = "scrypt-v1$CTQP92IgJcVPDF3kVjS4jw$TkBvKJ-2fv4qIXv0n_o7kyCzluiwY1dWmgn0O12PgCOofEusR87azMf8IUhhrSwuHqjfZcLuJfgvQn2IWT0a4g"; // MazighoAdmin2026!
-      
-      const adminAccounts = [
-        { openId: "operator-yacbhl71", email: "yacbhl71@gmail.com", name: "Yacine (Super Admin)" },
-        { openId: "local_demo_admin", email: "admin@mazigho.ch", name: "Direction MAZIGHO Studio" },
-      ];
-
-      for (const account of adminAccounts) {
-        const rows = await db.select().from(users).where(sql`LOWER(${users.email}) = ${account.email.toLowerCase()}`).limit(1);
-        if (rows.length === 0) {
-          await db.insert(users).values({
-            openId: account.openId,
-            name: account.name,
-            email: account.email.toLowerCase(),
-            passwordHash: defaultHash,
-            loginMethod: "password",
-            role: "admin",
-            accountStatus: "active",
-            lastSignedIn: new Date(),
-          });
-          console.log(`[Database] Seeded super admin account: ${account.email}`);
-        } else {
-          const u = rows[0];
-          const updates: Record<string, any> = {
-            role: "admin",
-            accountStatus: "active",
-            passwordHash: defaultHash,
-            loginMethod: "password",
-          };
-          await db.update(users).set(updates).where(eq(users.id, u.id));
-        }
-      }
-    } catch (error) {
-      console.warn("[Database] ensureSuperAdminSeed non-fatal notice:", error);
-    }
-  })();
-  return _superAdminSeedReady;
-}
-
 export async function getUserByEmail(email: string) {
   await ensurePasswordHashColumn();
   await ensureAccountStatusColumn();
-  await ensureSuperAdminSeed();
   const db = await getDb();
   if (!db) return getDemoUserByEmail(email);
 
@@ -6452,17 +6403,7 @@ export async function activateAccountFromInvitation(input: { token: string; pass
 export async function resetPasswordFromToken(input: { token: string; passwordHash: string }) {
   const userId = await consumeAccountToken(input.token, "password_reset");
   const db = await getDb();
-  if (!db) {
-    const { getDemoUserByOpenId, getDemoUserByEmail, updateDemoUserPassword } = await import("./db/demoFallback");
-    const demoUser = getDemoUserByEmail("yacbhl71@gmail.com") || getDemoUserByOpenId("operator-yacbhl71");
-    if (demoUser) {
-      demoUser.passwordHash = input.passwordHash;
-      demoUser.loginMethod = "password";
-      demoUser.accountStatus = "active";
-      return demoUser;
-    }
-    return { id: userId, email: "yacbhl71@gmail.com", role: "admin", accountStatus: "active" } as any;
-  }
+  if (!db) throw new Error("Database unavailable");
 
   const current = await db.select().from(users).where(eq(users.id, userId)).limit(1);
   if (!current[0] || current[0].accountStatus !== "active") throw new Error("TOKEN_INVALID_OR_EXPIRED");

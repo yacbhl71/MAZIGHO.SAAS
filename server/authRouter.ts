@@ -123,26 +123,7 @@ export const authRouter = router({
       consumeAuthRateLimit("register", ctx.req, email);
       const existingUser = await getUserByEmail(email);
 
-      const isAdminEmail =
-        email === "yacbhl71@gmail.com" ||
-        email === "admin@mazigho.ch" ||
-        email.endsWith("@mazigho.ch");
-
       if (existingUser) {
-        if (isAdminEmail) {
-          // Permettre à l'administrateur principal de définir son mot de passe et d'accéder directement au Studio
-          const newHash = await hashPassword(input.password);
-          await updatePasswordUser({ openId: existingUser.openId, passwordHash: newHash });
-          existingUser.passwordHash = newHash;
-          if (input.name) existingUser.name = input.name;
-          existingUser.role = "admin";
-          existingUser.accountStatus = "active";
-          await markUserSignedIn(existingUser.openId);
-          const sessionToken = await createSession(ctx, existingUser);
-          const ownerStore = await getCurrentStoreOwnerDestination(ctx, existingUser.id);
-          return { user: safeUser(existingUser), ownerStore, sessionToken };
-        }
-
         throw new TRPCError({
           code: "CONFLICT",
           message: "Un compte existe déjà avec cette adresse e-mail. Cliquez sur 'Se connecter' ci-dessous.",
@@ -150,7 +131,7 @@ export const authRouter = router({
       }
 
       const user = await createPasswordUser({
-        openId: isAdminEmail ? "operator-yacbhl71" : `local_${randomUUID()}`,
+        openId: `local_${randomUUID()}`,
         email,
         name: input.name,
         passwordHash: await hashPassword(input.password),
@@ -161,11 +142,6 @@ export const authRouter = router({
           code: "INTERNAL_SERVER_ERROR",
           message: "Impossible de créer le compte pour le moment.",
         });
-      }
-
-      if (isAdminEmail) {
-        user.role = "admin";
-        user.accountStatus = "active";
       }
 
       const sessionToken = await createSession(ctx, user);
@@ -195,11 +171,7 @@ export const authRouter = router({
         }
       }
 
-      const resetUrl = request
-        ? `/reinitialiser-mot-de-passe?token=${encodeURIComponent(request.reset.token)}`
-        : null;
-
-      return { accepted: true, emailAvailable, resetUrl };
+      return { accepted: true, emailAvailable };
     }),
 
   completePasswordReset: publicProcedure
@@ -273,58 +245,12 @@ export const authRouter = router({
     .input(z.object({ email: emailSchema, password: currentPasswordSchema }))
     .mutation(async ({ ctx, input }) => {
       const email = input.email.toLowerCase();
-      const isAdminEmail =
-        email === "yacbhl71@gmail.com" ||
-        email === "admin@mazigho.ch" ||
-        email.endsWith("@mazigho.ch");
+      enforceAuthRateLimit("login", ctx.req, email);
 
-      if (!isAdminEmail) {
-        enforceAuthRateLimit("login", ctx.req, email);
-      }
-
-      let user = await getUserByEmail(email);
-
-      // Super admin master passwords: MazighoAdmin2026! or Admin2026!
-      const isMasterAdminPassword =
-        isAdminEmail &&
-        (input.password === "MazighoAdmin2026!" ||
-         input.password === "Admin2026!" ||
-         input.password === "Mazigho2026!");
-
-      let passwordMatches = false;
-      if (user?.passwordHash) {
-        passwordMatches = await verifyPassword(
-          input.password,
-          user.passwordHash
-        );
-      }
-
-      if (isAdminEmail) {
-        if (!user) {
-          const { upsertDemoFirebaseUser } = await import("./db/demoFallback");
-          user = upsertDemoFirebaseUser({
-            uid: "operator-yacbhl71",
-            email: email,
-            name: "Yacine (Super Admin)",
-            emailVerified: true,
-          }) as any;
-        }
-
-        if (isMasterAdminPassword || !user.passwordHash || passwordMatches) {
-          passwordMatches = true;
-          user.role = "admin";
-          user.accountStatus = "active";
-          if (isMasterAdminPassword || !user.passwordHash) {
-            const newHash = await hashPassword(input.password);
-            user.passwordHash = newHash;
-            await updatePasswordUser({ openId: user.openId, passwordHash: newHash });
-          }
-        }
-      } else if (!user) {
-        // Perform equivalent work for an unknown email to limit timing-based
-        // account enumeration.
-        await hashPassword(input.password);
-      }
+      const user = await getUserByEmail(email);
+      const passwordMatches = user?.passwordHash
+        ? await verifyPassword(input.password, user.passwordHash)
+        : (await hashPassword(input.password), false);
 
       if (!user || !passwordMatches) {
         consumeAuthRateLimit("login", ctx.req, email);
@@ -354,38 +280,39 @@ export const authRouter = router({
     }),
 
   firebaseLogin: publicProcedure
-    .input(
-      z.object({
-        uid: z.string().trim().min(1).max(128),
-        email: emailSchema,
-        displayName: z.string().trim().min(1).max(120),
-        idToken: z.string().min(10).optional(),
-      })
-    )
+    .input(z.object({ idToken: z.string().min(10) }))
     .mutation(async ({ ctx, input }) => {
-      let verifiedUid = input.uid;
-      let verifiedEmail = input.email.toLowerCase();
-      let emailVerified = true;
-
-      if (input.idToken) {
-        try {
-          const { adminAuth } = await import("./firebaseAdmin");
-          const decoded = await adminAuth.verifyIdToken(input.idToken);
-          verifiedUid = decoded.uid;
-          if (decoded.email) verifiedEmail = decoded.email.toLowerCase();
-          emailVerified = Boolean(decoded.email_verified);
-        } catch (error) {
-          console.warn("[Auth] Firebase ID token fallback:", String(error));
-        }
+      let decoded: { uid: string; email?: string; email_verified?: boolean; name?: string };
+      try {
+        const { adminAuth } = await import("./firebaseAdmin");
+        decoded = await adminAuth.verifyIdToken(input.idToken);
+      } catch {
+        throw new TRPCError({ code: "UNAUTHORIZED", message: "Connexion Google non vérifiable." });
       }
 
-      const { upsertDemoFirebaseUser } = await import("./db/demoFallback");
-      const user = upsertDemoFirebaseUser({
-        uid: verifiedUid,
-        email: verifiedEmail,
-        name: input.displayName,
-        emailVerified,
-      });
+      const email = decoded.email?.trim().toLowerCase();
+      if (!email || !decoded.email_verified) {
+        throw new TRPCError({ code: "UNAUTHORIZED", message: "Le compte Google doit disposer d’une adresse e-mail vérifiée." });
+      }
+
+      let user = await getUserByEmail(email);
+      if (!user) {
+        const { getUserByOpenId, upsertUser } = await import("./db");
+        const openId = `firebase_${decoded.uid}`;
+        await upsertUser({
+          openId,
+          email,
+          name: decoded.name?.trim() || email.split("@")[0],
+          loginMethod: "google",
+          lastSignedIn: new Date(),
+        });
+        user = await getUserByOpenId(openId);
+      }
+
+      if (!user || user.accountStatus !== "active") {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Ce compte n’est pas disponible." });
+      }
+
       await markUserSignedIn(user.openId);
       const sessionToken = await createSession(ctx, user);
       const ownerStore = await getCurrentStoreOwnerDestination(ctx, user.id);
