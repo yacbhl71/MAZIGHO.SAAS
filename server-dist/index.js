@@ -1920,7 +1920,7 @@ function mayUsePlatformStoreFallback(host, primaryDomain) {
   const normalizedHost = normalizeStoreHost(host);
   const normalizedPrimary = normalizeStoreHost(primaryDomain);
   const rootPrimary = normalizedPrimary.replace(/^www\./, "");
-  const isPrimaryAlias = normalizedHost === normalizedPrimary || normalizedHost === rootPrimary || normalizedHost === `www.${rootPrimary}` || normalizedHost === "pro.mazigho.com" || normalizedHost === "mazigho.ch" || normalizedHost === "www.mazigho.ch" || normalizedHost === "pro.mazigho.ch";
+  const isPrimaryAlias = normalizedHost === normalizedPrimary || normalizedHost === rootPrimary || normalizedHost === `www.${rootPrimary}` || normalizedHost === "pro.mazigho.com" || normalizedHost === "boutique.mazigho.com" || normalizedHost === "mazigho.ch" || normalizedHost === "www.mazigho.ch" || normalizedHost === "pro.mazigho.ch" || normalizedHost === "boutique.mazigho.ch";
   const isLocalDevelopment = normalizedHost === "localhost" || normalizedHost === "127.0.0.1" || normalizedHost === "0.0.0.0";
   const isProjectVercelAlias = normalizedHost === "mazigho-shop.vercel.app" || /^mazigho-shop-[a-z0-9-]+\.vercel\.app$/.test(normalizedHost);
   const isCloudRunPreviewAlias = normalizedHost.endsWith(".run.app") || normalizedHost.endsWith(".usercontent.goog");
