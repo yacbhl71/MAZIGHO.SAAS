@@ -1,11 +1,12 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useLocation } from "wouter";
-import { Search, X } from "lucide-react";
+import { Camera, Search, X } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { getDeliveryProfileForCountry, useDeliveryCountry } from "@/contexts/DeliveryCountryContext";
 import { useLocale } from "@/contexts/LocaleContext";
 import { t } from "@/lib/i18n";
 import { getLocalizedCategoryPresentation } from "@/lib/categoryPresentation";
+import VisualSearchModal from "@/components/VisualSearchModal";
 
 interface SearchResult {
   id: number;
@@ -109,6 +110,10 @@ export default function SearchBar() {
     setIsOpen(false);
   };
 
+  const [visualSearchOpen, setVisualSearchOpen] = useState(false);
+  const visualSearchConfigQuery = trpc.visualSearch.getConfig.useQuery();
+  const visualSearchEnabled = visualSearchConfigQuery.data?.enabled !== false;
+
   return (
     <div ref={searchRef} className="relative w-full max-w-md">
       {/* Search Input */}
@@ -120,19 +125,33 @@ export default function SearchBar() {
           onChange={(e) => setQuery(e.target.value)}
           onFocus={() => query && setIsOpen(true)}
           placeholder={t(locale, "searchPlaceholder")}
-          className="min-h-11 w-full pl-10 pr-10 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent"
+          className="min-h-11 w-full pl-10 pr-12 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent"
         />
-        {query && (
-          <button
-            type="button"
-            onClick={handleClear}
-            aria-label={t(locale, "clearSearch")}
-            className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-          >
-            <X className="h-5 w-5" />
-          </button>
-        )}
+        <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1.5">
+          {visualSearchEnabled && (
+            <button
+              type="button"
+              onClick={() => setVisualSearchOpen(true)}
+              title="Recherche par photo IA"
+              className="text-gray-400 hover:text-indigo-600 transition p-1"
+            >
+              <Camera className="h-5 w-5" />
+            </button>
+          )}
+          {query && (
+            <button
+              type="button"
+              onClick={handleClear}
+              aria-label={t(locale, "clearSearch")}
+              className="text-gray-400 hover:text-gray-600 p-1"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          )}
+        </div>
       </div>
+
+      <VisualSearchModal open={visualSearchOpen} onOpenChange={setVisualSearchOpen} />
 
       {/* Results Dropdown */}
       {isOpen && results.length > 0 && (

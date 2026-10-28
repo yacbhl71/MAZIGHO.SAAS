@@ -6,6 +6,9 @@ import { useStorePrice } from "@/hooks/useStorePrice";
 import Header from "@/components/Header";
 import Footer from "@/components/Footer";
 import HeroBanner from "@/components/HeroBanner";
+import ShoppableStoriesBanner from "@/components/ShoppableStoriesBanner";
+import SpinToWinPopup from "@/components/SpinToWinPopup";
+import ProductCompareDrawer from "@/components/ProductCompareDrawer";
 import { trpc } from "@/lib/trpc";
 import { useDesignProfile } from "@/hooks/useDesignProfile";
 import { useDeliveryCountry } from "@/contexts/DeliveryCountryContext";
@@ -151,6 +154,7 @@ export default function Home() {
 
       <main>
         <HeroBanner allowPlatformFallback={!isClientStore} />
+        <ShoppableStoriesBanner />
 
         <div className="flex flex-col">
         <section style={{ order: orderIndex("highlight") }} className="container py-8 md:py-12">
@@ -382,6 +386,8 @@ export default function Home() {
         )}
       </main>
 
+      <SpinToWinPopup />
+      <ProductCompareDrawer />
       <Footer />
     </div>
   );

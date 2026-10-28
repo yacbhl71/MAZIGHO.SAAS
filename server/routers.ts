@@ -36,6 +36,10 @@ import { affiliateProgramRouter } from "./affiliateProgramRouter";
 import { stickyAddToCartRouter } from "./stickyAddToCartRouter";
 import { frequentlyBoughtTogetherRouter } from "./frequentlyBoughtTogetherRouter";
 import { whatsappSmsMarketingRouter } from "./whatsappSmsMarketingRouter";
+import { spinToWinRouter } from "./spinToWinRouter";
+import { visualSearchRouter } from "./visualSearchRouter";
+import { shoppableStoriesRouter } from "./shoppableStoriesRouter";
+import { productCompareRouter } from "./productCompareRouter";
 import { DEFAULT_STORE_MAINTENANCE_MODE } from "../shared/storeMaintenanceMode";
 import { orderBundleProducts } from "../shared/storeProductBundles";
 
@@ -126,6 +130,10 @@ export const appRouter = router({
   stickyAddToCart: stickyAddToCartRouter,
   frequentlyBoughtTogether: frequentlyBoughtTogetherRouter,
   whatsappSmsMarketing: whatsappSmsMarketingRouter,
+  spinToWin: spinToWinRouter,
+  visualSearch: visualSearchRouter,
+  shoppableStories: shoppableStoriesRouter,
+  productCompare: productCompareRouter,
   checkout: stripeCheckoutRouter,
 
   // Only visual URLs are public. Mutations are platformProcedure-only through
