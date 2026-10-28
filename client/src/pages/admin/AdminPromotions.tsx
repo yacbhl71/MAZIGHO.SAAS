@@ -6,10 +6,14 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Edit, Loader2, Percent, Plus, Ticket, Trash2 } from "lucide-react";
+import { Edit, Loader2, Megaphone, Percent, Plus, Ticket, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
 import { centsToChfInput, parseChfToCents } from "@/lib/moneyInput";
+import OwnerSpinToWinManager from "@/components/owner/OwnerSpinToWinManager";
+import OwnerShoppableStoriesManager from "@/components/owner/OwnerShoppableStoriesManager";
+import OwnerVisualSearchSettings from "@/components/owner/OwnerVisualSearchSettings";
+import OwnerProductCompareSettings from "@/components/owner/OwnerProductCompareSettings";
 
  type PromotionForm = {
   code: string;
@@ -151,10 +155,23 @@ export default function AdminPromotions() {
       <div className="space-y-6">
         <section className="rounded-2xl border border-orange-100 bg-gradient-to-r from-orange-50 via-white to-amber-50 p-6 md:p-8">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-            <div><p className="mb-3 flex items-center gap-2 text-sm font-semibold text-orange-700"><Ticket className="h-4 w-4" /> Marketing et fidélisation</p><h1 className="text-3xl font-bold tracking-tight text-slate-900 md:text-4xl">Codes promo</h1><p className="mt-2 text-slate-600">Créez, planifiez et contrôlez vos offres destinées aux clients MAZIGHO.</p></div>
-            <Button className="bg-orange-500 hover:bg-orange-600" onClick={openCreate}><Plus className="mr-2 h-4 w-4" /> Nouveau code</Button>
+            <div><p className="mb-3 flex items-center gap-2 text-sm font-semibold text-orange-700"><Megaphone className="h-4 w-4" /> Marketing & Animations Interactives</p><h1 className="text-3xl font-bold tracking-tight text-slate-900 md:text-4xl">Marketing & Promotions</h1><p className="mt-2 text-slate-600">Activez et configurez les fonctionnalités interactives (Roue Privilège, Stories Vidéo, Recherche Visuelle par Photo, Comparateur) et gérez vos codes promo.</p></div>
+            <Button className="bg-orange-500 hover:bg-orange-600" onClick={openCreate}><Plus className="mr-2 h-4 w-4" /> Nouveau code promo</Button>
           </div>
         </section>
+
+        {/* 4 Fonctionnalités Marketing Interactives */}
+        <div className="space-y-6">
+          <OwnerSpinToWinManager />
+          <OwnerShoppableStoriesManager />
+          <OwnerVisualSearchSettings />
+          <OwnerProductCompareSettings />
+        </div>
+
+        <section className="mt-8">
+          <h2 className="mb-4 text-2xl font-bold tracking-tight text-slate-900">Codes promotionnels</h2>
+        </section>
+
         <section className="grid gap-4 sm:grid-cols-3"><div className="rounded-xl border bg-white p-4 shadow-sm"><p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Offres actives</p><p className="mt-1 text-2xl font-bold text-emerald-700">{promotionSummary.active}</p><p className="mt-1 text-xs text-muted-foreground">Disponibles actuellement</p></div><div className="rounded-xl border bg-white p-4 shadow-sm"><p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Offres planifiées</p><p className="mt-1 text-2xl font-bold text-blue-700">{promotionSummary.scheduled}</p><p className="mt-1 text-xs text-muted-foreground">Démarreront à une date définie</p></div><div className="rounded-xl border bg-white p-4 shadow-sm"><p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Utilisations</p><p className="mt-1 text-2xl font-bold text-orange-700">{promotionSummary.uses}</p><p className="mt-1 text-xs text-muted-foreground">Toutes les offres confondues</p></div></section>
         <div className="rounded-xl border border-orange-100 bg-orange-50/60 p-4 text-sm text-slate-700"><strong>Règle de saisie :</strong> une remise fixe est exprimée en CHF (ex. 5,00 ou 5.00), tandis qu'une remise en pourcentage est saisie directement (ex. 10 = 10 %).</div>
         <div className="overflow-hidden rounded-lg border bg-white">

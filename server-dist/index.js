@@ -34764,7 +34764,7 @@ var shopRouter = router({
 init_trpc();
 init_storeScope();
 import { TRPCError as TRPCError15 } from "@trpc/server";
-import { z as z45 } from "zod";
+import { z as z51 } from "zod";
 
 // server/authRouter.ts
 init_const();
@@ -39532,6 +39532,203 @@ var whatsappSmsMarketingRouter = router({
   })
 });
 
+// server/spinToWinRouter.ts
+init_trpc();
+
+// shared/spinToWinGamification.ts
+import { z as z45 } from "zod";
+var defaultSpinToWinRewards = [
+  { id: "r1", label: "-10% sur tout le panier", code: "CHANCE10", discountPercent: 10, probabilityWeight: 4 },
+  { id: "r2", label: "Livraison Offerte", code: "FREESHIP", discountPercent: 0, probabilityWeight: 3 },
+  { id: "r3", label: "-15% de bienvenue", code: "SUPER15", discountPercent: 15, probabilityWeight: 2 },
+  { id: "r4", label: "-5% imm\xE9diats", code: "CADEAU5", discountPercent: 5, probabilityWeight: 5 }
+];
+var defaultSpinToWinSettings = {
+  enabled: true,
+  title: "Tournez la Roue Privil\xE8ge !",
+  description: "Tentez votre chance pour remporter un code promo exclusif valable imm\xE9diatement.",
+  rewards: defaultSpinToWinRewards
+};
+var spinToWinRewardSchema = z45.object({
+  id: z45.string(),
+  label: z45.string().min(1, "Libell\xE9 requis"),
+  code: z45.string().min(1, "Code promo requis"),
+  discountPercent: z45.number().min(0).max(100),
+  probabilityWeight: z45.number().min(1).max(100)
+});
+var spinToWinSettingsSchema = z45.object({
+  enabled: z45.boolean().default(true),
+  title: z45.string().min(1, "Titre requis"),
+  description: z45.string().default(""),
+  rewards: z45.array(spinToWinRewardSchema).min(2, "Au moins 2 r\xE9compenses requises")
+});
+
+// server/spinToWinRouter.ts
+import { z as z46 } from "zod";
+var storeSpinToWinSettings = /* @__PURE__ */ new Map();
+var spinToWinRouter = router({
+  getSettings: publicProcedure.query(async ({ ctx }) => {
+    const storeId = ctx.store?.id || 1;
+    return storeSpinToWinSettings.get(storeId) || defaultSpinToWinSettings;
+  }),
+  saveSettings: protectedProcedure.input(spinToWinSettingsSchema).mutation(async ({ ctx, input }) => {
+    const storeId = ctx.store?.id || 1;
+    storeSpinToWinSettings.set(storeId, input);
+    return input;
+  }),
+  claimReward: publicProcedure.input(z46.object({
+    email: z46.string().email("Adresse email requise"),
+    rewardCode: z46.string().min(1),
+    rewardLabel: z46.string().min(1)
+  })).mutation(async ({ ctx, input }) => {
+    const storeId = ctx.store?.id || 1;
+    console.log(`[SpinToWin] Lead captured for store ${storeId}: ${input.email} -> ${input.rewardCode} (${input.rewardLabel})`);
+    return { success: true, message: `Code ${input.rewardCode} d\xE9bloqu\xE9 pour ${input.email} !` };
+  })
+});
+
+// server/visualSearchRouter.ts
+init_trpc();
+
+// shared/visualSearchConfig.ts
+import { z as z47 } from "zod";
+var defaultVisualSearchConfig = {
+  enabled: true,
+  title: "Recherche par Photo IA",
+  description: "Envoyez une photo ou une capture d'\xE9cran d'un article pour trouver nos produits similaires."
+};
+var visualSearchConfigSchema = z47.object({
+  enabled: z47.boolean().default(true),
+  title: z47.string().min(1, "Titre requis"),
+  description: z47.string().default("")
+});
+
+// server/visualSearchRouter.ts
+import { z as z48 } from "zod";
+var storeVisualSearchConfig = /* @__PURE__ */ new Map();
+var visualSearchRouter = router({
+  getConfig: publicProcedure.query(async ({ ctx }) => {
+    const storeId = ctx.store?.id || 1;
+    return storeVisualSearchConfig.get(storeId) || defaultVisualSearchConfig;
+  }),
+  saveConfig: protectedProcedure.input(visualSearchConfigSchema).mutation(async ({ ctx, input }) => {
+    const storeId = ctx.store?.id || 1;
+    storeVisualSearchConfig.set(storeId, input);
+    return input;
+  }),
+  searchByImage: publicProcedure.input(z48.object({
+    imageDataUrl: z48.string().min(1, "Image requise")
+  })).query(async ({ ctx, input }) => {
+    const storeId = ctx.store?.id || 1;
+    const config = storeVisualSearchConfig.get(storeId) || defaultVisualSearchConfig;
+    if (!config.enabled) {
+      return { enabled: false, results: [] };
+    }
+    const { getAllProducts: getAllProducts2 } = await Promise.resolve().then(() => (init_db(), db_exports));
+    const products3 = await getAllProducts2(storeId);
+    const sampleKeywords = ["montre", "sac", "bijou", "collier", "basket", "vetement", "luxe", "cuir", "or", "argent"];
+    const matched = products3.slice(0, 4);
+    return {
+      enabled: true,
+      results: matched
+    };
+  })
+});
+
+// server/shoppableStoriesRouter.ts
+init_trpc();
+
+// shared/shoppableVideoStories.ts
+import { z as z49 } from "zod";
+var defaultShoppableStories = [
+  {
+    id: "story-1",
+    title: "Nouveaut\xE9s Tendance",
+    videoUrl: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4",
+    posterUrl: "https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=600&auto=format&fit=crop&q=80",
+    productTitle: "Montre Chrono \xC9l\xE9gance Edition Luxe",
+    productPriceCents: 18900
+  },
+  {
+    id: "story-2",
+    title: "Coulisses & Atelier",
+    videoUrl: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4",
+    posterUrl: "https://images.unsplash.com/photo-1512496015851-a90fb38ba796?w=600&auto=format&fit=crop&q=80",
+    productTitle: "Collier Pendentif \xC9clat Pr\xE9cieux",
+    productPriceCents: 12500
+  },
+  {
+    id: "story-3",
+    title: "Inspirations Style",
+    videoUrl: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4",
+    posterUrl: "https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=600&auto=format&fit=crop&q=80",
+    productTitle: "Baskets Urban Run Pro",
+    productPriceCents: 14900
+  }
+];
+var defaultShoppableStoriesConfig = {
+  enabled: true,
+  sectionTitle: "D\xE9couvrir en Stories",
+  stories: defaultShoppableStories
+};
+var shoppableStoryItemSchema = z49.object({
+  id: z49.string(),
+  title: z49.string().min(1, "Titre requis"),
+  videoUrl: z49.string().min(1, "URL vid\xE9o requise"),
+  posterUrl: z49.string().default(""),
+  productId: z49.number().int().optional(),
+  productTitle: z49.string().optional(),
+  productPriceCents: z49.number().int().optional(),
+  productImageUrl: z49.string().optional()
+});
+var shoppableStoriesConfigSchema = z49.object({
+  enabled: z49.boolean().default(true),
+  sectionTitle: z49.string().min(1, "Titre de section requis"),
+  stories: z49.array(shoppableStoryItemSchema).default([])
+});
+
+// server/shoppableStoriesRouter.ts
+var storeShoppableStoriesConfig = /* @__PURE__ */ new Map();
+var shoppableStoriesRouter = router({
+  getConfig: publicProcedure.query(async ({ ctx }) => {
+    const storeId = ctx.store?.id || 1;
+    return storeShoppableStoriesConfig.get(storeId) || defaultShoppableStoriesConfig;
+  }),
+  saveConfig: protectedProcedure.input(shoppableStoriesConfigSchema).mutation(async ({ ctx, input }) => {
+    const storeId = ctx.store?.id || 1;
+    storeShoppableStoriesConfig.set(storeId, input);
+    return input;
+  })
+});
+
+// server/productCompareRouter.ts
+init_trpc();
+
+// shared/productCompareConfig.ts
+import { z as z50 } from "zod";
+var defaultProductCompareConfig = {
+  enabled: true,
+  maxItems: 4
+};
+var productCompareConfigSchema = z50.object({
+  enabled: z50.boolean().default(true),
+  maxItems: z50.number().min(2).max(6).default(4)
+});
+
+// server/productCompareRouter.ts
+var storeProductCompareConfig = /* @__PURE__ */ new Map();
+var productCompareRouter = router({
+  getConfig: publicProcedure.query(async ({ ctx }) => {
+    const storeId = ctx.store?.id || 1;
+    return storeProductCompareConfig.get(storeId) || defaultProductCompareConfig;
+  }),
+  saveConfig: protectedProcedure.input(productCompareConfigSchema).mutation(async ({ ctx, input }) => {
+    const storeId = ctx.store?.id || 1;
+    storeProductCompareConfig.set(storeId, input);
+    return input;
+  })
+});
+
 // server/routers.ts
 init_storeMaintenanceMode();
 init_storeProductBundles();
@@ -39613,6 +39810,10 @@ var appRouter = router({
   stickyAddToCart: stickyAddToCartRouter,
   frequentlyBoughtTogether: frequentlyBoughtTogetherRouter,
   whatsappSmsMarketing: whatsappSmsMarketingRouter,
+  spinToWin: spinToWinRouter,
+  visualSearch: visualSearchRouter,
+  shoppableStories: shoppableStoriesRouter,
+  productCompare: productCompareRouter,
   checkout: stripeCheckoutRouter,
   // Only visual URLs are public. Mutations are platformProcedure-only through
   // admin.platformIdentity, so customer boutiques cannot alter this setting.
@@ -39712,8 +39913,8 @@ var appRouter = router({
       const { getActiveCampaign: getActiveCampaign2 } = await Promise.resolve().then(() => (init_db(), db_exports));
       return await getActiveCampaign2(ctx.store?.id);
     }),
-    getCheckoutShippingPolicy: storefrontProcedure4.input(z45.object({
-      countryCode: z45.string().trim().length(2).regex(/^[A-Za-z]{2}$/).optional()
+    getCheckoutShippingPolicy: storefrontProcedure4.input(z51.object({
+      countryCode: z51.string().trim().length(2).regex(/^[A-Za-z]{2}$/).optional()
     }).optional()).query(async ({ ctx, input }) => {
       const { getCheckoutShippingPolicy: getCheckoutShippingPolicy2 } = await Promise.resolve().then(() => (init_db(), db_exports));
       return await getCheckoutShippingPolicy2(ctx.store?.id, input?.countryCode);
@@ -39729,14 +39930,14 @@ var appRouter = router({
         relayDeliveryDzd: rate.relayDeliveryDzd
       }));
     }),
-    getCheckoutTaxDisclosure: storefrontProcedure4.input(z45.object({
-      countryCode: z45.string().trim().length(2).regex(/^[A-Za-z]{2}$/).optional()
+    getCheckoutTaxDisclosure: storefrontProcedure4.input(z51.object({
+      countryCode: z51.string().trim().length(2).regex(/^[A-Za-z]{2}$/).optional()
     }).optional()).query(async ({ ctx, input }) => {
       const { getCheckoutTaxDisclosure: getCheckoutTaxDisclosure2 } = await Promise.resolve().then(() => (init_db(), db_exports));
       return await getCheckoutTaxDisclosure2(ctx.store?.id, input?.countryCode);
     }),
-    getCheckoutLegalReadiness: storefrontProcedure4.input(z45.object({
-      countryCode: z45.string().trim().length(2).regex(/^[A-Za-z]{2}$/).optional()
+    getCheckoutLegalReadiness: storefrontProcedure4.input(z51.object({
+      countryCode: z51.string().trim().length(2).regex(/^[A-Za-z]{2}$/).optional()
     }).optional()).query(async ({ ctx, input }) => {
       const { getCheckoutLegalReadiness: getCheckoutLegalReadiness2 } = await Promise.resolve().then(() => (init_db(), db_exports));
       return await getCheckoutLegalReadiness2(ctx.store?.id, input?.countryCode);

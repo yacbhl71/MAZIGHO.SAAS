@@ -113,6 +113,7 @@ const menuSections: Array<{ label: string; tone: SidebarTone; items: Array<{ ico
     items: [
       { icon: Package, label: "Produits", path: "/admin/produits" },
       { icon: FolderTree, label: "Catégories", path: "/admin/categories" },
+      { icon: Megaphone, label: "Marketing & Animations", path: "/admin/promotions" },
       { icon: Brush, label: "Collections créatives", path: "/admin/creations" },
       { icon: Languages, label: "Langues & traductions", path: "/admin/traductions" },
       { icon: PencilLine, label: "Éditeur simple", path: "/admin/editeur" },
@@ -132,11 +133,11 @@ const menuSections: Array<{ label: string; tone: SidebarTone; items: Array<{ ico
     label: "Relation & contenu",
     tone: "violet",
     items: [
+      { icon: Megaphone, label: "Marketing & Promotions", path: "/admin/promotions" },
       { icon: Star, label: "Avis clients", path: "/admin/avis" },
       { icon: MessageSquare, label: "Messages", path: "/admin/messages" },
       { icon: Layout, label: "Contenu", path: "/admin/contenu" },
       { icon: Palette, label: "Personnalisation", path: "/admin/personnalisation" },
-      { icon: Percent, label: "Promotions", path: "/admin/promotions" },
       { icon: Megaphone, label: "Campagnes & bannières", path: "/admin/campagnes" },
       { icon: ShoppingCart, label: "Paniers abandonnés", path: "/admin/paniers-abandonnes" },
       { icon: Mail, label: "E-mails clients", path: "/admin/emails" },
