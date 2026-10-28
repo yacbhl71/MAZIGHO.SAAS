@@ -211,6 +211,10 @@ export default function OwnerAICopilot({ storeName }: OwnerAICopilotProps) {
           <div className="mt-3 flex flex-wrap gap-2">
             {[
               {
+                label: "✨ Génération d'Images IA Produit & Vitrine",
+                prompt: "Comment utiliser le Générateur d'Images IA pour créer des visuels originaux de haute qualité (Bannières Hero, cartes story mobile, visuels catalogue) ?",
+              },
+              {
                 label: "🖼️ Photos & Glisser-Déposer",
                 prompt: "Quelles sont les étapes pour ajouter et réorganiser mes photos de produits par glisser-déposer (Drag & Drop), et comment choisir la photo de couverture ?",
               },

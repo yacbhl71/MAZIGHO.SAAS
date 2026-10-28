@@ -60,4 +60,47 @@ export const aiProductStudioRouter = router({
     .mutation(async ({ input }) => {
       return await generateProductFaq(input.title, input.category);
     }),
+
+  generateStorefrontImage: storeOwnerProcedure
+    .input(
+      z.object({
+        subject: z.string().trim().min(12).max(420),
+        format: z.enum(["hero", "story", "square"]),
+        style: z.enum(["editorial", "soft", "bold"]),
+      })
+    )
+    .mutation(async ({ input }) => {
+      const subject = input.subject.trim();
+      const formatGuides = {
+        hero: "Horizontal 16:9 banner composition, wide room or environment, elegant spacing for hero storefront headers, product showcase in ambient light.",
+        story: "Vertical 9:16 portrait composition, editorial lifestyle framing, high clarity, refined texture details, suitable for mobile cards.",
+        square: "Square 1:1 catalog composition, balanced center focus, studio quality lighting, clean background, sharp details.",
+      };
+      const styleGuides = {
+        editorial: "High-end commercial aesthetic, refined organic colors, natural soft shadows, professional photography, cinematic depth of field.",
+        soft: "Warm pastel lighting, gentle highlights, soothing atmosphere, minimalist aesthetic, serene mood.",
+        bold: "Modern vibrant contrast, punchy accent colors, crisp studio lighting, sleek contemporary style.",
+      };
+      const prompt = [
+        "Professional e-commerce product and storefront photography.",
+        `Subject: ${subject}`,
+        `Composition & Format: ${formatGuides[input.format]}`,
+        `Style & Mood: ${styleGuides[input.style]}`,
+        "Clean visual presentation suitable for a premium store.",
+        "No text overlays, no typography, no watermarks, no logos, no lower thirds.",
+      ].join("\n");
+
+      try {
+        const { generateImage } = await import("./_core/imageGeneration");
+        const generated = await generateImage({ prompt });
+        if (!generated.url) throw new Error("STORE_IMAGE_GENERATION_EMPTY_RESULT");
+        return { url: generated.url };
+      } catch (error) {
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: error instanceof Error && error.message ? error.message : "La génération de l'image a échoué. Veuillez réessayer.",
+        });
+      }
+    }),
 });
+

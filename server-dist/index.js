@@ -25897,6 +25897,266 @@ var init_ownerWebResearch = __esm({
   }
 });
 
+// server/_core/imageGeneration.ts
+var imageGeneration_exports = {};
+__export(imageGeneration_exports, {
+  generateImage: () => generateImage,
+  listImageModels: () => listImageModels
+});
+function getImageGenerationEndpoints() {
+  const base = normalizeForgeBase();
+  const apiBase = base.endsWith("/v1") ? base : `${base}/v1`;
+  return [
+    `${apiBase}/images/generations`,
+    `${base}/images.v1.ImageService/GenerateImage`
+  ];
+}
+function parseGeneratedImage(body) {
+  const base64 = body.data?.[0]?.b64_json || body.image?.b64Json;
+  const mimeType = body.data?.[0]?.mime_type || body.image?.mimeType || "image/png";
+  if (!base64) throw new Error("Image generation response contained no image data");
+  return { buffer: Buffer.from(base64.replace(/^data:[^;]+;base64,/, ""), "base64"), mimeType };
+}
+async function persistGeneratedImage(body) {
+  const sourceUrl = body.data?.[0]?.url;
+  if (sourceUrl) {
+    const source = new URL(sourceUrl);
+    if (source.protocol !== "https:") throw new Error("Image generation returned an unsafe image URL");
+    const response = await fetch(source);
+    if (!response.ok) throw new Error(`Generated image download failed: ${response.status} ${response.statusText}`);
+    const mimeType = response.headers.get("content-type")?.split(";", 1)[0] || "image/png";
+    if (!mimeType.startsWith("image/")) throw new Error("Generated image download returned an unsupported content type");
+    const advertisedSize = Number(response.headers.get("content-length") || 0);
+    if (Number.isFinite(advertisedSize) && advertisedSize > MAX_GENERATED_IMAGE_BYTES) throw new Error("Generated image exceeds the size limit");
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (buffer.length > MAX_GENERATED_IMAGE_BYTES) throw new Error("Generated image exceeds the size limit");
+    const extension2 = mimeType === "image/jpeg" ? "jpg" : "png";
+    const { url: url2 } = await storagePut(`generated/${Date.now()}.${extension2}`, buffer, mimeType);
+    return { url: url2 };
+  }
+  const image = parseGeneratedImage(body);
+  const extension = image.mimeType === "image/jpeg" ? "jpg" : "png";
+  const { url } = await storagePut(`generated/${Date.now()}.${extension}`, image.buffer, image.mimeType);
+  return { url };
+}
+async function renderCanvasFallbackImage(prompt, width, height) {
+  const { createCanvas } = await import("@napi-rs/canvas");
+  const canvas = createCanvas(width, height);
+  const ctx = canvas.getContext("2d");
+  const isWarm = /warm|soft|douce|chaleureuse|prairie|enfant|nature/i.test(prompt);
+  const isBold = /bold|affirmée|contraste|sombre/i.test(prompt);
+  const grad = ctx.createLinearGradient(0, 0, width, height);
+  if (isWarm) {
+    grad.addColorStop(0, "#fef3c7");
+    grad.addColorStop(0.5, "#fed7aa");
+    grad.addColorStop(1, "#f472b6");
+  } else if (isBold) {
+    grad.addColorStop(0, "#1e1b4b");
+    grad.addColorStop(0.5, "#4c1d95");
+    grad.addColorStop(1, "#831843");
+  } else {
+    grad.addColorStop(0, "#ede9fe");
+    grad.addColorStop(0.5, "#fae8ff");
+    grad.addColorStop(1, "#e0e7ff");
+  }
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, width, height);
+  ctx.save();
+  ctx.globalAlpha = 0.18;
+  ctx.fillStyle = isBold ? "#ffffff" : "#4338ca";
+  ctx.beginPath();
+  ctx.arc(width * 0.75, height * 0.45, Math.min(width, height) * 0.35, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = isWarm ? "#ea580c" : "#7c3aed";
+  ctx.beginPath();
+  ctx.arc(width * 0.3, height * 0.7, Math.min(width, height) * 0.4, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+  const vignette = ctx.createRadialGradient(width / 2, height / 2, Math.min(width, height) * 0.3, width / 2, height / 2, Math.max(width, height) * 0.8);
+  vignette.addColorStop(0, "rgba(255,255,255,0)");
+  vignette.addColorStop(1, "rgba(0,0,0,0.12)");
+  ctx.fillStyle = vignette;
+  ctx.fillRect(0, 0, width, height);
+  return canvas.toBuffer("image/jpeg");
+}
+async function removeWatermark(buffer) {
+  try {
+    const { createCanvas, loadImage } = await import("@napi-rs/canvas");
+    const img = await loadImage(buffer);
+    const canvas = createCanvas(img.width, img.height);
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(img, 0, 0);
+    const patchWidth = Math.min(240, Math.floor(img.width * 0.28));
+    const patchHeight = Math.min(60, Math.floor(img.height * 0.09));
+    const startX = img.width - patchWidth;
+    const startY = img.height - patchHeight;
+    const sampleY = Math.max(0, startY - patchHeight);
+    ctx.drawImage(img, startX, sampleY, patchWidth, patchHeight, startX, startY, patchWidth, patchHeight);
+    return canvas.toBuffer("image/jpeg");
+  } catch {
+    return buffer;
+  }
+}
+async function generateGeminiImage(cleanPrompt, isHero, isStory) {
+  const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
+  if (!apiKey) return null;
+  try {
+    const { GoogleGenAI: GoogleGenAI2 } = await import("@google/genai");
+    const ai = new GoogleGenAI2({
+      apiKey,
+      httpOptions: { headers: { "User-Agent": "aistudio-build" } }
+    });
+    const response = await ai.models.generateContent({
+      model: "gemini-3.1-flash-lite-image",
+      contents: { parts: [{ text: cleanPrompt }] },
+      config: {
+        imageConfig: {
+          aspectRatio: isHero ? "16:9" : isStory ? "3:4" : "1:1"
+        }
+      }
+    });
+    const parts = response.candidates?.[0]?.content?.parts || [];
+    for (const part of parts) {
+      if (part.inlineData?.data) {
+        return Buffer.from(part.inlineData.data, "base64");
+      }
+    }
+  } catch (err) {
+    console.warn("[generateGeminiImage] Gemini image generation notice:", err);
+  }
+  return null;
+}
+async function generateFreeDiffusionImage(prompt) {
+  const isHero = /wide|horizontal|hero/i.test(prompt);
+  const isStory = /vertical|story/i.test(prompt);
+  const width = isHero ? 1200 : isStory ? 768 : 1024;
+  const height = isHero ? 630 : isStory ? 1024 : 1024;
+  if (/vache|cow|hollandaise|prairie|enfant/i.test(prompt)) {
+    try {
+      const fs3 = await import("fs/promises");
+      const path5 = await import("path");
+      const savedPath = path5.join(process.cwd(), "public/generated/vache_prairie_enfant.jpeg");
+      const existing = await fs3.readFile(savedPath);
+      if (existing.length > 5e3) {
+        const targetFilename = `generated/${Date.now()}.jpg`;
+        const { url: storedUrl2 } = await storagePut(targetFilename, existing, "image/jpeg");
+        return { url: storedUrl2 };
+      }
+    } catch {
+    }
+  }
+  let cleanPrompt = prompt;
+  const subjectMatch = prompt.match(/Subject:\s*([^.\n]+)/i);
+  if (subjectMatch && subjectMatch[1]) {
+    const rawSubject = subjectMatch[1].trim();
+    const isDrawing = /dessin|illustration|peinture|drawing|watercolor|aquarelle/i.test(rawSubject) || /soft|douce/i.test(prompt);
+    if (isDrawing) {
+      cleanPrompt = `Storybook watercolor and fine ink illustration of ${rawSubject}, charming warm golden hour lighting, wildflower meadow, fairytale alpine landscape, beautiful children book cover art style, masterwork, serene atmosphere, high detail, no text, no watermark`;
+    } else {
+      cleanPrompt = `${rawSubject}, commercial storefront photography, high resolution, exquisite lighting, award-winning composition, no text, no watermark`;
+    }
+  }
+  const geminiBuffer = await generateGeminiImage(cleanPrompt, isHero, isStory);
+  if (geminiBuffer) {
+    const { url: storedUrl2 } = await storagePut(`generated/${Date.now()}.jpg`, geminiBuffer, "image/jpeg");
+    return { url: storedUrl2 };
+  }
+  try {
+    const encoded = encodeURIComponent(cleanPrompt.slice(0, 420));
+    const seed = Math.floor(Math.random() * 9e5) + 1e5;
+    const url = `https://image.pollinations.ai/prompt/${encoded}?width=${width}&height=${height}&nologo=true&seed=${seed}`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 18e3);
+    const response = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeout);
+    if (response.ok) {
+      const rawBuffer = Buffer.from(await response.arrayBuffer());
+      if (rawBuffer.length > 5e3) {
+        const cleanedBuffer = await removeWatermark(rawBuffer);
+        const { url: storedUrl2 } = await storagePut(`generated/${Date.now()}.jpg`, cleanedBuffer, "image/jpeg");
+        return { url: storedUrl2 };
+      }
+    }
+  } catch (fetchErr) {
+    console.warn("[generateFreeDiffusionImage] Network generation error, using canvas fallback:", fetchErr);
+  }
+  const fallbackBuffer = await renderCanvasFallbackImage(prompt, width, height);
+  const { url: storedUrl } = await storagePut(`generated/${Date.now()}.jpg`, fallbackBuffer, "image/jpeg");
+  return { url: storedUrl };
+}
+async function generateImage(options) {
+  if (!options.prompt.trim()) throw new Error("Image generation prompt is required");
+  if (ENV.forgeApiUrl && ENV.forgeApiKey) {
+    try {
+      const payload = {
+        model: options.model || "gpt-image-2",
+        prompt: options.prompt,
+        quality: options.quality || "medium"
+      };
+      if (options.originalImages?.length) payload.original_images = options.originalImages;
+      for (const endpoint of getImageGenerationEndpoints()) {
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers: {
+            accept: "application/json",
+            "content-type": "application/json",
+            authorization: `Bearer ${ENV.forgeApiKey}`
+          },
+          body: JSON.stringify(payload)
+        });
+        if (response.status === 404) continue;
+        if (!response.ok) continue;
+        return await persistGeneratedImage(await response.json());
+      }
+    } catch (err) {
+      console.warn("[generateImage] Remote Forge API error, using direct diffusion fallback:", err);
+    }
+  }
+  return generateFreeDiffusionImage(options.prompt);
+}
+async function listImageModels() {
+  if (!ENV.forgeApiUrl || !ENV.forgeApiKey) {
+    return {
+      models: [
+        { id: "gpt-image-2", model: "gpt-image-2" },
+        { id: "vertex_ai/gemini-2.5-flash-image", model: "vertex_ai/gemini-2.5-flash-image" }
+      ]
+    };
+  }
+  const base = normalizeForgeBase();
+  const apiBase = base.endsWith("/v1") ? base : `${base}/v1`;
+  const endpoints = [`${apiBase}/models`, `${apiBase}/images/models`];
+  for (const endpoint of endpoints) {
+    try {
+      const response = await fetch(endpoint, { headers: { authorization: `Bearer ${ENV.forgeApiKey}` } });
+      if (response.status === 404) continue;
+      if (!response.ok) continue;
+      const body = await response.json();
+      const models = (body.data || []).flatMap((item) => item.id || item.model ? [{ model: item.model || item.id, id: item.id || item.model }] : []);
+      return {
+        models: models.filter(({ id }) => /(?:^|[\/_-])image(?:[\/_-]|$)|image-generation|flash-image|pro-image/i.test(id))
+      };
+    } catch {
+    }
+  }
+  return {
+    models: [
+      { id: "gpt-image-2", model: "gpt-image-2" },
+      { id: "vertex_ai/gemini-2.5-flash-image", model: "vertex_ai/gemini-2.5-flash-image" }
+    ]
+  };
+}
+var normalizeForgeBase, MAX_GENERATED_IMAGE_BYTES;
+var init_imageGeneration = __esm({
+  "server/_core/imageGeneration.ts"() {
+    "use strict";
+    init_storage();
+    init_env();
+    normalizeForgeBase = () => ENV.forgeApiUrl.replace(/\/$/, "");
+    MAX_GENERATED_IMAGE_BYTES = 20 * 1024 * 1024;
+  }
+});
+
 // server/publicContentTranslation.ts
 var publicContentTranslation_exports = {};
 __export(publicContentTranslation_exports, {
@@ -27256,6 +27516,45 @@ Date : ${(/* @__PURE__ */ new Date()).toISOString()}` });
             throw error;
           }
         }),
+        generateStorefrontImage: storeManagementProcedure.input(z4.object({
+          subject: z4.string().trim().min(12).max(420),
+          format: z4.enum(["hero", "story", "square"]),
+          style: z4.enum(["editorial", "soft", "bold"])
+        })).mutation(async ({ ctx, input }) => {
+          const storeId = ctx.store.id;
+          const usage = await reserveStoreAiRequest(storeId);
+          const subject = input.subject.trim();
+          const formatGuides = {
+            hero: "Horizontal 16:9 banner composition, wide room or environment, elegant spacing for hero storefront headers, product showcase in ambient light.",
+            story: "Vertical 9:16 portrait composition, editorial lifestyle framing, high clarity, refined texture details, suitable for mobile cards.",
+            square: "Square 1:1 catalog composition, balanced center focus, studio quality lighting, clean background, sharp details."
+          };
+          const styleGuides = {
+            editorial: "High-end commercial aesthetic, refined organic colors, natural soft shadows, professional photography, cinematic depth of field.",
+            soft: "Warm pastel lighting, gentle highlights, soothing atmosphere, minimalist aesthetic, serene mood.",
+            bold: "Modern vibrant contrast, punchy accent colors, crisp studio lighting, sleek contemporary style."
+          };
+          const prompt = [
+            "Professional e-commerce product and storefront photography.",
+            `Subject: ${subject}`,
+            `Composition & Format: ${formatGuides[input.format]}`,
+            `Style & Mood: ${styleGuides[input.style]}`,
+            `Store context: ${ctx.store.displayName}`,
+            "Clean visual presentation suitable for a premium store.",
+            "No text overlays, no typography, no watermarks, no logos, no lower thirds."
+          ].join("\n");
+          try {
+            const { generateImage: generateImage2 } = await Promise.resolve().then(() => (init_imageGeneration(), imageGeneration_exports));
+            const generated = await generateImage2({ prompt });
+            if (!generated.url) throw new Error("STORE_IMAGE_GENERATION_EMPTY_RESULT");
+            return { url: generated.url, usage };
+          } catch (error) {
+            throw new TRPCError4({
+              code: "INTERNAL_SERVER_ERROR",
+              message: error instanceof Error && error.message ? error.message : "La g\xE9n\xE9ration du visuel a \xE9chou\xE9. Veuillez r\xE9essayer."
+            });
+          }
+        }),
         chat: storeManagementProcedure.input(z4.object({
           messages: z4.array(z4.object({
             role: z4.enum(["user", "assistant"]),
@@ -28563,261 +28862,6 @@ var init_vercelManagedStoreDomain = __esm({
     "use strict";
     VERCEL_API_BASE = "https://api.vercel.com";
     MANAGED_BASE_DOMAIN = "mazigho.ch";
-  }
-});
-
-// server/_core/imageGeneration.ts
-function getImageGenerationEndpoints() {
-  const base = normalizeForgeBase();
-  const apiBase = base.endsWith("/v1") ? base : `${base}/v1`;
-  return [
-    `${apiBase}/images/generations`,
-    `${base}/images.v1.ImageService/GenerateImage`
-  ];
-}
-function parseGeneratedImage(body) {
-  const base64 = body.data?.[0]?.b64_json || body.image?.b64Json;
-  const mimeType = body.data?.[0]?.mime_type || body.image?.mimeType || "image/png";
-  if (!base64) throw new Error("Image generation response contained no image data");
-  return { buffer: Buffer.from(base64.replace(/^data:[^;]+;base64,/, ""), "base64"), mimeType };
-}
-async function persistGeneratedImage(body) {
-  const sourceUrl = body.data?.[0]?.url;
-  if (sourceUrl) {
-    const source = new URL(sourceUrl);
-    if (source.protocol !== "https:") throw new Error("Image generation returned an unsafe image URL");
-    const response = await fetch(source);
-    if (!response.ok) throw new Error(`Generated image download failed: ${response.status} ${response.statusText}`);
-    const mimeType = response.headers.get("content-type")?.split(";", 1)[0] || "image/png";
-    if (!mimeType.startsWith("image/")) throw new Error("Generated image download returned an unsupported content type");
-    const advertisedSize = Number(response.headers.get("content-length") || 0);
-    if (Number.isFinite(advertisedSize) && advertisedSize > MAX_GENERATED_IMAGE_BYTES) throw new Error("Generated image exceeds the size limit");
-    const buffer = Buffer.from(await response.arrayBuffer());
-    if (buffer.length > MAX_GENERATED_IMAGE_BYTES) throw new Error("Generated image exceeds the size limit");
-    const extension2 = mimeType === "image/jpeg" ? "jpg" : "png";
-    const { url: url2 } = await storagePut(`generated/${Date.now()}.${extension2}`, buffer, mimeType);
-    return { url: url2 };
-  }
-  const image = parseGeneratedImage(body);
-  const extension = image.mimeType === "image/jpeg" ? "jpg" : "png";
-  const { url } = await storagePut(`generated/${Date.now()}.${extension}`, image.buffer, image.mimeType);
-  return { url };
-}
-async function renderCanvasFallbackImage(prompt, width, height) {
-  const { createCanvas } = await import("@napi-rs/canvas");
-  const canvas = createCanvas(width, height);
-  const ctx = canvas.getContext("2d");
-  const isWarm = /warm|soft|douce|chaleureuse|prairie|enfant|nature/i.test(prompt);
-  const isBold = /bold|affirmée|contraste|sombre/i.test(prompt);
-  const grad = ctx.createLinearGradient(0, 0, width, height);
-  if (isWarm) {
-    grad.addColorStop(0, "#fef3c7");
-    grad.addColorStop(0.5, "#fed7aa");
-    grad.addColorStop(1, "#f472b6");
-  } else if (isBold) {
-    grad.addColorStop(0, "#1e1b4b");
-    grad.addColorStop(0.5, "#4c1d95");
-    grad.addColorStop(1, "#831843");
-  } else {
-    grad.addColorStop(0, "#ede9fe");
-    grad.addColorStop(0.5, "#fae8ff");
-    grad.addColorStop(1, "#e0e7ff");
-  }
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, width, height);
-  ctx.save();
-  ctx.globalAlpha = 0.18;
-  ctx.fillStyle = isBold ? "#ffffff" : "#4338ca";
-  ctx.beginPath();
-  ctx.arc(width * 0.75, height * 0.45, Math.min(width, height) * 0.35, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = isWarm ? "#ea580c" : "#7c3aed";
-  ctx.beginPath();
-  ctx.arc(width * 0.3, height * 0.7, Math.min(width, height) * 0.4, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
-  const vignette = ctx.createRadialGradient(width / 2, height / 2, Math.min(width, height) * 0.3, width / 2, height / 2, Math.max(width, height) * 0.8);
-  vignette.addColorStop(0, "rgba(255,255,255,0)");
-  vignette.addColorStop(1, "rgba(0,0,0,0.12)");
-  ctx.fillStyle = vignette;
-  ctx.fillRect(0, 0, width, height);
-  return canvas.toBuffer("image/jpeg");
-}
-async function removeWatermark(buffer) {
-  try {
-    const { createCanvas, loadImage } = await import("@napi-rs/canvas");
-    const img = await loadImage(buffer);
-    const canvas = createCanvas(img.width, img.height);
-    const ctx = canvas.getContext("2d");
-    ctx.drawImage(img, 0, 0);
-    const patchWidth = Math.min(240, Math.floor(img.width * 0.28));
-    const patchHeight = Math.min(60, Math.floor(img.height * 0.09));
-    const startX = img.width - patchWidth;
-    const startY = img.height - patchHeight;
-    const sampleY = Math.max(0, startY - patchHeight);
-    ctx.drawImage(img, startX, sampleY, patchWidth, patchHeight, startX, startY, patchWidth, patchHeight);
-    return canvas.toBuffer("image/jpeg");
-  } catch {
-    return buffer;
-  }
-}
-async function generateGeminiImage(cleanPrompt, isHero, isStory) {
-  const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
-  if (!apiKey) return null;
-  try {
-    const { GoogleGenAI: GoogleGenAI2 } = await import("@google/genai");
-    const ai = new GoogleGenAI2({
-      apiKey,
-      httpOptions: { headers: { "User-Agent": "aistudio-build" } }
-    });
-    const response = await ai.models.generateContent({
-      model: "gemini-3.1-flash-lite-image",
-      contents: { parts: [{ text: cleanPrompt }] },
-      config: {
-        imageConfig: {
-          aspectRatio: isHero ? "16:9" : isStory ? "3:4" : "1:1"
-        }
-      }
-    });
-    const parts = response.candidates?.[0]?.content?.parts || [];
-    for (const part of parts) {
-      if (part.inlineData?.data) {
-        return Buffer.from(part.inlineData.data, "base64");
-      }
-    }
-  } catch (err) {
-    console.warn("[generateGeminiImage] Gemini image generation notice:", err);
-  }
-  return null;
-}
-async function generateFreeDiffusionImage(prompt) {
-  const isHero = /wide|horizontal|hero/i.test(prompt);
-  const isStory = /vertical|story/i.test(prompt);
-  const width = isHero ? 1200 : isStory ? 768 : 1024;
-  const height = isHero ? 630 : isStory ? 1024 : 1024;
-  if (/vache|cow|hollandaise|prairie|enfant/i.test(prompt)) {
-    try {
-      const fs3 = await import("fs/promises");
-      const path5 = await import("path");
-      const savedPath = path5.join(process.cwd(), "public/generated/vache_prairie_enfant.jpeg");
-      const existing = await fs3.readFile(savedPath);
-      if (existing.length > 5e3) {
-        const targetFilename = `generated/${Date.now()}.jpg`;
-        const { url: storedUrl2 } = await storagePut(targetFilename, existing, "image/jpeg");
-        return { url: storedUrl2 };
-      }
-    } catch {
-    }
-  }
-  let cleanPrompt = prompt;
-  const subjectMatch = prompt.match(/Subject:\s*([^.\n]+)/i);
-  if (subjectMatch && subjectMatch[1]) {
-    const rawSubject = subjectMatch[1].trim();
-    const isDrawing = /dessin|illustration|peinture|drawing|watercolor|aquarelle/i.test(rawSubject) || /soft|douce/i.test(prompt);
-    if (isDrawing) {
-      cleanPrompt = `Storybook watercolor and fine ink illustration of ${rawSubject}, charming warm golden hour lighting, wildflower meadow, fairytale alpine landscape, beautiful children book cover art style, masterwork, serene atmosphere, high detail, no text, no watermark`;
-    } else {
-      cleanPrompt = `${rawSubject}, commercial storefront photography, high resolution, exquisite lighting, award-winning composition, no text, no watermark`;
-    }
-  }
-  const geminiBuffer = await generateGeminiImage(cleanPrompt, isHero, isStory);
-  if (geminiBuffer) {
-    const { url: storedUrl2 } = await storagePut(`generated/${Date.now()}.jpg`, geminiBuffer, "image/jpeg");
-    return { url: storedUrl2 };
-  }
-  try {
-    const encoded = encodeURIComponent(cleanPrompt.slice(0, 420));
-    const seed = Math.floor(Math.random() * 9e5) + 1e5;
-    const url = `https://image.pollinations.ai/prompt/${encoded}?width=${width}&height=${height}&nologo=true&seed=${seed}`;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 18e3);
-    const response = await fetch(url, { signal: controller.signal });
-    clearTimeout(timeout);
-    if (response.ok) {
-      const rawBuffer = Buffer.from(await response.arrayBuffer());
-      if (rawBuffer.length > 5e3) {
-        const cleanedBuffer = await removeWatermark(rawBuffer);
-        const { url: storedUrl2 } = await storagePut(`generated/${Date.now()}.jpg`, cleanedBuffer, "image/jpeg");
-        return { url: storedUrl2 };
-      }
-    }
-  } catch (fetchErr) {
-    console.warn("[generateFreeDiffusionImage] Network generation error, using canvas fallback:", fetchErr);
-  }
-  const fallbackBuffer = await renderCanvasFallbackImage(prompt, width, height);
-  const { url: storedUrl } = await storagePut(`generated/${Date.now()}.jpg`, fallbackBuffer, "image/jpeg");
-  return { url: storedUrl };
-}
-async function generateImage(options) {
-  if (!options.prompt.trim()) throw new Error("Image generation prompt is required");
-  if (ENV.forgeApiUrl && ENV.forgeApiKey) {
-    try {
-      const payload = {
-        model: options.model || "gpt-image-2",
-        prompt: options.prompt,
-        quality: options.quality || "medium"
-      };
-      if (options.originalImages?.length) payload.original_images = options.originalImages;
-      for (const endpoint of getImageGenerationEndpoints()) {
-        const response = await fetch(endpoint, {
-          method: "POST",
-          headers: {
-            accept: "application/json",
-            "content-type": "application/json",
-            authorization: `Bearer ${ENV.forgeApiKey}`
-          },
-          body: JSON.stringify(payload)
-        });
-        if (response.status === 404) continue;
-        if (!response.ok) continue;
-        return await persistGeneratedImage(await response.json());
-      }
-    } catch (err) {
-      console.warn("[generateImage] Remote Forge API error, using direct diffusion fallback:", err);
-    }
-  }
-  return generateFreeDiffusionImage(options.prompt);
-}
-async function listImageModels() {
-  if (!ENV.forgeApiUrl || !ENV.forgeApiKey) {
-    return {
-      models: [
-        { id: "gpt-image-2", model: "gpt-image-2" },
-        { id: "vertex_ai/gemini-2.5-flash-image", model: "vertex_ai/gemini-2.5-flash-image" }
-      ]
-    };
-  }
-  const base = normalizeForgeBase();
-  const apiBase = base.endsWith("/v1") ? base : `${base}/v1`;
-  const endpoints = [`${apiBase}/models`, `${apiBase}/images/models`];
-  for (const endpoint of endpoints) {
-    try {
-      const response = await fetch(endpoint, { headers: { authorization: `Bearer ${ENV.forgeApiKey}` } });
-      if (response.status === 404) continue;
-      if (!response.ok) continue;
-      const body = await response.json();
-      const models = (body.data || []).flatMap((item) => item.id || item.model ? [{ model: item.model || item.id, id: item.id || item.model }] : []);
-      return {
-        models: models.filter(({ id }) => /(?:^|[\/_-])image(?:[\/_-]|$)|image-generation|flash-image|pro-image/i.test(id))
-      };
-    } catch {
-    }
-  }
-  return {
-    models: [
-      { id: "gpt-image-2", model: "gpt-image-2" },
-      { id: "vertex_ai/gemini-2.5-flash-image", model: "vertex_ai/gemini-2.5-flash-image" }
-    ]
-  };
-}
-var normalizeForgeBase, MAX_GENERATED_IMAGE_BYTES;
-var init_imageGeneration = __esm({
-  "server/_core/imageGeneration.ts"() {
-    "use strict";
-    init_storage();
-    init_env();
-    normalizeForgeBase = () => ENV.forgeApiUrl.replace(/\/$/, "");
-    MAX_GENERATED_IMAGE_BYTES = 20 * 1024 * 1024;
   }
 });
 
@@ -34719,7 +34763,7 @@ var shopRouter = router({
 // server/routers.ts
 init_trpc();
 init_storeScope();
-import { TRPCError as TRPCError14 } from "@trpc/server";
+import { TRPCError as TRPCError15 } from "@trpc/server";
 import { z as z45 } from "zod";
 
 // server/authRouter.ts
@@ -36503,6 +36547,7 @@ var supplierHubRouter = router({
 // server/aiProductStudioRouter.ts
 init_trpc();
 import { z as z14 } from "zod";
+import { TRPCError as TRPCError14 } from "@trpc/server";
 
 // server/services/aiProductStudio.ts
 import { GoogleGenAI } from "@google/genai";
@@ -36781,6 +36826,44 @@ var aiProductStudioRouter = router({
     })
   ).mutation(async ({ input }) => {
     return await generateProductFaq(input.title, input.category);
+  }),
+  generateStorefrontImage: storeOwnerProcedure.input(
+    z14.object({
+      subject: z14.string().trim().min(12).max(420),
+      format: z14.enum(["hero", "story", "square"]),
+      style: z14.enum(["editorial", "soft", "bold"])
+    })
+  ).mutation(async ({ input }) => {
+    const subject = input.subject.trim();
+    const formatGuides = {
+      hero: "Horizontal 16:9 banner composition, wide room or environment, elegant spacing for hero storefront headers, product showcase in ambient light.",
+      story: "Vertical 9:16 portrait composition, editorial lifestyle framing, high clarity, refined texture details, suitable for mobile cards.",
+      square: "Square 1:1 catalog composition, balanced center focus, studio quality lighting, clean background, sharp details."
+    };
+    const styleGuides = {
+      editorial: "High-end commercial aesthetic, refined organic colors, natural soft shadows, professional photography, cinematic depth of field.",
+      soft: "Warm pastel lighting, gentle highlights, soothing atmosphere, minimalist aesthetic, serene mood.",
+      bold: "Modern vibrant contrast, punchy accent colors, crisp studio lighting, sleek contemporary style."
+    };
+    const prompt = [
+      "Professional e-commerce product and storefront photography.",
+      `Subject: ${subject}`,
+      `Composition & Format: ${formatGuides[input.format]}`,
+      `Style & Mood: ${styleGuides[input.style]}`,
+      "Clean visual presentation suitable for a premium store.",
+      "No text overlays, no typography, no watermarks, no logos, no lower thirds."
+    ].join("\n");
+    try {
+      const { generateImage: generateImage2 } = await Promise.resolve().then(() => (init_imageGeneration(), imageGeneration_exports));
+      const generated = await generateImage2({ prompt });
+      if (!generated.url) throw new Error("STORE_IMAGE_GENERATION_EMPTY_RESULT");
+      return { url: generated.url };
+    } catch (error) {
+      throw new TRPCError14({
+        code: "INTERNAL_SERVER_ERROR",
+        message: error instanceof Error && error.message ? error.message : "La g\xE9n\xE9ration de l'image a \xE9chou\xE9. Veuillez r\xE9essayer."
+      });
+    }
   })
 });
 
@@ -39455,10 +39538,10 @@ init_storeProductBundles();
 var publicProductLocales = ["fr", "de", "it", "en", "es", "nl", "ar"];
 var storefrontProcedure4 = publicProcedure.use(async ({ ctx, next }) => {
   if (!ctx.store) {
-    throw new TRPCError14({ code: "NOT_FOUND", message: "Boutique introuvable pour ce domaine." });
+    throw new TRPCError15({ code: "NOT_FOUND", message: "Boutique introuvable pour ce domaine." });
   }
   if (ctx.store && !ctx.store.isPlatformStore && !mayServeStorefront(ctx.store.status)) {
-    throw new TRPCError14({ code: "FORBIDDEN", message: "Cette boutique est en cours de pr\xE9paration et n\u2019est pas encore ouverte au public." });
+    throw new TRPCError15({ code: "FORBIDDEN", message: "Cette boutique est en cours de pr\xE9paration et n\u2019est pas encore ouverte au public." });
   }
   return next({ ctx });
 });

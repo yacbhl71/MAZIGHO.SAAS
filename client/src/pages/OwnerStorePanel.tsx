@@ -70,6 +70,7 @@ const OwnerSalesSettlement = lazy(() => import("@/components/owner/OwnerSalesSet
 const OwnerMaintenanceMode = lazy(() => import("@/components/owner/OwnerMaintenanceMode"));
 const OwnerTransactionalEmails = lazy(() => import("@/components/owner/OwnerTransactionalEmails"));
 const OwnerAICopilot = lazy(() => import("@/components/owner/OwnerAICopilot"));
+const OwnerImageGenerator = lazy(() => import("@/components/owner/OwnerImageGenerator"));
 const OwnerProductPublicationGuide = lazy(() => import("@/components/owner/OwnerProductPublicationGuide"));
 const OwnerProductOptionsEditor = lazy(() => import("@/components/owner/OwnerProductOptionsEditor"));
 const ProductVariantMatrixBuilder = lazy(() => import("@/components/ProductVariantMatrixBuilder"));
@@ -153,6 +154,7 @@ const ownerNavigation: Array<{ label: string; items: Array<{ id: OwnerModule; ti
     label: "Catalogue & vitrine",
     items: [
       { id: "catalogue", title: "Catalogue", description: "Produits, prix, stock et variantes", icon: PackagePlus, available: true },
+      { id: "creer_image", title: "Générateur d’images IA", description: "Créer des visuels originaux pour vos produits & vitrine", icon: ImagePlus, available: true },
       { id: "dropshipping", title: "Hub Fournisseurs", description: "CJ, AliExpress, Printful, Printify & marges", icon: PackageSearch, available: true },
       { id: "shop_page", title: "Page Boutique", description: "Textes et présentation de la page catalogue", icon: ShoppingBag, available: true },
       { id: "catalogue_pages", title: "Pages Nouveautés & offres", description: "Textes des nouveautés, best-sellers et promos", icon: FileText, available: true },
@@ -828,6 +830,7 @@ export default function OwnerStorePanel() {
     <Card className="border-teal-100"><CardHeader><CardTitle className="flex items-center gap-2"><ClipboardList className="h-5 w-5 text-teal-700" /> Tous les outils de votre boutique</CardTitle><CardDescription>Chaque entrée du menu propriétaire est disponible ici aussi. Elles agissent seulement dans votre boutique et conservent les actions sensibles séparées.</CardDescription></CardHeader><CardContent><div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{visibleOwnerNavigation.flatMap(section => section.items).filter(item => (!(["themes", "emails"] as string[]).includes(item.id) || workspace.data?.membership?.role === "owner") && !["overview", "readiness", "public_view"].includes(item.id)).map(item => { const Icon = item.icon; return <button key={item.id} type="button" onClick={() => setModule(item.id)} className="min-h-28 rounded-xl border border-slate-200 bg-slate-50 p-4 text-left transition-colors hover:border-teal-300 hover:bg-teal-50 focus:outline-none focus:ring-2 focus:ring-teal-700"><Icon className="h-5 w-5 text-teal-700" /><p className="mt-3 text-sm font-semibold text-slate-950">{item.title}</p><p className="mt-1 text-xs leading-5 text-slate-600">{item.description}</p></button>})}</div></CardContent></Card>
   </div>}
   {module === "assistant" && <OwnerAICopilot storeName={currentStore?.displayName || profile?.brandName || "votre boutique"} />}
+  {module === "creer_image" && <OwnerImageGenerator storeName={currentStore?.displayName || profile?.brandName || "votre boutique"} />}
   {module === "readiness" && (
     <div className="space-y-6">
       <OwnerStoreHealthAudit onNavigateToModule={target => setModule(target as any)} />

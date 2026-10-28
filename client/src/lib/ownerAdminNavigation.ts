@@ -1,11 +1,11 @@
-export type OwnerModule = "overview" | "assistant" | "readiness" | "help" | "simulation" | "public_view" | "team" | "catalogue" | "dropshipping" | "catalogue_pages" | "shop_page" | "stock" | "themes" | "vitrine" | "navigation" | "pages" | "orders" | "returns" | "customers" | "customer_relations" | "custom_requests" | "marketing" | "emails" | "support" | "markets" | "operations" | "algeria_payments" | "legal" | "seo" | "integrations" | "exports" | "settings";
+export type OwnerModule = "overview" | "assistant" | "creer_image" | "readiness" | "help" | "simulation" | "public_view" | "team" | "catalogue" | "dropshipping" | "catalogue_pages" | "shop_page" | "stock" | "themes" | "vitrine" | "navigation" | "pages" | "orders" | "returns" | "customers" | "customer_relations" | "custom_requests" | "marketing" | "emails" | "support" | "markets" | "operations" | "algeria_payments" | "legal" | "seo" | "integrations" | "exports" | "settings";
 
 export type OwnerMenuItem = { id: string; label: string; href: string; visible: boolean; kind: "system" | "custom"; parentId?: string };
 export type OwnerCatalogueItem = { id: number; name: string; slug: string; description?: string | null; catalogSection?: "standard" | "creations" | null };
 export type OwnerAdminTarget = { module: OwnerModule; categoryId?: number; productId?: number };
 
 const ownerModules: OwnerModule[] = [
-  "overview", "assistant", "readiness", "help", "simulation", "public_view", "team", "catalogue", "dropshipping", "catalogue_pages", "shop_page", "stock", "themes", "vitrine", "navigation", "pages", "orders", "returns", "customers", "customer_relations", "custom_requests", "marketing", "emails", "support", "markets", "operations", "algeria_payments", "legal", "seo", "integrations", "exports", "settings",
+  "overview", "assistant", "creer_image", "readiness", "help", "simulation", "public_view", "team", "catalogue", "dropshipping", "catalogue_pages", "shop_page", "stock", "themes", "vitrine", "navigation", "pages", "orders", "returns", "customers", "customer_relations", "custom_requests", "marketing", "emails", "support", "markets", "operations", "algeria_payments", "legal", "seo", "integrations", "exports", "settings",
 ];
 
 export function readOwnerPanelModule(search: string): OwnerModule {

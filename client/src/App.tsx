@@ -512,6 +512,8 @@ function Router() {
         <Route path={"/admin/studio/importer-boutique"} component={AdminStudioUniversalImport} />
         <Route path={"/admin/studio/copier-boutique"} component={AdminStudioStoreCopy} />
         <Route path={"/admin/studio/creer-image"} component={AdminStudioImageGenerator} />
+        <Route path={"/admin/studio/image-generator"} component={AdminStudioImageGenerator} />
+        <Route path={"/admin/creer-image"} component={AdminStudioImageGenerator} />
         <Route path={"/admin/studio/bibliotheque-demo"} component={AdminStudioDemoLibrary} />
         <Route path={"/admin/studio/contenu-public/:storeId"} component={AdminStudioOwnerPublicStorefrontContent} />
         <Route path={"/admin/studio/gestion-boutique/:storeId"} component={AdminStudioOwnerActiveStoreManagement} />
@@ -525,13 +527,20 @@ function Router() {
 	        <Route path={"/admin/studio/apercu/:storeId"} component={AdminStudioPreview} />
 	        <Route path={"/admin/studio/production"} component={AdminStudioProductionBoard} />
 	        <Route path={"/admin/studio/facturation"} component={AdminStudioSaasBilling} />
+	        <Route path={"/admin/studio/billing"} component={AdminStudioSaasBilling} />
+	        <Route path={"/admin/studio/abonnements"} component={AdminStudioSaasBilling} />
         <Route path={"/admin/studio/assistance"} component={AdminStudioSupportTickets} />
+        <Route path={"/admin/studio/support"} component={AdminStudioSupportTickets} />
         <Route path={"/admin/studio/domaines"} component={AdminStudioCustomDomains} />
+        <Route path={"/admin/studio/custom-domains"} component={AdminStudioCustomDomains} />
         <Route path={"/admin/studio/integrations"} component={AdminStudioIntegrationRequests} />
+        <Route path={"/admin/studio/integration-requests"} component={AdminStudioIntegrationRequests} />
         <Route path={"/admin/studio/themes"} component={AdminStudioThemes} />
         <Route path={"/admin/studio/identite"} component={AdminStudioBranding} />
+        <Route path={"/admin/studio/branding"} component={AdminStudioBranding} />
         <Route path={"/admin/studio/landings"} component={AdminStudioLandingContent} />
         <Route path={"/admin/studio/sante"} component={AdminSystemHealth} />
+        <Route path={"/admin/studio/system-health"} component={AdminSystemHealth} />
         <Route path={"/admin/studio"} component={AdminStudio} />
         <Route path={"/admin/produits"} component={AdminProducts} />
         <Route path={"/admin/importation"} component={AdminDropshipping} />

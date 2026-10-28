@@ -27,6 +27,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
+import OwnerImageGenerator from "./OwnerImageGenerator";
+
 export default function OwnerAiProductStudio() {
   const [activeTab, setActiveTab] = useState("copywriter");
 
@@ -130,10 +132,14 @@ export default function OwnerAiProductStudio() {
 
       {/* MAIN TABS */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-        <TabsList className="bg-slate-100 dark:bg-slate-800/80 p-1.5 rounded-xl grid grid-cols-2 lg:grid-cols-4 gap-2">
+        <TabsList className="bg-slate-100 dark:bg-slate-800/80 p-1.5 rounded-xl grid grid-cols-2 lg:grid-cols-5 gap-2">
           <TabsTrigger value="copywriter" className="rounded-lg gap-2 text-xs sm:text-sm font-medium py-2.5">
             <Wand2 className="w-4 h-4 text-orange-500" />
             <span>Copywriter Produit</span>
+          </TabsTrigger>
+          <TabsTrigger value="images" className="rounded-lg gap-2 text-xs sm:text-sm font-medium py-2.5">
+            <Zap className="w-4 h-4 text-fuchsia-500" />
+            <span>Générateur d'Images IA</span>
           </TabsTrigger>
           <TabsTrigger value="seo" className="rounded-lg gap-2 text-xs sm:text-sm font-medium py-2.5">
             <Search className="w-4 h-4 text-blue-500" />
@@ -148,6 +154,11 @@ export default function OwnerAiProductStudio() {
             <span>FAQ Réassurance</span>
           </TabsTrigger>
         </TabsList>
+
+        {/* TAB 0: IMAGES IA */}
+        <TabsContent value="images" className="space-y-6">
+          <OwnerImageGenerator />
+        </TabsContent>
 
         {/* TAB 1: COPYWRITER */}
         <TabsContent value="copywriter" className="space-y-6">
