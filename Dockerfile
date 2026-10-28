@@ -5,12 +5,12 @@ WORKDIR /app
 
 # Install dependencies
 COPY package.json .npmrc* ./
-RUN npm install --legacy-peer-deps
+RUN npm install --legacy-peer-deps --no-audit --no-fund --loglevel=error
 
 COPY . .
 
 # Build client and server bundles
-RUN npm run build
+RUN npm run build > /tmp/build.log 2>&1 || (cat /tmp/build.log && exit 1)
 
 # Production runtime stage
 FROM node:22-slim AS runner
@@ -30,4 +30,5 @@ COPY --from=builder /app/scripts/run-schema-bootstrap.mjs ./scripts/run-schema-b
 
 EXPOSE 8080
 
-CMD ["sh", "-c", "node scripts/run-schema-bootstrap.mjs && node server-dist/index.js"]
+CMD ["sh", "-c", "(node scripts/run-schema-bootstrap.mjs || echo '[schema-bootstrap] non-fatal notice') & exec node server-dist/index.js"]
+

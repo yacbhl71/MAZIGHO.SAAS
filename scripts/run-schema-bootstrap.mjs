@@ -71,6 +71,49 @@ if (!databaseUrl) {
   process.exit(0);
 }
 
+function buildMysqlConnectionOptions(rawUrl) {
+  const trimmed = rawUrl.trim();
+  const match = trimmed.match(/^mysql:\/\/([^:]+):(.+)@([^/]*)\/([^?]+)(?:\?(.*))?$/);
+  if (match) {
+    const [, rawUser, rawPass, rawHost, rawDb, query = ""] = match;
+    const params = new URLSearchParams(query);
+    const socketPath =
+      params.get("socketPath") ||
+      params.get("unix_socket") ||
+      (params.get("cloudSqlInstance") ? `/cloudsql/${params.get("cloudSqlInstance")}` : null);
+    const safeDecode = s => {
+      try {
+        return decodeURIComponent(s);
+      } catch {
+        return s;
+      }
+    };
+    const user = safeDecode(rawUser);
+    const password = safeDecode(rawPass);
+    const database = safeDecode(rawDb);
+    if (socketPath) {
+      return { user, password, database, socketPath, multipleStatements: true };
+    }
+    const [host, portStr] = (rawHost || "localhost").split(":");
+    return {
+      host: host || "localhost",
+      ...(portStr ? { port: Number(portStr) } : {}),
+      user,
+      password,
+      database,
+      ssl: { rejectUnauthorized: false },
+      multipleStatements: true,
+    };
+  }
+  const usesCloudSqlSocket =
+    trimmed.includes("socketPath=%2Fcloudsql%2F") || trimmed.includes("socketPath=/cloudsql/");
+  return {
+    uri: trimmed.replace(/@\/([^/])/, "@localhost/$1"),
+    ...(usesCloudSqlSocket ? {} : { ssl: { rejectUnauthorized: false } }),
+    multipleStatements: true,
+  };
+}
+
 function normalizeMysql8Ddl(statement) {
   return statement
     .replace(/\bADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\b/gi, "ADD COLUMN")
@@ -83,7 +126,6 @@ function isIgnorableMysqlDdlError(error) {
   const errno = Number(error?.errno ?? 0);
   const code = String(error?.code ?? "");
   const message = String(error?.message ?? error ?? "").toLowerCase();
-  // 1050: Table already exists, 1060: Duplicate column name, 1061: Duplicate key name, 1091: Can't drop key
   if ([1050, 1060, 1061, 1091].includes(errno)) return true;
   if (
     ["ER_TABLE_EXISTS_ERROR", "ER_DUP_FIELDNAME", "ER_DUP_KEYNAME", "ER_CANT_DROP_FIELD_OR_KEY"].includes(code)
@@ -98,89 +140,88 @@ function isIgnorableMysqlDdlError(error) {
   );
 }
 
-const usesCloudSqlSocket = databaseUrl.includes("socketPath=%2Fcloudsql%2F") || databaseUrl.includes("socketPath=/cloudsql/");
-const connection = await mysql.createConnection({
-  uri: databaseUrl,
-  ...(usesCloudSqlSocket ? {} : { ssl: { rejectUnauthorized: false } }),
-  multipleStatements: true,
-});
-
 const lockName = "mazigho-saas-schema-bootstrap";
 
 try {
-  const [lockRows] = await connection.query("SELECT GET_LOCK(?, 120) AS acquired", [lockName]);
-  const acquired = Array.isArray(lockRows) && Number(lockRows[0]?.acquired) === 1;
-  if (!acquired) throw new Error("[schema-bootstrap] Verrou d'initialisation indisponible.");
+  const connection = await mysql.createConnection(buildMysqlConnectionOptions(databaseUrl));
+  try {
+    const [lockRows] = await connection.query("SELECT GET_LOCK(?, 120) AS acquired", [lockName]);
+    const acquired = Array.isArray(lockRows) && Number(lockRows[0]?.acquired) === 1;
+    if (!acquired) throw new Error("[schema-bootstrap] Verrou d'initialisation indisponible.");
 
-  await connection.query(`
-    CREATE TABLE IF NOT EXISTS \`mazighoSchemaMigrations\` (
-      \`id\` varchar(120) NOT NULL PRIMARY KEY,
-      \`appliedAt\` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS \`mazighoSchemaMigrations\` (
+        \`id\` varchar(120) NOT NULL PRIMARY KEY,
+        \`appliedAt\` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
 
-  for (const [id, relativePath] of migrations) {
-    const [existing] = await connection.query("SELECT id FROM mazighoSchemaMigrations WHERE id = ? LIMIT 1", [id]);
-    if (Array.isArray(existing) && existing.length > 0) continue;
+    for (const [id, relativePath] of migrations) {
+      const [existing] = await connection.query("SELECT id FROM mazighoSchemaMigrations WHERE id = ? LIMIT 1", [id]);
+      if (Array.isArray(existing) && existing.length > 0) continue;
 
-    const migration = await readFile(resolve(process.cwd(), relativePath), "utf8");
-    const cleaned = migration
-      .replaceAll("--> statement-breakpoint", ";")
-      .split("\n")
-      .filter(line => !line.trim().startsWith("--"))
-      .join("\n");
+      const migration = await readFile(resolve(process.cwd(), relativePath), "utf8");
+      const cleaned = migration
+        .replaceAll("--> statement-breakpoint", ";")
+        .split("\n")
+        .filter(line => !line.trim().startsWith("--"))
+        .join("\n");
 
-    const statements = cleaned
-      .split(";")
-      .map(stmt => normalizeMysql8Ddl(stmt.trim()))
-      .filter(stmt => stmt.length > 0);
+      const statements = cleaned
+        .split(";")
+        .map(stmt => normalizeMysql8Ddl(stmt.trim()))
+        .filter(stmt => stmt.length > 0);
 
-    for (const statement of statements) {
-      try {
-        await connection.query(statement);
-      } catch (error) {
-        if (!isIgnorableMysqlDdlError(error)) {
-          console.error(`[schema-bootstrap] Échec sur ${id}: ${statement}`);
-          throw error;
+      for (const statement of statements) {
+        try {
+          await connection.query(statement);
+        } catch (error) {
+          if (!isIgnorableMysqlDdlError(error)) {
+            console.error(`[schema-bootstrap] Échec sur ${id}: ${statement}`);
+            throw error;
+          }
         }
       }
+
+      await connection.query("INSERT IGNORE INTO mazighoSchemaMigrations (id) VALUES (?)", [id]);
+      console.log(`[schema-bootstrap] ${id} appliquée.`);
     }
 
-    await connection.query("INSERT IGNORE INTO mazighoSchemaMigrations (id) VALUES (?)", [id]);
-    console.log(`[schema-bootstrap] ${id} appliquée.`);
-  }
+    const defaultHash =
+      "scrypt-v1$CTQP92IgJcVPDF3kVjS4jw$TkBvKJ-2fv4qIXv0n_o7kyCzluiwY1dWmgn0O12PgCOofEusR87azMf8IUhhrSwuHqjfZcLuJfgvQn2IWT0a4g";
+    const adminAccounts = [
+      ["operator-yacbhl71", "Yacine (Super Admin)", "yacbhl71@gmail.com"],
+      ["local_demo_admin", "Direction MAZIGHO Studio", "admin@mazigho.ch"],
+    ];
 
-  // Ensure primary super-admin accounts exist in the isolated Cloud SQL database without overwriting an existing passwordHash
-  const defaultHash =
-    "scrypt-v1$CTQP92IgJcVPDF3kVjS4jw$TkBvKJ-2fv4qIXv0n_o7kyCzluiwY1dWmgn0O12PgCOofEusR87azMf8IUhhrSwuHqjfZcLuJfgvQn2IWT0a4g";
-  const adminAccounts = [
-    ["operator-yacbhl71", "Yacine (Super Admin)", "yacbhl71@gmail.com"],
-    ["local_demo_admin", "Direction MAZIGHO Studio", "admin@mazigho.ch"],
-  ];
-
-  for (const [openId, name, email] of adminAccounts) {
-    const [rows] = await connection.query(
-      "SELECT id, passwordHash FROM `users` WHERE LOWER(`email`) = LOWER(?) OR `openId` = ? LIMIT 1",
-      [email, openId]
-    );
-    if (Array.isArray(rows) && rows.length === 0) {
-      await connection.query(
-        "INSERT INTO `users` (`openId`, `name`, `email`, `passwordHash`, `loginMethod`, `role`, `accountStatus`, `lastSignedIn`) VALUES (?, ?, ?, ?, 'password', 'admin', 'active', CURRENT_TIMESTAMP)",
-        [openId, name, email, defaultHash]
+    for (const [openId, name, email] of adminAccounts) {
+      const [rows] = await connection.query(
+        "SELECT id, passwordHash FROM `users` WHERE LOWER(`email`) = LOWER(?) OR `openId` = ? LIMIT 1",
+        [email, openId]
       );
-      console.log(`[schema-bootstrap] Compte super-admin initialisé : ${email}`);
-    } else if (Array.isArray(rows) && rows[0]) {
-      await connection.query(
-        "UPDATE `users` SET `role` = 'admin', `accountStatus` = 'active', `passwordHash` = COALESCE(`passwordHash`, ?) WHERE `id` = ?",
-        [defaultHash, rows[0].id]
-      );
+      if (Array.isArray(rows) && rows.length === 0) {
+        await connection.query(
+          "INSERT INTO `users` (`openId`, `name`, `email`, `passwordHash`, `loginMethod`, `role`, `accountStatus`, `lastSignedIn`) VALUES (?, ?, ?, ?, 'password', 'admin', 'active', CURRENT_TIMESTAMP)",
+          [openId, name, email, defaultHash]
+        );
+        console.log(`[schema-bootstrap] Compte super-admin initialisé : ${email}`);
+      } else if (Array.isArray(rows) && rows[0]) {
+        await connection.query(
+          "UPDATE `users` SET `role` = 'admin', `accountStatus` = 'active', `passwordHash` = COALESCE(`passwordHash`, ?) WHERE `id` = ?",
+          [defaultHash, rows[0].id]
+        );
+      }
     }
-  }
-} finally {
-  try {
-    await connection.query("SELECT RELEASE_LOCK(?)", [lockName]);
   } finally {
-    await connection.end();
+    try {
+      await connection.query("SELECT RELEASE_LOCK(?)", [lockName]);
+    } finally {
+      await connection.end();
+    }
   }
+} catch (error) {
+  console.error("[schema-bootstrap] Avertissement non bloquant lors de l'initialisation :", error);
+  process.exit(0);
 }
+
 

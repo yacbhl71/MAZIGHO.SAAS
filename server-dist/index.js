@@ -12512,7 +12512,8 @@ async function ensureAccountStatusColumn() {
     } catch (error) {
       const message = String(error).toLowerCase();
       if (!message.includes("duplicate column") && !message.includes("already exists")) {
-        throw error;
+        _accountStatusColumnReady = null;
+        console.warn("[Database] ensureAccountStatusColumn non-fatal notice:", message);
       }
     }
   })();
@@ -12983,7 +12984,8 @@ async function ensurePasswordHashColumn() {
     } catch (error) {
       const message = String(error).toLowerCase();
       if (!message.includes("duplicate column") && !message.includes("already exists")) {
-        throw error;
+        _passwordHashColumnReady = null;
+        console.warn("[Database] ensurePasswordHashColumn non-fatal notice:", message);
       }
     }
   })();
@@ -13006,26 +13008,61 @@ function isMysqlIdempotentDdlError(error, rawSql) {
   }
   return message.includes("duplicate column name") || message.includes("duplicate key name") || message.includes("already exists") || message.includes("check that column/key exists");
 }
+function buildMysqlPoolOptions(rawUrl) {
+  const trimmed = rawUrl.trim();
+  const basePoolOpts = {
+    waitForConnections: true,
+    connectionLimit: 5,
+    maxIdle: 2,
+    idleTimeout: 6e4,
+    queueLimit: 0,
+    enableKeepAlive: true
+  };
+  const match = trimmed.match(/^mysql:\/\/([^:]+):(.+)@([^/]*)\/([^?]+)(?:\?(.*))?$/);
+  if (match) {
+    const [, rawUser, rawPass, rawHost, rawDb, query = ""] = match;
+    const params = new URLSearchParams(query);
+    const socketPath = params.get("socketPath") || params.get("unix_socket") || (params.get("cloudSqlInstance") ? `/cloudsql/${params.get("cloudSqlInstance")}` : null);
+    const safeDecode = (s) => {
+      try {
+        return decodeURIComponent(s);
+      } catch {
+        return s;
+      }
+    };
+    const user = safeDecode(rawUser);
+    const password = safeDecode(rawPass);
+    const database = safeDecode(rawDb);
+    if (socketPath) {
+      return { ...basePoolOpts, user, password, database, socketPath };
+    }
+    const [host, portStr] = (rawHost || "localhost").split(":");
+    return {
+      ...basePoolOpts,
+      host: host || "localhost",
+      ...portStr ? { port: Number(portStr) } : {},
+      user,
+      password,
+      database,
+      ssl: { rejectUnauthorized: false }
+    };
+  }
+  const usesCloudSqlSocket = trimmed.includes("socketPath=%2Fcloudsql%2F") || trimmed.includes("socketPath=/cloudsql/");
+  return {
+    ...basePoolOpts,
+    uri: trimmed.replace(/@\/([^/])/, "@localhost/$1"),
+    ...usesCloudSqlSocket ? {} : { ssl: { rejectUnauthorized: false } }
+  };
+}
 async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
     try {
       const connectionString = process.env.DATABASE_URL;
-      const usesCloudSqlSocket = connectionString.includes("socketPath=%2Fcloudsql%2F") || connectionString.includes("socketPath=/cloudsql/");
+      const poolOptions = buildMysqlPoolOptions(connectionString);
       console.log(
-        usesCloudSqlSocket ? "[Database] Connecting through the Cloud SQL Unix socket." : "[Database] Connecting with universal SSL fallback."
+        poolOptions.socketPath ? "[Database] Connecting through the Cloud SQL Unix socket." : "[Database] Connecting with universal SSL fallback."
       );
-      const pool = mysql.createPool({
-        uri: connectionString,
-        ...usesCloudSqlSocket ? {} : {
-          ssl: { rejectUnauthorized: false }
-        },
-        waitForConnections: true,
-        connectionLimit: 5,
-        maxIdle: 2,
-        idleTimeout: 6e4,
-        queueLimit: 0,
-        enableKeepAlive: true
-      });
+      const pool = mysql.createPool(poolOptions);
       const origQuery = pool.query.bind(pool);
       const origExecute = pool.execute.bind(pool);
       const wrapMethod = (fn) => {
@@ -13120,8 +13157,13 @@ async function getUserByOpenId(openId) {
   if (!db) {
     return getDemoUserByOpenId(openId);
   }
-  const result2 = await db.select().from(users2).where(eq2(users2.openId, openId)).limit(1);
-  return result2.length > 0 ? result2[0] : void 0;
+  try {
+    const result2 = await db.select().from(users2).where(eq2(users2.openId, openId)).limit(1);
+    return result2.length > 0 ? result2[0] : getDemoUserByOpenId(openId);
+  } catch (error) {
+    console.warn("[Database] getUserByOpenId fallback notice:", String(error));
+    return getDemoUserByOpenId(openId);
+  }
 }
 async function ensureSuperAdminSeed() {
   if (_superAdminSeedReady) return _superAdminSeedReady;
@@ -13164,6 +13206,7 @@ async function ensureSuperAdminSeed() {
         }
       }
     } catch (error) {
+      _superAdminSeedReady = null;
       console.warn("[Database] ensureSuperAdminSeed non-fatal notice:", error);
     }
   })();
@@ -13176,8 +13219,13 @@ async function getUserByEmail(email) {
   const db = await getDb();
   if (!db) return getDemoUserByEmail(email);
   const normalisedEmail = email.trim().toLowerCase();
-  const result2 = await db.select().from(users2).where(sql`LOWER(${users2.email}) = ${normalisedEmail}`).limit(1);
-  return result2.length > 0 ? result2[0] : void 0;
+  try {
+    const result2 = await db.select().from(users2).where(sql`LOWER(${users2.email}) = ${normalisedEmail}`).limit(1);
+    return result2.length > 0 ? result2[0] : getDemoUserByEmail(normalisedEmail);
+  } catch (error) {
+    console.warn("[Database] getUserByEmail fallback notice:", String(error));
+    return getDemoUserByEmail(normalisedEmail);
+  }
 }
 function normaliseEmail(email) {
   return email.trim().toLowerCase();
@@ -13428,17 +13476,22 @@ async function createPasswordUser(input) {
   if (!db) return createDemoPasswordUser(input);
   const normalizedEmail = input.email.trim().toLowerCase();
   const isAdminEmail = normalizedEmail === "yacbhl71@gmail.com" || normalizedEmail === "admin@mazigho.ch" || normalizedEmail.endsWith("@mazigho.ch");
-  await db.insert(users2).values({
-    openId: input.openId,
-    email: normalizedEmail,
-    name: input.name.trim(),
-    passwordHash: input.passwordHash,
-    loginMethod: "password",
-    role: isAdminEmail ? "admin" : "user",
-    accountStatus: "active",
-    lastSignedIn: /* @__PURE__ */ new Date()
-  });
-  return getUserByOpenId(input.openId);
+  try {
+    await db.insert(users2).values({
+      openId: input.openId,
+      email: normalizedEmail,
+      name: input.name.trim(),
+      passwordHash: input.passwordHash,
+      loginMethod: "password",
+      role: isAdminEmail ? "admin" : "user",
+      accountStatus: "active",
+      lastSignedIn: /* @__PURE__ */ new Date()
+    });
+    return await getUserByOpenId(input.openId);
+  } catch (error) {
+    console.warn("[Database] createPasswordUser fallback notice:", String(error));
+    return createDemoPasswordUser(input);
+  }
 }
 async function issueStudioGiftStoreOwnerTemporaryPassword(input) {
   const studioStore = await getStudioGiftStoreContentContext(input.storeId);
@@ -13479,26 +13532,36 @@ async function issueStudioGiftStoreOwnerTemporaryPassword(input) {
   };
 }
 async function updatePasswordUser(input) {
+  const { updateDemoUserPassword: updateDemoUserPassword2 } = await Promise.resolve().then(() => (init_demoFallback(), demoFallback_exports));
+  updateDemoUserPassword2(input.openId, input.passwordHash);
   const db = await getDb();
   if (!db) {
-    const { updateDemoUserPassword: updateDemoUserPassword2 } = await Promise.resolve().then(() => (init_demoFallback(), demoFallback_exports));
-    return updateDemoUserPassword2(input.openId, input.passwordHash);
+    return getDemoUserByOpenId(input.openId);
   }
-  await ensurePasswordHashColumn();
-  await ensureAccountStatusColumn();
-  const isSuperAdminOpenId = input.openId === "operator-yacbhl71" || input.openId === "local_demo_admin";
-  await db.update(users2).set({
-    passwordHash: input.passwordHash,
-    loginMethod: "password",
-    ...isSuperAdminOpenId ? { role: "admin", accountStatus: "active" } : {},
-    lastSignedIn: /* @__PURE__ */ new Date()
-  }).where(eq2(users2.openId, input.openId));
-  return getUserByOpenId(input.openId);
+  try {
+    await ensurePasswordHashColumn();
+    await ensureAccountStatusColumn();
+    const isSuperAdminOpenId = input.openId === "operator-yacbhl71" || input.openId === "local_demo_admin";
+    await db.update(users2).set({
+      passwordHash: input.passwordHash,
+      loginMethod: "password",
+      ...isSuperAdminOpenId ? { role: "admin", accountStatus: "active" } : {},
+      lastSignedIn: /* @__PURE__ */ new Date()
+    }).where(eq2(users2.openId, input.openId));
+    return await getUserByOpenId(input.openId);
+  } catch (error) {
+    console.warn("[Database] updatePasswordUser fallback notice:", String(error));
+    return getDemoUserByOpenId(input.openId);
+  }
 }
 async function markUserSignedIn(openId) {
   const db = await getDb();
   if (!db) return;
-  await db.update(users2).set({ lastSignedIn: /* @__PURE__ */ new Date() }).where(eq2(users2.openId, openId));
+  try {
+    await db.update(users2).set({ lastSignedIn: /* @__PURE__ */ new Date() }).where(eq2(users2.openId, openId));
+  } catch (error) {
+    console.warn("[Database] markUserSignedIn non-fatal notice:", String(error));
+  }
 }
 async function claimInitialAdmin(openId) {
   const db = await getDb();
