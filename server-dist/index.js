@@ -8504,6 +8504,7 @@ async function ensureMultiStoreSchema() {
     await db.execute(sql.raw("UPDATE `stores` SET `isPlatformStore` = 1 WHERE `slug` = 'primary-store'"));
     await db.execute(sql.raw("UPDATE `stores` SET `primaryDomain` = 'bhll.mazigho.com', `status` = 'active' WHERE `id` = 4 OR `slug` = 'bhll-voyage'"));
     await db.execute(sql.raw("INSERT IGNORE INTO `storeMemberships` (`storeId`,`userId`,`role`,`status`) SELECT s.id, u.id, 'owner', 'active' FROM `stores` s INNER JOIN `users` u ON u.role = 'admin' WHERE s.slug = 'primary-store'"));
+    await db.execute(sql.raw("INSERT IGNORE INTO `storeMemberships` (`storeId`,`userId`,`role`,`status`) SELECT s.id, u.id, 'owner', 'active' FROM `stores` s INNER JOIN `users` u ON LOWER(u.email) IN ('yacbhl71@gmail.com', 'admin@mazigho.ch', 'bhllvoyage@gmail.com') WHERE s.id = 4 OR s.slug = 'bhll-voyage'"));
     await db.execute(sql.raw("INSERT IGNORE INTO `storeSettings` (`storeId`,`key`,`value`,`description`) SELECT st.id, se.`key`, se.`value`, se.`description` FROM `stores` st INNER JOIN `settings` se ON se.`key` IN ('design_profile','legal_profile','site_name','contact_email','currency','store_currency_code','store_currency_rate_bps','shipping_policy','free_shipping_threshold','flat_shipping_rate','meta_pixel_id','tiktok_pixel_id','setup_wizard_status','seo_default_title','seo_default_description') WHERE st.slug = 'primary-store'"));
     const [platformStore] = await db.select({ id: stores2.id }).from(stores2).where(and2(eq2(stores2.slug, "primary-store"), eq2(stores2.isPlatformStore, 1))).limit(1);
     if (platformStore) {
@@ -13188,8 +13189,9 @@ async function ensureSuperAdminSeed() {
       await ensureAccountStatusColumn();
       const defaultHash = "scrypt-v1$CTQP92IgJcVPDF3kVjS4jw$TkBvKJ-2fv4qIXv0n_o7kyCzluiwY1dWmgn0O12PgCOofEusR87azMf8IUhhrSwuHqjfZcLuJfgvQn2IWT0a4g";
       const adminAccounts = [
-        { openId: "operator-yacbhl71", email: "yacbhl71@gmail.com", name: "Yacine (Super Admin)" },
-        { openId: "local_demo_admin", email: "admin@mazigho.ch", name: "Direction MAZIGHO Studio" }
+        { openId: "operator-yacbhl71", email: "yacbhl71@gmail.com", name: "Yacine (Super Admin)", role: "admin" },
+        { openId: "local_demo_admin", email: "admin@mazigho.ch", name: "Direction MAZIGHO Studio", role: "admin" },
+        { openId: "user-bhllvoyage", email: "bhllvoyage@gmail.com", name: "BHLL Voyage", role: "user" }
       ];
       for (const account of adminAccounts) {
         const rows = await db.select().from(users2).where(sql`LOWER(${users2.email}) = ${account.email.toLowerCase()}`).limit(1);
@@ -13200,18 +13202,18 @@ async function ensureSuperAdminSeed() {
             email: account.email.toLowerCase(),
             passwordHash: defaultHash,
             loginMethod: "password",
-            role: "admin",
+            role: account.role || "admin",
             accountStatus: "active",
             lastSignedIn: /* @__PURE__ */ new Date()
           });
-          console.log(`[Database] Seeded super admin account: ${account.email}`);
+          console.log(`[Database] Seeded account: ${account.email}`);
         } else {
           const u = rows[0];
           const updates = {
-            role: "admin",
             accountStatus: "active",
             loginMethod: "password"
           };
+          if (account.role === "admin") updates.role = "admin";
           if (!u.passwordHash) {
             updates.passwordHash = defaultHash;
           }
