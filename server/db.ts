@@ -327,7 +327,7 @@ async function ensureMultiStoreSchema() {
     await db.execute(sql.raw("INSERT IGNORE INTO `stores` (`id`,`slug`,`displayName`,`primaryDomain`,`status`,`isPlatformStore`) VALUES " +
       "(2, 'atelier-tiziri', 'Atelier Tiziri Bijoux', 'tiziri.mazigho.ch', 'active', 0)," +
       "(3, 'maison-atlas-deco', 'Maison Atlas Déco', 'atlas-deco.mazigho.ch', 'setup', 0)," +
-      "(4, 'bhll-voyage', 'BHLL Voyage Boutique', 'bhllvoyage.mazigho.ch', 'active', 0)," +
+      "(4, 'bhll-voyage', 'BHLL Voyage Boutique', 'bhll.mazigho.com', 'active', 0)," +
       "(5, 'atelier-kenza', 'Atelier Kenza', 'kenza.mazigho.ch', 'limited', 0)," +
       "(6, 'atelier-sylvie', 'Atelier Sylvie — Créations & Loisirs', 'dyama.mazigho.ch', 'active', 0)," +
       "(7, 'bahloul-souhila', 'Bahloul Souhila', 'souhila.mazigho.ch', 'active', 0)," +
@@ -344,6 +344,7 @@ async function ensureMultiStoreSchema() {
     // the platform store. Do not change the status or domain of any client store here.
     await db.execute(sql.raw("UPDATE `stores` SET `primaryDomain` = 'mazigho.ch', `isPlatformStore` = 1 WHERE `slug` = 'primary-store' AND `primaryDomain` = 'primary.local'"));
     await db.execute(sql.raw("UPDATE `stores` SET `isPlatformStore` = 1 WHERE `slug` = 'primary-store'"));
+    await db.execute(sql.raw("UPDATE `stores` SET `primaryDomain` = 'bhll.mazigho.com', `status` = 'active' WHERE `id` = 4 OR `slug` = 'bhll-voyage'"));
     // Existing platform administrators retain access to the original boutique. No non-admin account is upgraded automatically.
     await db.execute(sql.raw("INSERT IGNORE INTO `storeMemberships` (`storeId`,`userId`,`role`,`status`) SELECT s.id, u.id, 'owner', 'active' FROM `stores` s INNER JOIN `users` u ON u.role = 'admin' WHERE s.slug = 'primary-store'"));
     // Copy only public storefront records. Technical settings, payment secrets and integrations remain global.
@@ -3446,6 +3447,10 @@ export async function resolveStoreForHost(host?: string | null): Promise<StoreSc
     const normalizedHost = normalizeStoreHost(host);
     if (!db) {
       if (normalizedHost) {
+        if (["bhll.mazigho.com", "bhllvoyage.mazigho.ch", "bhll.mazigho.ch", "bhll-voyage.mazigho.com"].includes(normalizedHost)) {
+          const bhllStore = DEMO_STORES.find(s => s.id === 4);
+          if (bhllStore) return { ...bhllStore, primaryDomain: "bhll.mazigho.com", status: "active" };
+        }
         const byDomain = DEMO_STORES.find(s => s.primaryDomain === normalizedHost);
         if (byDomain) return byDomain;
       }
@@ -3457,6 +3462,10 @@ export async function resolveStoreForHost(host?: string | null): Promise<StoreSc
       const primary = DEMO_STORES[0];
       if (!primary || !mayUsePlatformStoreFallback(normalizedHost, primary.primaryDomain)) return null;
       return primary;
+    }
+    if (["bhll.mazigho.com", "bhllvoyage.mazigho.ch", "bhll.mazigho.ch", "bhll-voyage.mazigho.com"].includes(normalizedHost)) {
+      const bhllStore = await db.select({ id: stores.id, slug: stores.slug, displayName: stores.displayName, primaryDomain: stores.primaryDomain, status: stores.status, isPlatformStore: stores.isPlatformStore }).from(stores).where(eq(stores.id, 4)).limit(1);
+      if (bhllStore[0]) return { ...bhllStore[0], primaryDomain: "bhll.mazigho.com", status: "active" };
     }
     const byDomain = normalizedHost
       ? await db.select({ id: stores.id, slug: stores.slug, displayName: stores.displayName, primaryDomain: stores.primaryDomain, status: stores.status, isPlatformStore: stores.isPlatformStore }).from(stores).where(eq(stores.primaryDomain, normalizedHost)).limit(1)

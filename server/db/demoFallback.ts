@@ -136,7 +136,7 @@ export const DEMO_STORES: StoreScope[] = [
     id: 4,
     slug: "bhll-voyage",
     displayName: "BHLL Voyage Boutique",
-    primaryDomain: "bhllvoyage.mazigho.ch",
+    primaryDomain: "bhll.mazigho.com",
     status: "active",
     isPlatformStore: 0,
   },
@@ -909,7 +909,7 @@ export const DEMO_PROVISIONING_DRAFTS: DemoProvisioningDraft[] = [
   {
     id: 1,
     displayName: "BHLL Voyage Boutique",
-    requestedDomain: "bhllvoyage.mazigho.ch",
+    requestedDomain: "bhll.mazigho.com",
     ownerName: "BHLL Voyage",
     ownerEmail: "bhllvoyage@gmail.com",
     businessType: "vetements",

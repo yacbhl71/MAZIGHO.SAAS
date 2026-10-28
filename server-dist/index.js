@@ -7164,7 +7164,7 @@ var init_demoFallback = __esm({
         id: 4,
         slug: "bhll-voyage",
         displayName: "BHLL Voyage Boutique",
-        primaryDomain: "bhllvoyage.mazigho.ch",
+        primaryDomain: "bhll.mazigho.com",
         status: "active",
         isPlatformStore: 0
       },
@@ -7887,7 +7887,7 @@ var init_demoFallback = __esm({
       {
         id: 1,
         displayName: "BHLL Voyage Boutique",
-        requestedDomain: "bhllvoyage.mazigho.ch",
+        requestedDomain: "bhll.mazigho.com",
         ownerName: "BHLL Voyage",
         ownerEmail: "bhllvoyage@gmail.com",
         businessType: "vetements",
@@ -8499,9 +8499,10 @@ async function ensureMultiStoreSchema() {
     await db.execute(sql.raw("CREATE TABLE IF NOT EXISTS `storeMemberships` (`id` int AUTO_INCREMENT PRIMARY KEY, `storeId` int NOT NULL, `userId` int NOT NULL, `role` enum('owner','manager','catalog_editor','support_agent','order_operator','accountant','viewer') NOT NULL DEFAULT 'viewer', `status` enum('active','blocked') NOT NULL DEFAULT 'active', `createdAt` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP, `updatedAt` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, UNIQUE KEY `store_memberships_store_user_unique` (`storeId`,`userId`), INDEX `store_memberships_user_idx` (`userId`), INDEX `store_memberships_store_idx` (`storeId`))"));
     await db.execute(sql.raw("CREATE TABLE IF NOT EXISTS `storeSettings` (`id` int AUTO_INCREMENT PRIMARY KEY, `storeId` int NOT NULL, `key` varchar(100) NOT NULL, `value` text NOT NULL, `description` text, `updatedAt` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, UNIQUE KEY `store_settings_store_key_unique` (`storeId`,`key`), INDEX `store_settings_store_idx` (`storeId`))"));
     await db.execute(sql.raw("INSERT INTO `stores` (`slug`,`displayName`,`primaryDomain`,`status`,`isPlatformStore`) VALUES ('primary-store','MAZIGHO','mazigho.ch','active',1) ON DUPLICATE KEY UPDATE `slug`=`slug`"));
-    await db.execute(sql.raw("INSERT IGNORE INTO `stores` (`id`,`slug`,`displayName`,`primaryDomain`,`status`,`isPlatformStore`) VALUES (2, 'atelier-tiziri', 'Atelier Tiziri Bijoux', 'tiziri.mazigho.ch', 'active', 0),(3, 'maison-atlas-deco', 'Maison Atlas D\xE9co', 'atlas-deco.mazigho.ch', 'setup', 0),(4, 'bhll-voyage', 'BHLL Voyage Boutique', 'bhllvoyage.mazigho.ch', 'active', 0),(5, 'atelier-kenza', 'Atelier Kenza', 'kenza.mazigho.ch', 'limited', 0),(6, 'atelier-sylvie', 'Atelier Sylvie \u2014 Cr\xE9ations & Loisirs', 'dyama.mazigho.ch', 'active', 0),(7, 'bahloul-souhila', 'Bahloul Souhila', 'souhila.mazigho.ch', 'active', 0),(8, 'compagnons-studio', 'Compagnons Studio \u2014 D\xE9mo', 'compagnons.mazigho.ch', 'active', 0),(9, 'connect-gadgets', 'Connect & Gadgets \u2014 D\xE9monstration', 'connect.mazigho.ch', 'setup', 0),(10, 'creations-lina', 'Cr\xE9ations Lina', 'lina.mazigho.ch', 'setup', 0),(11, 'import-wordpress', 'Import WordPress \u2014 Test Studio', 'import-wp.mazigho.ch', 'setup', 0),(12, 'les-mondes-dasma', 'Les Mondes d\\'Asma', 'asma.mazigho.ch', 'active', 0),(13, 'mazigho-pets', 'MAZIGHO PET\\'S \u2014 Pattes & Compagnie', 'pets.mazigho.ch', 'active', 0),(14, 'marche-atlas', 'March\xE9 Atlas \u2014 \xC9picerie & livraison', 'marche-atlas.mazigho.ch', 'limited', 0),(15, 'rituels-dinfusion', 'Rituels d\\'Infusion', 'rituels.mazigho.ch', 'active', 0)"));
+    await db.execute(sql.raw("INSERT IGNORE INTO `stores` (`id`,`slug`,`displayName`,`primaryDomain`,`status`,`isPlatformStore`) VALUES (2, 'atelier-tiziri', 'Atelier Tiziri Bijoux', 'tiziri.mazigho.ch', 'active', 0),(3, 'maison-atlas-deco', 'Maison Atlas D\xE9co', 'atlas-deco.mazigho.ch', 'setup', 0),(4, 'bhll-voyage', 'BHLL Voyage Boutique', 'bhll.mazigho.com', 'active', 0),(5, 'atelier-kenza', 'Atelier Kenza', 'kenza.mazigho.ch', 'limited', 0),(6, 'atelier-sylvie', 'Atelier Sylvie \u2014 Cr\xE9ations & Loisirs', 'dyama.mazigho.ch', 'active', 0),(7, 'bahloul-souhila', 'Bahloul Souhila', 'souhila.mazigho.ch', 'active', 0),(8, 'compagnons-studio', 'Compagnons Studio \u2014 D\xE9mo', 'compagnons.mazigho.ch', 'active', 0),(9, 'connect-gadgets', 'Connect & Gadgets \u2014 D\xE9monstration', 'connect.mazigho.ch', 'setup', 0),(10, 'creations-lina', 'Cr\xE9ations Lina', 'lina.mazigho.ch', 'setup', 0),(11, 'import-wordpress', 'Import WordPress \u2014 Test Studio', 'import-wp.mazigho.ch', 'setup', 0),(12, 'les-mondes-dasma', 'Les Mondes d\\'Asma', 'asma.mazigho.ch', 'active', 0),(13, 'mazigho-pets', 'MAZIGHO PET\\'S \u2014 Pattes & Compagnie', 'pets.mazigho.ch', 'active', 0),(14, 'marche-atlas', 'March\xE9 Atlas \u2014 \xC9picerie & livraison', 'marche-atlas.mazigho.ch', 'limited', 0),(15, 'rituels-dinfusion', 'Rituels d\\'Infusion', 'rituels.mazigho.ch', 'active', 0)"));
     await db.execute(sql.raw("UPDATE `stores` SET `primaryDomain` = 'mazigho.ch', `isPlatformStore` = 1 WHERE `slug` = 'primary-store' AND `primaryDomain` = 'primary.local'"));
     await db.execute(sql.raw("UPDATE `stores` SET `isPlatformStore` = 1 WHERE `slug` = 'primary-store'"));
+    await db.execute(sql.raw("UPDATE `stores` SET `primaryDomain` = 'bhll.mazigho.com', `status` = 'active' WHERE `id` = 4 OR `slug` = 'bhll-voyage'"));
     await db.execute(sql.raw("INSERT IGNORE INTO `storeMemberships` (`storeId`,`userId`,`role`,`status`) SELECT s.id, u.id, 'owner', 'active' FROM `stores` s INNER JOIN `users` u ON u.role = 'admin' WHERE s.slug = 'primary-store'"));
     await db.execute(sql.raw("INSERT IGNORE INTO `storeSettings` (`storeId`,`key`,`value`,`description`) SELECT st.id, se.`key`, se.`value`, se.`description` FROM `stores` st INNER JOIN `settings` se ON se.`key` IN ('design_profile','legal_profile','site_name','contact_email','currency','store_currency_code','store_currency_rate_bps','shipping_policy','free_shipping_threshold','flat_shipping_rate','meta_pixel_id','tiktok_pixel_id','setup_wizard_status','seo_default_title','seo_default_description') WHERE st.slug = 'primary-store'"));
     const [platformStore] = await db.select({ id: stores2.id }).from(stores2).where(and2(eq2(stores2.slug, "primary-store"), eq2(stores2.isPlatformStore, 1))).limit(1);
@@ -10983,6 +10984,10 @@ async function resolveStoreForHost(host) {
     const normalizedHost = normalizeStoreHost(host);
     if (!db) {
       if (normalizedHost) {
+        if (["bhll.mazigho.com", "bhllvoyage.mazigho.ch", "bhll.mazigho.ch", "bhll-voyage.mazigho.com"].includes(normalizedHost)) {
+          const bhllStore = DEMO_STORES.find((s) => s.id === 4);
+          if (bhllStore) return { ...bhllStore, primaryDomain: "bhll.mazigho.com", status: "active" };
+        }
         const byDomain2 = DEMO_STORES.find((s) => s.primaryDomain === normalizedHost);
         if (byDomain2) return byDomain2;
       }
@@ -10994,6 +10999,10 @@ async function resolveStoreForHost(host) {
       const primary2 = DEMO_STORES[0];
       if (!primary2 || !mayUsePlatformStoreFallback(normalizedHost, primary2.primaryDomain)) return null;
       return primary2;
+    }
+    if (["bhll.mazigho.com", "bhllvoyage.mazigho.ch", "bhll.mazigho.ch", "bhll-voyage.mazigho.com"].includes(normalizedHost)) {
+      const bhllStore = await db.select({ id: stores2.id, slug: stores2.slug, displayName: stores2.displayName, primaryDomain: stores2.primaryDomain, status: stores2.status, isPlatformStore: stores2.isPlatformStore }).from(stores2).where(eq2(stores2.id, 4)).limit(1);
+      if (bhllStore[0]) return { ...bhllStore[0], primaryDomain: "bhll.mazigho.com", status: "active" };
     }
     const byDomain = normalizedHost ? await db.select({ id: stores2.id, slug: stores2.slug, displayName: stores2.displayName, primaryDomain: stores2.primaryDomain, status: stores2.status, isPlatformStore: stores2.isPlatformStore }).from(stores2).where(eq2(stores2.primaryDomain, normalizedHost)).limit(1) : [];
     if (byDomain[0]) return byDomain[0];
