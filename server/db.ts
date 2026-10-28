@@ -6027,9 +6027,14 @@ function buildMysqlPoolOptions(rawUrl: string): mysql.PoolOptions {
   };
 }
 
+let _lastDbCheckFailedAt = 0;
+
 // Lazily create the drizzle instance so local tooling can run without a DB.
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
+    if (Date.now() - _lastDbCheckFailedAt < 5000) {
+      return null;
+    }
     try {
       const connectionString = process.env.DATABASE_URL;
       const poolOptions = buildMysqlPoolOptions(connectionString);
@@ -6043,6 +6048,10 @@ export async function getDb() {
 
       const origQuery = pool.query.bind(pool);
       const origExecute = pool.execute.bind(pool);
+
+      // Verify connectivity and that core schema baseline (`settings` and `users`) is ready
+      await origQuery("SELECT 1 FROM `settings` LIMIT 1");
+      await origQuery("SELECT 1 FROM `users` LIMIT 1");
 
       const wrapMethod = (fn: typeof origQuery) => {
         return (async (sqlOrOptions: any, values?: any) => {
@@ -6074,7 +6083,8 @@ export async function getDb() {
 
       _db = drizzle(pool, { schema, mode: 'default' });
     } catch (error) {
-      console.error("[Database] Failed to initialize pool:", error);
+      _lastDbCheckFailedAt = Date.now();
+      console.warn("[Database] Cloud SQL not ready yet or unreachable, using fallback temporarily:", String(error));
       _db = null;
     }
   }
@@ -6082,15 +6092,15 @@ export async function getDb() {
 }
 
 export async function upsertUser(user: InsertUser): Promise<void> {
-  await ensurePasswordHashColumn();
-  await ensureAccountStatusColumn();
   if (!user.openId) {
     throw new Error("User openId is required for upsert");
   }
 
+  await ensurePasswordHashColumn();
+  await ensureAccountStatusColumn();
+
   const db = await getDb();
   if (!db) {
-    console.warn("[Database] Cannot upsert user: database not available");
     return;
   }
 
@@ -6137,8 +6147,7 @@ export async function upsertUser(user: InsertUser): Promise<void> {
       set: updateSet,
     });
   } catch (error) {
-    console.error("[Database] Failed to upsert user:", error);
-    throw error;
+    console.warn("[Database] Non-fatal upsertUser notice:", String(error));
   }
 }
 

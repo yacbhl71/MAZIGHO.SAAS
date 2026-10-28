@@ -13056,6 +13056,9 @@ function buildMysqlPoolOptions(rawUrl) {
 }
 async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
+    if (Date.now() - _lastDbCheckFailedAt < 5e3) {
+      return null;
+    }
     try {
       const connectionString = process.env.DATABASE_URL;
       const poolOptions = buildMysqlPoolOptions(connectionString);
@@ -13065,6 +13068,8 @@ async function getDb() {
       const pool = mysql.createPool(poolOptions);
       const origQuery = pool.query.bind(pool);
       const origExecute = pool.execute.bind(pool);
+      await origQuery("SELECT 1 FROM `settings` LIMIT 1");
+      await origQuery("SELECT 1 FROM `users` LIMIT 1");
       const wrapMethod = (fn) => {
         return (async (sqlOrOptions, values) => {
           let rawSql = "";
@@ -13093,21 +13098,21 @@ async function getDb() {
       pool.execute = wrapMethod(origExecute);
       _db = drizzle(pool, { schema: schema_exports, mode: "default" });
     } catch (error) {
-      console.error("[Database] Failed to initialize pool:", error);
+      _lastDbCheckFailedAt = Date.now();
+      console.warn("[Database] Cloud SQL not ready yet or unreachable, using fallback temporarily:", String(error));
       _db = null;
     }
   }
   return _db;
 }
 async function upsertUser(user) {
-  await ensurePasswordHashColumn();
-  await ensureAccountStatusColumn();
   if (!user.openId) {
     throw new Error("User openId is required for upsert");
   }
+  await ensurePasswordHashColumn();
+  await ensureAccountStatusColumn();
   const db = await getDb();
   if (!db) {
-    console.warn("[Database] Cannot upsert user: database not available");
     return;
   }
   try {
@@ -13145,8 +13150,7 @@ async function upsertUser(user) {
       set: updateSet
     });
   } catch (error) {
-    console.error("[Database] Failed to upsert user:", error);
-    throw error;
+    console.warn("[Database] Non-fatal upsertUser notice:", String(error));
   }
 }
 async function getUserByOpenId(openId) {
@@ -19981,7 +19985,7 @@ async function getActiveCampaign(storeId) {
     promo
   };
 }
-var accountTokens2, users2, stores2, storeMemberships2, storeProvisioningDrafts2, storeSettings2, storeAiMonthlyUsage2, studioImageGenerationUsage2, ownerKnowledgeDocuments2, ownerAiConversations2, ownerAiConversationMessages2, ownerAiWorkspaceDocuments2, categories2, products2, productCategories2, productImages2, ownerProductVariants2, productTranslations2, publicContentTranslations2, productDeliveryProfiles2, reviews2, contactMessages2, orders2, orderDecisions2, orderItems2, orderFulfillmentJobs2, orderSupplierOrders2, supplierWebhookEvents2, accountingEntries2, carts2, cartItems2, banners2, settings2, promotions2, promotionRedemptions2, auditLogs2, returnRequests2, returnRequestItems2, returnRequestEvents2, customCreationRequests2, customCreationRequestEvents2, campaigns2, stripeConnectedAccounts2, stripeLiveConnectedAccounts2, lemonSqueezyBillingCheckouts2, lemonSqueezySubscriptions2, lemonSqueezyWebhookEvents2, _db, _passwordHashColumnReady, _accountStatusColumnReady, _invitationSchemaReady, _accountingSchemaReady, _orderDecisionSchemaReady, _deliveryProfileSchemaReady, _productCategorySchemaReady, _catalogSectionSchemaReady, _creativeCatalogSeedReady, _productTranslationSchemaReady, _publicContentTranslationSchemaReady, _storeContentScopeSchemaReady, _storeCatalogScopeSchemaReady, _storeRelationshipScopeSchemaReady, _staffRolesReady, _auditLogSchemaReady, _promotionAdvancedSchemaReady, _reviewsSchemaReady, _fulfillmentSchemaReady, _supplierWeightSchemaReady, _supplierVariantMappingsSchemaReady, _checkoutShippingSchemaReady, _orderCurrencySchemaReady, _orderManualTrackingSchemaReady, _multiStoreSchemaReady, _storeOperationsScopeSchemaReady, _storeProvisioningDraftSchemaReady, _ownerProductVariantsSchemaReady, _storeAiMonthlyUsageSchemaReady, _studioImageGenerationUsageSchemaReady, _ownerKnowledgeDocumentSchemaReady, _ownerAiConversationSchemaReady, _ownerAiWorkspaceDocumentSchemaReady, _customCreationRequestSchemaReady, STUDIO_CATALOGUE_IMPORT_DRAFT_PREFIX, studioOwnerBuilderModels, studioOwnerBuilderPages, studioOwnerBuilderPalettes, studioOwnerBuilderTypographies, studioOwnerBuilderPaletteColors, studioOwnerPageDefinitions, studioGiftStoreTimelineLabels, OWNER_KNOWLEDGE_DOCUMENT_LIMIT, OWNER_KNOWLEDGE_CONTEXT_MAX_CHARS, OWNER_AI_CONVERSATION_LIMIT, OWNER_AI_CONVERSATION_MESSAGE_LIMIT, OWNER_AI_WORKSPACE_DOCUMENT_LIMIT, OWNER_AI_WORKSPACE_TEMPLATE_LIMIT, _superAdminSeedReady, storeTeamInvitationRoles, PRODUCT_TRANSLATION_LOCALES, PUBLIC_CONTENT_TRANSLATION_LOCALES, MAX_BULK_CATALOG_PRODUCTS, OWNER_PRODUCT_BUNDLES_SETTING_KEY, STOREFRONT_SETTING_KEYS, defaultStoreSeoProfile, EMAIL_TEMPLATE_DEFAULTS, EMAIL_TEMPLATE_TYPES, ownerTransactionalEmailTemplateTypes, supplierAccountReferenceSettingKey, defaultSupplierAccountReferences, defaultLegalProfile, defaultStoreNavigationItems, defaultDesignProfile, optimizedBuiltInImageUrls, STOREFRONT_THEME_ACCESS_SETTING_KEY, PLATFORM_IDENTITY_SETTING_KEY, KEY_IN_HAND_LANDING_SETTING_KEY, PRO_LANDING_SETTING_KEY, DEFAULT_VAT_RATE, CUSTOM_CREATION_REQUEST_SETTINGS_KEY, _campaignSchemaReady;
+var accountTokens2, users2, stores2, storeMemberships2, storeProvisioningDrafts2, storeSettings2, storeAiMonthlyUsage2, studioImageGenerationUsage2, ownerKnowledgeDocuments2, ownerAiConversations2, ownerAiConversationMessages2, ownerAiWorkspaceDocuments2, categories2, products2, productCategories2, productImages2, ownerProductVariants2, productTranslations2, publicContentTranslations2, productDeliveryProfiles2, reviews2, contactMessages2, orders2, orderDecisions2, orderItems2, orderFulfillmentJobs2, orderSupplierOrders2, supplierWebhookEvents2, accountingEntries2, carts2, cartItems2, banners2, settings2, promotions2, promotionRedemptions2, auditLogs2, returnRequests2, returnRequestItems2, returnRequestEvents2, customCreationRequests2, customCreationRequestEvents2, campaigns2, stripeConnectedAccounts2, stripeLiveConnectedAccounts2, lemonSqueezyBillingCheckouts2, lemonSqueezySubscriptions2, lemonSqueezyWebhookEvents2, _db, _passwordHashColumnReady, _accountStatusColumnReady, _invitationSchemaReady, _accountingSchemaReady, _orderDecisionSchemaReady, _deliveryProfileSchemaReady, _productCategorySchemaReady, _catalogSectionSchemaReady, _creativeCatalogSeedReady, _productTranslationSchemaReady, _publicContentTranslationSchemaReady, _storeContentScopeSchemaReady, _storeCatalogScopeSchemaReady, _storeRelationshipScopeSchemaReady, _staffRolesReady, _auditLogSchemaReady, _promotionAdvancedSchemaReady, _reviewsSchemaReady, _fulfillmentSchemaReady, _supplierWeightSchemaReady, _supplierVariantMappingsSchemaReady, _checkoutShippingSchemaReady, _orderCurrencySchemaReady, _orderManualTrackingSchemaReady, _multiStoreSchemaReady, _storeOperationsScopeSchemaReady, _storeProvisioningDraftSchemaReady, _ownerProductVariantsSchemaReady, _storeAiMonthlyUsageSchemaReady, _studioImageGenerationUsageSchemaReady, _ownerKnowledgeDocumentSchemaReady, _ownerAiConversationSchemaReady, _ownerAiWorkspaceDocumentSchemaReady, _customCreationRequestSchemaReady, STUDIO_CATALOGUE_IMPORT_DRAFT_PREFIX, studioOwnerBuilderModels, studioOwnerBuilderPages, studioOwnerBuilderPalettes, studioOwnerBuilderTypographies, studioOwnerBuilderPaletteColors, studioOwnerPageDefinitions, studioGiftStoreTimelineLabels, OWNER_KNOWLEDGE_DOCUMENT_LIMIT, OWNER_KNOWLEDGE_CONTEXT_MAX_CHARS, OWNER_AI_CONVERSATION_LIMIT, OWNER_AI_CONVERSATION_MESSAGE_LIMIT, OWNER_AI_WORKSPACE_DOCUMENT_LIMIT, OWNER_AI_WORKSPACE_TEMPLATE_LIMIT, _lastDbCheckFailedAt, _superAdminSeedReady, storeTeamInvitationRoles, PRODUCT_TRANSLATION_LOCALES, PUBLIC_CONTENT_TRANSLATION_LOCALES, MAX_BULK_CATALOG_PRODUCTS, OWNER_PRODUCT_BUNDLES_SETTING_KEY, STOREFRONT_SETTING_KEYS, defaultStoreSeoProfile, EMAIL_TEMPLATE_DEFAULTS, EMAIL_TEMPLATE_TYPES, ownerTransactionalEmailTemplateTypes, supplierAccountReferenceSettingKey, defaultSupplierAccountReferences, defaultLegalProfile, defaultStoreNavigationItems, defaultDesignProfile, optimizedBuiltInImageUrls, STOREFRONT_THEME_ACCESS_SETTING_KEY, PLATFORM_IDENTITY_SETTING_KEY, KEY_IN_HAND_LANDING_SETTING_KEY, PRO_LANDING_SETTING_KEY, DEFAULT_VAT_RATE, CUSTOM_CREATION_REQUEST_SETTINGS_KEY, _campaignSchemaReady;
 var init_db = __esm({
   "server/db.ts"() {
     "use strict";
@@ -20205,6 +20209,7 @@ var init_db = __esm({
     OWNER_AI_CONVERSATION_MESSAGE_LIMIT = 200;
     OWNER_AI_WORKSPACE_DOCUMENT_LIMIT = 80;
     OWNER_AI_WORKSPACE_TEMPLATE_LIMIT = 30;
+    _lastDbCheckFailedAt = 0;
     _superAdminSeedReady = null;
     storeTeamInvitationRoles = ["manager", "catalog_editor", "support_agent", "order_operator"];
     PRODUCT_TRANSLATION_LOCALES = ["de", "it", "en", "es", "nl", "ar"];

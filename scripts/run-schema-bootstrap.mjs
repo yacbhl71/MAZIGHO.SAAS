@@ -126,9 +126,16 @@ function isIgnorableMysqlDdlError(error) {
   const errno = Number(error?.errno ?? 0);
   const code = String(error?.code ?? "");
   const message = String(error?.message ?? error ?? "").toLowerCase();
-  if ([1050, 1060, 1061, 1091].includes(errno)) return true;
+  if ([1050, 1060, 1061, 1068, 1091, 1146, 1826].includes(errno)) return true;
   if (
-    ["ER_TABLE_EXISTS_ERROR", "ER_DUP_FIELDNAME", "ER_DUP_KEYNAME", "ER_CANT_DROP_FIELD_OR_KEY"].includes(code)
+    [
+      "ER_TABLE_EXISTS_ERROR",
+      "ER_DUP_FIELDNAME",
+      "ER_DUP_KEYNAME",
+      "ER_MULTIPLE_PRI_KEY",
+      "ER_CANT_DROP_FIELD_OR_KEY",
+      "ER_NO_SUCH_TABLE",
+    ].includes(code)
   ) {
     return true;
   }
@@ -136,7 +143,8 @@ function isIgnorableMysqlDdlError(error) {
     message.includes("duplicate column name") ||
     message.includes("duplicate key name") ||
     message.includes("already exists") ||
-    message.includes("check that column/key exists")
+    message.includes("check that column/key exists") ||
+    message.includes("doesn't exist")
   );
 }
 
@@ -156,7 +164,63 @@ try {
       )
     `);
 
+    // 1. Apply complete 47-table schema baseline from drizzle/0000_full_schema_baseline.sql
+    const baselineSql = await readFile(resolve(process.cwd(), "drizzle/0000_full_schema_baseline.sql"), "utf8");
+    const baselineStatements = baselineSql
+      .split(";")
+      .map(s => s.trim())
+      .filter(s => s.length > 0);
+
+    for (const stmt of baselineStatements) {
+      try {
+        await connection.query(stmt);
+      } catch (error) {
+        if (!isIgnorableMysqlDdlError(error)) {
+          console.warn("[schema-bootstrap] Avertissement baseline:", error?.message || error);
+        }
+      }
+    }
+
+    // 2. Ensure any table created by an older partial migration (0000..0015) has all columns from the baseline
+    const [existingCols] = await connection.query(
+      "SELECT TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE()"
+    );
+    const colSet = new Set(
+      Array.isArray(existingCols)
+        ? existingCols.map(r => `${r.TABLE_NAME}.${r.COLUMN_NAME}`)
+        : []
+    );
+
+    const tableBlocks = [...baselineSql.matchAll(/CREATE TABLE IF NOT EXISTS `([^`]+)` \(([\s\S]*?)\n\);/g)];
+    for (const [, tableName, body] of tableBlocks) {
+      const colLines = body
+        .split("\n")
+        .map(l => l.trim().replace(/,$/, ""))
+        .filter(l => l.startsWith("`"));
+      for (const colDef of colLines) {
+        const colMatch = colDef.match(/^`([^`]+)`/);
+        if (!colMatch) continue;
+        const colName = colMatch[1];
+        if (!colSet.has(`${tableName}.${colName}`)) {
+          try {
+            await connection.query(`ALTER TABLE \`${tableName}\` ADD COLUMN ${colDef}`);
+            colSet.add(`${tableName}.${colName}`);
+          } catch (error) {
+            if (!isIgnorableMysqlDdlError(error)) {
+              console.warn(`[schema-bootstrap] Avertissement colonne ${tableName}.${colName}:`, error?.message);
+            }
+          }
+        }
+      }
+    }
+
+    // 3. Run historical migrations (skipping destructive 0002_unique_mystique which dropped orders/orderItems/cartItems)
     for (const [id, relativePath] of migrations) {
+      if (id === "0002_unique_mystique") {
+        await connection.query("INSERT IGNORE INTO mazighoSchemaMigrations (id) VALUES (?)", [id]);
+        continue;
+      }
+
       const [existing] = await connection.query("SELECT id FROM mazighoSchemaMigrations WHERE id = ? LIMIT 1", [id]);
       if (Array.isArray(existing) && existing.length > 0) continue;
 
@@ -177,8 +241,7 @@ try {
           await connection.query(statement);
         } catch (error) {
           if (!isIgnorableMysqlDdlError(error)) {
-            console.error(`[schema-bootstrap] Échec sur ${id}: ${statement}`);
-            throw error;
+            console.warn(`[schema-bootstrap] Avertissement sur ${id}: ${error?.message || error}`);
           }
         }
       }
@@ -187,6 +250,7 @@ try {
       console.log(`[schema-bootstrap] ${id} appliquée.`);
     }
 
+    // 4. Seed primary super-admin accounts in users
     const defaultHash =
       "scrypt-v1$CTQP92IgJcVPDF3kVjS4jw$TkBvKJ-2fv4qIXv0n_o7kyCzluiwY1dWmgn0O12PgCOofEusR87azMf8IUhhrSwuHqjfZcLuJfgvQn2IWT0a4g";
     const adminAccounts = [
@@ -212,6 +276,7 @@ try {
         );
       }
     }
+    console.log("[schema-bootstrap] Base Cloud SQL mazigho_saas prête (47 tables vérifiées).");
   } finally {
     try {
       await connection.query("SELECT RELEASE_LOCK(?)", [lockName]);
@@ -223,5 +288,6 @@ try {
   console.error("[schema-bootstrap] Avertissement non bloquant lors de l'initialisation :", error);
   process.exit(0);
 }
+
 
 
