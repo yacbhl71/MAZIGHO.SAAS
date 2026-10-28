@@ -541,6 +541,19 @@ function Router() {
         <Route path={"/admin/studio/landings"} component={AdminStudioLandingContent} />
         <Route path={"/admin/studio/sante"} component={AdminSystemHealth} />
         <Route path={"/admin/studio/system-health"} component={AdminSystemHealth} />
+        <Route path={"/admin/studio/copilote"} component={AdminStudio} />
+        <Route path={"/admin/studio/copilot"} component={AdminStudio} />
+        <Route path={"/admin/studio/ai"} component={AdminStudio} />
+        <Route path={"/admin/studio/marches"} component={AdminStudio} />
+        <Route path={"/admin/studio/markets"} component={AdminStudio} />
+        <Route path={"/admin/studio/boutiques"} component={AdminStudio} />
+        <Route path={"/admin/studio/mise-en-service"} component={AdminStudio} />
+        <Route path={"/admin/studio/themes-kits"} component={AdminStudio} />
+        <Route path={"/admin/studio/pilotage"} component={AdminStudio} />
+        <Route path={"/admin/studio/legal"} component={AdminLegal} />
+        <Route path={"/admin/studio/traductions"} component={AdminTranslations} />
+        <Route path={"/admin/studio/langues"} component={AdminTranslations} />
+        <Route path={"/admin/studio/comptabilite"} component={AdminComptabilite} />
         <Route path={"/admin/studio"} component={AdminStudio} />
         <Route path={"/admin/produits"} component={AdminProducts} />
         <Route path={"/admin/importation"} component={AdminDropshipping} />
@@ -576,6 +589,9 @@ function Router() {
         <Route path={"/admin/assistance"} component={StaffSupport} />
         <Route path={"/admin/operations-commandes"} component={StaffOrders} />
         <Route path={"/admin"} component={AdminDashboard} />
+        {/* Admin and Studio catch-all routes to avoid landing on storefront 404 */}
+        <Route path={"/admin/studio/:rest*"} component={() => <Redirect to="/admin/studio" replace />} />
+        <Route path={"/admin/:rest*"} component={() => <Redirect to="/admin/studio" replace />} />
         <Route path={"/404"} component={NotFound} />
         {/* Final fallback route */}
         <Route component={NotFound} />
