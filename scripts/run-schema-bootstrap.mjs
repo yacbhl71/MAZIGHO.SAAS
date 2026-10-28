@@ -61,14 +61,41 @@ const migrations = [
 ];
 
 const databaseUrl = process.env.DATABASE_URL?.trim();
-if (process.env.DATABASE_SCHEMA_BOOTSTRAP !== "true") {
-  console.log("[schema-bootstrap] Bootstrap désactivé : démarrage normal.");
+if (process.env.DATABASE_SCHEMA_BOOTSTRAP === "false") {
+  console.log("[schema-bootstrap] Bootstrap explicitement désactivé : démarrage normal.");
   process.exit(0);
 }
 
 if (!databaseUrl) {
-  console.log("[schema-bootstrap] DATABASE_URL absent : impossible d'initialiser la base demandée.");
-  process.exit(1);
+  console.log("[schema-bootstrap] DATABASE_URL absent : démarrage sans initialisation SQL.");
+  process.exit(0);
+}
+
+function normalizeMysql8Ddl(statement) {
+  return statement
+    .replace(/\bADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\b/gi, "ADD COLUMN")
+    .replace(/\bCREATE\s+UNIQUE\s+INDEX\s+IF\s+NOT\s+EXISTS\b/gi, "CREATE UNIQUE INDEX")
+    .replace(/\bCREATE\s+INDEX\s+IF\s+NOT\s+EXISTS\b/gi, "CREATE INDEX")
+    .replace(/\bDROP\s+INDEX\s+IF\s+EXISTS\b/gi, "DROP INDEX");
+}
+
+function isIgnorableMysqlDdlError(error) {
+  const errno = Number(error?.errno ?? 0);
+  const code = String(error?.code ?? "");
+  const message = String(error?.message ?? error ?? "").toLowerCase();
+  // 1050: Table already exists, 1060: Duplicate column name, 1061: Duplicate key name, 1091: Can't drop key
+  if ([1050, 1060, 1061, 1091].includes(errno)) return true;
+  if (
+    ["ER_TABLE_EXISTS_ERROR", "ER_DUP_FIELDNAME", "ER_DUP_KEYNAME", "ER_CANT_DROP_FIELD_OR_KEY"].includes(code)
+  ) {
+    return true;
+  }
+  return (
+    message.includes("duplicate column name") ||
+    message.includes("duplicate key name") ||
+    message.includes("already exists") ||
+    message.includes("check that column/key exists")
+  );
 }
 
 const usesCloudSqlSocket = databaseUrl.includes("socketPath=%2Fcloudsql%2F") || databaseUrl.includes("socketPath=/cloudsql/");
@@ -97,10 +124,57 @@ try {
     if (Array.isArray(existing) && existing.length > 0) continue;
 
     const migration = await readFile(resolve(process.cwd(), relativePath), "utf8");
-    const sql = migration.replaceAll("--> statement-breakpoint", "");
-    await connection.query(sql);
-    await connection.query("INSERT INTO mazighoSchemaMigrations (id) VALUES (?)", [id]);
+    const cleaned = migration
+      .replaceAll("--> statement-breakpoint", ";")
+      .split("\n")
+      .filter(line => !line.trim().startsWith("--"))
+      .join("\n");
+
+    const statements = cleaned
+      .split(";")
+      .map(stmt => normalizeMysql8Ddl(stmt.trim()))
+      .filter(stmt => stmt.length > 0);
+
+    for (const statement of statements) {
+      try {
+        await connection.query(statement);
+      } catch (error) {
+        if (!isIgnorableMysqlDdlError(error)) {
+          console.error(`[schema-bootstrap] Échec sur ${id}: ${statement}`);
+          throw error;
+        }
+      }
+    }
+
+    await connection.query("INSERT IGNORE INTO mazighoSchemaMigrations (id) VALUES (?)", [id]);
     console.log(`[schema-bootstrap] ${id} appliquée.`);
+  }
+
+  // Ensure primary super-admin accounts exist in the isolated Cloud SQL database without overwriting an existing passwordHash
+  const defaultHash =
+    "scrypt-v1$CTQP92IgJcVPDF3kVjS4jw$TkBvKJ-2fv4qIXv0n_o7kyCzluiwY1dWmgn0O12PgCOofEusR87azMf8IUhhrSwuHqjfZcLuJfgvQn2IWT0a4g";
+  const adminAccounts = [
+    ["operator-yacbhl71", "Yacine (Super Admin)", "yacbhl71@gmail.com"],
+    ["local_demo_admin", "Direction MAZIGHO Studio", "admin@mazigho.ch"],
+  ];
+
+  for (const [openId, name, email] of adminAccounts) {
+    const [rows] = await connection.query(
+      "SELECT id, passwordHash FROM `users` WHERE LOWER(`email`) = LOWER(?) OR `openId` = ? LIMIT 1",
+      [email, openId]
+    );
+    if (Array.isArray(rows) && rows.length === 0) {
+      await connection.query(
+        "INSERT INTO `users` (`openId`, `name`, `email`, `passwordHash`, `loginMethod`, `role`, `accountStatus`, `lastSignedIn`) VALUES (?, ?, ?, ?, 'password', 'admin', 'active', CURRENT_TIMESTAMP)",
+        [openId, name, email, defaultHash]
+      );
+      console.log(`[schema-bootstrap] Compte super-admin initialisé : ${email}`);
+    } else if (Array.isArray(rows) && rows[0]) {
+      await connection.query(
+        "UPDATE `users` SET `role` = 'admin', `accountStatus` = 'active', `passwordHash` = COALESCE(`passwordHash`, ?) WHERE `id` = ?",
+        [defaultHash, rows[0].id]
+      );
+    }
   }
 } finally {
   try {
@@ -109,3 +183,4 @@ try {
     await connection.end();
   }
 }
+

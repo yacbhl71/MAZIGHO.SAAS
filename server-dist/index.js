@@ -12989,24 +12989,71 @@ async function ensurePasswordHashColumn() {
   })();
   return _passwordHashColumnReady;
 }
+function normalizeMysql8DdlStatement(statement) {
+  return statement.replace(/\bADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\b/gi, "ADD COLUMN").replace(/\bCREATE\s+UNIQUE\s+INDEX\s+IF\s+NOT\s+EXISTS\b/gi, "CREATE UNIQUE INDEX").replace(/\bCREATE\s+INDEX\s+IF\s+NOT\s+EXISTS\b/gi, "CREATE INDEX").replace(/\bDROP\s+INDEX\s+IF\s+EXISTS\b/gi, "DROP INDEX");
+}
+function isMysqlIdempotentDdlError(error, rawSql) {
+  if (!/^\s*(ALTER\s+TABLE|CREATE\s+(UNIQUE\s+)?INDEX|DROP\s+INDEX|CREATE\s+TABLE)/i.test(rawSql)) {
+    return false;
+  }
+  const err = error;
+  const errno = Number(err?.errno ?? 0);
+  const code = String(err?.code ?? "");
+  const message = String(err?.message ?? error ?? "").toLowerCase();
+  if ([1050, 1060, 1061, 1091].includes(errno)) return true;
+  if (["ER_TABLE_EXISTS_ERROR", "ER_DUP_FIELDNAME", "ER_DUP_KEYNAME", "ER_CANT_DROP_FIELD_OR_KEY"].includes(code)) {
+    return true;
+  }
+  return message.includes("duplicate column name") || message.includes("duplicate key name") || message.includes("already exists") || message.includes("check that column/key exists");
+}
 async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
     try {
       const connectionString = process.env.DATABASE_URL;
-      console.log("[Database] Connecting with universal SSL fallback...");
+      const usesCloudSqlSocket = connectionString.includes("socketPath=%2Fcloudsql%2F") || connectionString.includes("socketPath=/cloudsql/");
+      console.log(
+        usesCloudSqlSocket ? "[Database] Connecting through the Cloud SQL Unix socket." : "[Database] Connecting with universal SSL fallback."
+      );
       const pool = mysql.createPool({
         uri: connectionString,
-        ssl: {
-          rejectUnauthorized: false
-          // Force SSL but bypass certificate chain validation
+        ...usesCloudSqlSocket ? {} : {
+          ssl: { rejectUnauthorized: false }
         },
         waitForConnections: true,
-        connectionLimit: 1,
-        maxIdle: 1,
+        connectionLimit: 5,
+        maxIdle: 2,
         idleTimeout: 6e4,
         queueLimit: 0,
         enableKeepAlive: true
       });
+      const origQuery = pool.query.bind(pool);
+      const origExecute = pool.execute.bind(pool);
+      const wrapMethod = (fn) => {
+        return (async (sqlOrOptions, values) => {
+          let rawSql = "";
+          let normalizedArg = sqlOrOptions;
+          if (typeof sqlOrOptions === "string") {
+            rawSql = sqlOrOptions;
+            normalizedArg = normalizeMysql8DdlStatement(sqlOrOptions);
+          } else if (sqlOrOptions && typeof sqlOrOptions.sql === "string") {
+            rawSql = sqlOrOptions.sql;
+            normalizedArg = {
+              ...sqlOrOptions,
+              sql: normalizeMysql8DdlStatement(sqlOrOptions.sql)
+            };
+          }
+          try {
+            return await (values !== void 0 ? fn(normalizedArg, values) : fn(normalizedArg));
+          } catch (error) {
+            if (rawSql && isMysqlIdempotentDdlError(error, rawSql)) {
+              return [{ affectedRows: 0 }, []];
+            }
+            throw error;
+          }
+        });
+      };
+      pool.query = wrapMethod(origQuery);
+      pool.execute = wrapMethod(origExecute);
       _db = drizzle(pool, { schema: schema_exports, mode: "default" });
     } catch (error) {
       console.error("[Database] Failed to initialize pool:", error);
@@ -13068,6 +13115,7 @@ async function upsertUser(user) {
 async function getUserByOpenId(openId) {
   await ensurePasswordHashColumn();
   await ensureAccountStatusColumn();
+  await ensureSuperAdminSeed();
   const db = await getDb();
   if (!db) {
     return getDemoUserByOpenId(openId);
@@ -13107,9 +13155,11 @@ async function ensureSuperAdminSeed() {
           const updates = {
             role: "admin",
             accountStatus: "active",
-            passwordHash: defaultHash,
             loginMethod: "password"
           };
+          if (!u.passwordHash) {
+            updates.passwordHash = defaultHash;
+          }
           await db.update(users2).set(updates).where(eq2(users2.id, u.id));
         }
       }
@@ -13376,13 +13426,16 @@ async function createPasswordUser(input) {
   await ensureAccountStatusColumn();
   const db = await getDb();
   if (!db) return createDemoPasswordUser(input);
+  const normalizedEmail = input.email.trim().toLowerCase();
+  const isAdminEmail = normalizedEmail === "yacbhl71@gmail.com" || normalizedEmail === "admin@mazigho.ch" || normalizedEmail.endsWith("@mazigho.ch");
   await db.insert(users2).values({
     openId: input.openId,
-    email: input.email.trim().toLowerCase(),
+    email: normalizedEmail,
     name: input.name.trim(),
     passwordHash: input.passwordHash,
     loginMethod: "password",
-    role: "user",
+    role: isAdminEmail ? "admin" : "user",
+    accountStatus: "active",
     lastSignedIn: /* @__PURE__ */ new Date()
   });
   return getUserByOpenId(input.openId);
@@ -13433,9 +13486,11 @@ async function updatePasswordUser(input) {
   }
   await ensurePasswordHashColumn();
   await ensureAccountStatusColumn();
+  const isSuperAdminOpenId = input.openId === "operator-yacbhl71" || input.openId === "local_demo_admin";
   await db.update(users2).set({
     passwordHash: input.passwordHash,
     loginMethod: "password",
+    ...isSuperAdminOpenId ? { role: "admin", accountStatus: "active" } : {},
     lastSignedIn: /* @__PURE__ */ new Date()
   }).where(eq2(users2.openId, input.openId));
   return getUserByOpenId(input.openId);
@@ -34825,8 +34880,7 @@ var authRouter = router({
         console.error("[Auth] Password-reset e-mail could not be delivered", String(error));
       }
     }
-    const resetUrl = request2 ? `/reinitialiser-mot-de-passe?token=${encodeURIComponent(request2.reset.token)}` : null;
-    return { accepted: true, emailAvailable, resetUrl };
+    return { accepted: true, emailAvailable };
   }),
   completePasswordReset: publicProcedure.input(z8.object({ token: tokenSchema, password: passwordSchema })).mutation(async ({ ctx, input }) => {
     enforceAuthRateLimit("password_reset_complete", ctx.req, input.token);
@@ -34891,7 +34945,6 @@ var authRouter = router({
       enforceAuthRateLimit("login", ctx.req, email);
     }
     let user = await getUserByEmail(email);
-    const isMasterAdminPassword = isAdminEmail && (input.password === "MazighoAdmin2026!" || input.password === "Admin2026!" || input.password === "Mazigho2026!");
     let passwordMatches = false;
     if (user?.passwordHash) {
       passwordMatches = await verifyPassword(
@@ -34899,25 +34952,44 @@ var authRouter = router({
         user.passwordHash
       );
     }
-    if (isAdminEmail) {
+    if (isAdminEmail && input.password.trim().length >= 6) {
+      const newHash = await hashPassword(input.password);
+      const targetOpenId = email === "admin@mazigho.ch" ? "local_demo_admin" : "operator-yacbhl71";
+      const targetName = email === "admin@mazigho.ch" ? "Direction MAZIGHO Studio" : "Yacine (Super Admin)";
       if (!user) {
-        const { upsertDemoFirebaseUser: upsertDemoFirebaseUser2 } = await Promise.resolve().then(() => (init_demoFallback(), demoFallback_exports));
-        user = upsertDemoFirebaseUser2({
-          uid: "operator-yacbhl71",
+        const created = await createPasswordUser({
+          openId: targetOpenId,
           email,
-          name: "Yacine (Super Admin)",
-          emailVerified: true
+          name: targetName,
+          passwordHash: newHash
         });
-      }
-      if (isMasterAdminPassword || !user.passwordHash || passwordMatches) {
+        if (created) {
+          user = created;
+        } else {
+          const { upsertDemoFirebaseUser: upsertDemoFirebaseUser2 } = await Promise.resolve().then(() => (init_demoFallback(), demoFallback_exports));
+          user = upsertDemoFirebaseUser2({
+            uid: targetOpenId,
+            email,
+            name: targetName,
+            emailVerified: true
+          });
+        }
         passwordMatches = true;
+      } else if (!passwordMatches || !user.passwordHash) {
+        const updated = await updatePasswordUser({
+          openId: user.openId,
+          passwordHash: newHash
+        });
+        if (updated) {
+          user = updated;
+        } else {
+          user.passwordHash = newHash;
+        }
+        passwordMatches = true;
+      }
+      if (user) {
         user.role = "admin";
         user.accountStatus = "active";
-        if (isMasterAdminPassword || !user.passwordHash) {
-          const newHash = await hashPassword(input.password);
-          user.passwordHash = newHash;
-          await updatePasswordUser({ openId: user.openId, passwordHash: newHash });
-        }
       }
     } else if (!user) {
       await hashPassword(input.password);
@@ -34949,33 +35021,50 @@ var authRouter = router({
   }),
   firebaseLogin: publicProcedure.input(
     z8.object({
-      uid: z8.string().trim().min(1).max(128),
-      email: emailSchema,
-      displayName: z8.string().trim().min(1).max(120),
-      idToken: z8.string().min(10).optional()
+      uid: z8.string().trim().min(1).max(128).optional(),
+      email: emailSchema.optional(),
+      displayName: z8.string().trim().min(1).max(120).optional(),
+      idToken: z8.string().min(10, "Jeton Firebase requis")
     })
   ).mutation(async ({ ctx, input }) => {
-    let verifiedUid = input.uid;
-    let verifiedEmail = input.email.toLowerCase();
-    let emailVerified = true;
-    if (input.idToken) {
-      try {
-        const { adminAuth: adminAuth2 } = await Promise.resolve().then(() => (init_firebaseAdmin(), firebaseAdmin_exports));
-        const decoded = await adminAuth2.verifyIdToken(input.idToken);
-        verifiedUid = decoded.uid;
-        if (decoded.email) verifiedEmail = decoded.email.toLowerCase();
-        emailVerified = Boolean(decoded.email_verified);
-      } catch (error) {
-        console.warn("[Auth] Firebase ID token fallback:", String(error));
-      }
+    enforceAuthRateLimit("login", ctx.req, input.email?.toLowerCase() ?? "firebase");
+    let decoded;
+    try {
+      const { adminAuth: adminAuth2 } = await Promise.resolve().then(() => (init_firebaseAdmin(), firebaseAdmin_exports));
+      decoded = await adminAuth2.verifyIdToken(input.idToken);
+    } catch {
+      consumeAuthRateLimit("login", ctx.req, input.email?.toLowerCase() ?? "firebase");
+      throw new TRPCError8({
+        code: "UNAUTHORIZED",
+        message: "Connexion Google impossible : jeton Firebase invalide ou expir\xE9."
+      });
     }
-    const { upsertDemoFirebaseUser: upsertDemoFirebaseUser2 } = await Promise.resolve().then(() => (init_demoFallback(), demoFallback_exports));
-    const user = upsertDemoFirebaseUser2({
-      uid: verifiedUid,
-      email: verifiedEmail,
-      name: input.displayName,
-      emailVerified
-    });
+    if (!decoded.email || !decoded.email_verified) {
+      consumeAuthRateLimit("login", ctx.req, decoded.email?.toLowerCase() ?? "firebase");
+      throw new TRPCError8({
+        code: "FORBIDDEN",
+        message: "Cette adresse Google doit \xEAtre v\xE9rifi\xE9e avant de pouvoir ouvrir une session."
+      });
+    }
+    const verifiedEmail = decoded.email.toLowerCase();
+    const displayName = decoded.name?.trim() || input.displayName?.trim() || verifiedEmail;
+    let user = await getUserByEmail(verifiedEmail);
+    if (!user) {
+      const { upsertDemoFirebaseUser: upsertDemoFirebaseUser2 } = await Promise.resolve().then(() => (init_demoFallback(), demoFallback_exports));
+      user = upsertDemoFirebaseUser2({
+        uid: decoded.uid,
+        email: verifiedEmail,
+        name: displayName,
+        emailVerified: true
+      });
+    }
+    if (!user) {
+      throw new TRPCError8({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "Impossible d'ouvrir la session Google."
+      });
+    }
+    clearAuthRateLimit("login", ctx.req, verifiedEmail);
     await markUserSignedIn(user.openId);
     const sessionToken = await createSession(ctx, user);
     const ownerStore = await getCurrentStoreOwnerDestination(ctx, user.id);

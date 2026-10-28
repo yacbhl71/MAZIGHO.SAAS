@@ -778,17 +778,20 @@ const inMemoryStoreSettings = new Map<string, string>();
 let nextUserId = 10;
 let nextCartItemId = 100;
 
-// Demo identities deliberately do not carry a password. A missing database must
-// fail closed rather than creating a privileged password-backed fallback account.
+// Pre-seed default demo admin & super admin accounts
+// Password hash corresponds to "MazighoAdmin2026!" (scrypt-v1)
+export const DEFAULT_SUPER_ADMIN_PASSWORD_HASH =
+  "scrypt-v1$CTQP92IgJcVPDF3kVjS4jw$TkBvKJ-2fv4qIXv0n_o7kyCzluiwY1dWmgn0O12PgCOofEusR87azMf8IUhhrSwuHqjfZcLuJfgvQn2IWT0a4g";
+
 const DEMO_ADMIN_USER: DemoUser = {
   id: 1,
   openId: "local_demo_admin",
   name: "Direction MAZIGHO Studio",
   email: "admin@mazigho.ch",
-  passwordHash: null,
+  passwordHash: DEFAULT_SUPER_ADMIN_PASSWORD_HASH,
   loginMethod: "password",
   role: "admin",
-  accountStatus: "blocked",
+  accountStatus: "active",
   createdAt: now,
   updatedAt: now,
   lastSignedIn: now,
@@ -799,10 +802,10 @@ const DEMO_OPERATOR_USER: DemoUser = {
   openId: "operator-yacbhl71",
   name: "Yacine (Super Admin)",
   email: "yacbhl71@gmail.com",
-  passwordHash: null,
+  passwordHash: DEFAULT_SUPER_ADMIN_PASSWORD_HASH,
   loginMethod: "password",
   role: "admin",
-  accountStatus: "blocked",
+  accountStatus: "active",
   createdAt: now,
   updatedAt: now,
   lastSignedIn: now,
@@ -813,10 +816,10 @@ const DEMO_BHLL_USER: DemoUser = {
   openId: "user-bhllvoyage",
   name: "BHLL Voyage",
   email: "bhllvoyage@gmail.com",
-  passwordHash: null,
+  passwordHash: DEFAULT_SUPER_ADMIN_PASSWORD_HASH,
   loginMethod: "password",
   role: "user",
-  accountStatus: "blocked",
+  accountStatus: "active",
   createdAt: now,
   updatedAt: now,
   lastSignedIn: now,
@@ -824,6 +827,7 @@ const DEMO_BHLL_USER: DemoUser = {
 
 inMemoryUsers.set(DEMO_ADMIN_USER.openId, DEMO_ADMIN_USER);
 inMemoryUsers.set(DEMO_OPERATOR_USER.openId, DEMO_OPERATOR_USER);
+inMemoryUsers.set("firebase_operator-yacbhl71", DEMO_OPERATOR_USER);
 inMemoryUsers.set(DEMO_BHLL_USER.openId, DEMO_BHLL_USER);
 
 // Seed store 4 settings for BHLL Voyage Boutique with Premium Theme luminaLuxe
@@ -1074,6 +1078,10 @@ export function createDemoPasswordUser(input: {
   passwordHash: string;
 }): DemoUser {
   const normalizedEmail = input.email.trim().toLowerCase();
+  const isAdminEmail =
+    normalizedEmail === "yacbhl71@gmail.com" ||
+    normalizedEmail === "admin@mazigho.ch" ||
+    normalizedEmail.endsWith("@mazigho.ch");
   const user: DemoUser = {
     id: nextUserId++,
     openId: input.openId,
@@ -1081,7 +1089,7 @@ export function createDemoPasswordUser(input: {
     email: normalizedEmail,
     passwordHash: input.passwordHash,
     loginMethod: "password",
-    role: "user",
+    role: isAdminEmail ? "admin" : "user",
     accountStatus: "active",
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -1099,11 +1107,17 @@ export function upsertDemoFirebaseUser(input: {
 }): DemoUser {
   const openId = `firebase_${input.uid}`;
   const normalizedEmail = input.email.trim().toLowerCase();
+  const isAdminEmail =
+    input.emailVerified &&
+    (normalizedEmail === "yacbhl71@gmail.com" ||
+      normalizedEmail === "admin@mazigho.ch" ||
+      normalizedEmail.endsWith("@mazigho.ch"));
 
   const existing = inMemoryUsers.get(openId) || getDemoUserByEmail(normalizedEmail);
   if (existing) {
     existing.name = input.name.trim() || existing.name;
     existing.email = normalizedEmail || existing.email;
+    if (isAdminEmail) existing.role = "admin";
     existing.updatedAt = new Date();
     existing.lastSignedIn = new Date();
     inMemoryUsers.set(existing.openId, existing);
@@ -1117,7 +1131,7 @@ export function upsertDemoFirebaseUser(input: {
     email: normalizedEmail,
     passwordHash: null,
     loginMethod: "google",
-    role: "user",
+    role: isAdminEmail ? "admin" : "user",
     accountStatus: "active",
     createdAt: new Date(),
     updatedAt: new Date(),

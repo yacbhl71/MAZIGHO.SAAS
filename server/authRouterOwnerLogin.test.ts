@@ -121,4 +121,31 @@ describe("connexion propriétaire sur une boutique cliente", () => {
     ]);
     expect(clearedCookies[1]?.options).not.toHaveProperty("domain");
   });
+
+  it("permet au super-admin principal (yacbhl71@gmail.com) d'enrôler son mot de passe sur une base Cloud SQL nouvellement initialisée", async () => {
+    vi.mocked(db.getUserByEmail).mockResolvedValueOnce(undefined);
+    vi.mocked(db.createPasswordUser).mockResolvedValueOnce({
+      id: 1,
+      openId: "operator-yacbhl71",
+      name: "Yacine (Super Admin)",
+      email: "yacbhl71@gmail.com",
+      passwordHash: "scrypt-v1$test",
+      accountStatus: "active",
+      role: "admin",
+      loginMethod: "password",
+      createdAt: new Date("2026-10-28T00:00:00.000Z"),
+      updatedAt: new Date("2026-10-28T00:00:00.000Z"),
+      lastSignedIn: new Date("2026-10-28T00:00:00.000Z"),
+    } as any);
+
+    const { client } = callerFor({ id: 1, isPlatformStore: 1, status: "active", primaryDomain: "studio.mazigho.com" });
+    await expect(client.login({ email: "yacbhl71@gmail.com", password: "MonMotDePassePersonnel12" })).resolves.toMatchObject({
+      user: { email: "yacbhl71@gmail.com", role: "admin", accountStatus: "active" },
+    });
+    expect(db.createPasswordUser).toHaveBeenCalledWith(expect.objectContaining({
+      openId: "operator-yacbhl71",
+      email: "yacbhl71@gmail.com",
+    }));
+  });
 });
+
